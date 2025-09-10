@@ -8,357 +8,364 @@ from src.tuning.evolve import evolve_params, Bounds
 from src.utils.plotting import equity_chart
 from src.storage import (
     list_portfolios, create_portfolio, add_item,
-    list_strategies, save_strategy, set_default_strategy,
+    save_strategy, set_default_strategy,
     list_param_bounds, save_param_bounds, get_param_bounds, get_default_param_bounds
 )
 
-st.set_page_config(page_title="Ticker Selector & Tuning", page_icon="🧪")
-st.title("🧪 Ticker Selector & Model Tuning")
+# ---- Apply queued profile BEFORE widgets are created ----
+if "_apply_profile_payload" in st.session_state:
+    pr = st.session_state.pop("_apply_profile_payload")  # consume the payload
 
-tabs = st.tabs(["Manual Backtest", "Evolutionary Tuning"])
+    # Dates / equity / EA settings
+    from datetime import date  # (if not already imported at top)
+    st.session_state["ev_start"] = date.fromisoformat(pr["start"])
+    st.session_state["ev_end"] = date.fromisoformat(pr["end"])
+    st.session_state["ev_eq"] = float(pr.get("starting_equity", 10000))
+    st.session_state["ev_pop"] = int(pr.get("pop_size", 40))
+    st.session_state["ev_gen"] = int(pr.get("generations", 20))
+    st.session_state["ev_cr"] = float(pr.get("crossover_rate", 0.7))
+    st.session_state["ev_mr"] = float(pr.get("mutation_rate", 0.35))
 
-# ------------------------ Manual Backtest ------------------------
-with tabs[0]:
-    with st.sidebar:
-        st.markdown("**Manual Params (ATR Breakout + Risk)**")
-        breakout_n = st.slider("Breakout lookback (days)", 10, 300, 55, 1, key="mb_breakout")
-        exit_n = st.slider("Exit lookback (days)", 5, 200, 20, 1, key="mb_exit")
-        atr_n = st.slider("ATR lookback (days)", 5, 100, 14, 1, key="mb_atr")
-        atr_multiple = st.slider("ATR multiple (stop distance)", 1.0, 6.0, 3.0, 0.1, key="mb_am")
-        risk_per_trade = st.slider("Risk per trade (% of equity)", 0.1, 3.0, 1.0, 0.1, key="mb_rpt") / 100.0
-        allow_fractional = st.toggle("Allow fractional shares", value=True, key="mb_frac")
-        starting_equity_manual = st.number_input("Starting Equity ($)", min_value=1000, value=10_000, step=500, key="mb_eq")
+    # Bounds (use .get with sane defaults)
+    b = pr.get("bounds", {})
+    st.session_state["b_breakout_min"] = int(b.get("breakout_min", 20))
+    st.session_state["b_breakout_max"] = int(b.get("breakout_max", 120))
+    st.session_state["b_exit_min"] = int(b.get("exit_min", 10))
+    st.session_state["b_exit_max"] = int(b.get("exit_max", 60))
+    st.session_state["b_atr_min"] = int(b.get("atr_min", 7))
+    st.session_state["b_atr_max"] = int(b.get("atr_max", 30))
+    st.session_state["b_atrmult_min"] = float(b.get("atr_multiple_min", 1.5))
+    st.session_state["b_atrmult_max"] = float(b.get("atr_multiple_max", 5.0))
+    st.session_state["b_rpt_min"] = float(b.get("risk_per_trade_min", 0.002)) * 100.0
+    st.session_state["b_rpt_max"] = float(b.get("risk_per_trade_max", 0.02)) * 100.0
+    st.session_state["b_tp_min"] = float(b.get("tp_multiple_min", 0.0))
+    st.session_state["b_tp_max"] = float(b.get("tp_multiple_max", 6.0))
+    st.session_state["b_allow_trend"] = bool(b.get("allow_trend_filter", True))
+    st.session_state["b_sma_fast_min"] = int(b.get("sma_fast_min", 10))
+    st.session_state["b_sma_fast_max"] = int(b.get("sma_fast_max", 50))
+    st.session_state["b_sma_slow_min"] = int(b.get("sma_slow_min", 40))
+    st.session_state["b_sma_slow_max"] = int(b.get("sma_slow_max", 100))
+    st.session_state["b_sma_long_min"] = int(b.get("sma_long_min", 100))
+    st.session_state["b_sma_long_max"] = int(b.get("sma_long_max", 300))
+    st.session_state["b_slope_min"] = int(b.get("long_slope_len_min", 10))
+    st.session_state["b_slope_max"] = int(b.get("long_slope_len_max", 50))
+    st.session_state["b_hold_min"] = int(b.get("holding_period_min", 0))
+    st.session_state["b_hold_max"] = int(b.get("holding_period_max", 120))
+    st.session_state["b_cost_min"] = float(b.get("cost_bps_min", 0.0))
+    st.session_state["b_cost_max"] = float(b.get("cost_bps_max", 10.0))
 
-    colA, colB = st.columns(2)
-    with colA:
-        symbol_manual = st.text_input("Ticker", value="AAPL", key="mb_symbol").upper().strip()
-    with colB:
-        end_manual = st.date_input("End Date", value=date.today(), key="mb_end")
-        start_manual = st.date_input("Start Date", value=end_manual - timedelta(days=365*3), key="mb_start")
+st.set_page_config(page_title="Evolutionary Tuning", page_icon="🧬")
+st.title("🧬 Evolutionary Tuning (ATR Breakout)")
 
-    # Load saved strategies for this ticker (model params)
-    st.markdown("**Load saved strategy for this ticker**")
-    existing = list_strategies(symbol_manual, model="atr_breakout")
-    label_to_id = {"— Select a strategy —": ""}
-    for s in existing:
-        star = "★ " if s.get("is_default") else ""
-        label_to_id[f"{star}{s['name']}  ({s['id'][:8]})"] = s["id"]
+# ---------- Ticker & Dates ----------
+c1, c2, c3 = st.columns(3)
+with c1:
+    symbol = st.text_input("Ticker", value="AAPL", key="ev_symbol").upper().strip()
+with c2:
+    end = st.date_input("End Date", value=date.today(), key="ev_end")
+with c3:
+    start = st.date_input("Start Date", value=end - timedelta(days=365*3), key="ev_start")
 
-    sel_label = st.selectbox("Saved strategies", list(label_to_id.keys()), index=0, key="mb_sel_strat")
-    if st.button("Load Strategy", key="btn_load_strat"):
-        sid = label_to_id.get(sel_label, "")
-        if sid:
-            srec = next((x for x in existing if x["id"] == sid), None)
-            if srec:
-                p = srec["params"]
-                st.session_state["mb_breakout"] = int(p.get("breakout_n", 55))
-                st.session_state["mb_exit"] = int(p.get("exit_n", 20))
-                st.session_state["mb_atr"] = int(p.get("atr_n", 14))
-                st.session_state["mb_am"] = float(p.get("atr_multiple", 3.0))
-                st.session_state["mb_rpt"] = float(p.get("risk_per_trade", 0.01)) * 100.0
-                st.session_state["mb_frac"] = bool(p.get("allow_fractional", True))
-                st.rerun()
+# ---------- Parameter Profiles (bounds + run settings) ----------
+st.markdown("**Parameter Profile (bounds + run settings)**")
+profiles = list_param_bounds(symbol=symbol, model="atr_breakout")
+prof_labels = ["Default (system)"]
+prof_ids = ["__DEFAULT__"]
+default_bounds = get_default_param_bounds(symbol, "atr_breakout")
+if default_bounds:
+    prof_labels.append(f"★ Default for {symbol}  ({default_bounds['id'][:8]})")
+    prof_ids.append(default_bounds["id"])
+for pb in profiles:
+    if default_bounds and pb["id"] == default_bounds["id"]:
+        continue
+    prof_labels.append(f"{pb['name']}  ({pb['id'][:8]})")
+    prof_ids.append(pb["id"])
+
+sel_prof_idx = st.selectbox("Profiles", list(range(len(prof_labels))),
+                            format_func=lambda i: prof_labels[i], index=0, key="ev_prof_idx")
+
+def _apply_profile_to_state(rec):
+    pr = rec["profile"]
+    # Dates / equity / EA settings
+    st.session_state["ev_start"] = date.fromisoformat(pr["start"])
+    st.session_state["ev_end"] = date.fromisoformat(pr["end"])
+    st.session_state["ev_eq"] = float(pr.get("starting_equity", 10000))
+    st.session_state["ev_pop"] = int(pr.get("pop_size", 40))
+    st.session_state["ev_gen"] = int(pr.get("generations", 20))
+    st.session_state["ev_cr"] = float(pr.get("crossover_rate", 0.7))
+    st.session_state["ev_mr"] = float(pr.get("mutation_rate", 0.35))
+    # Bounds (fill with defaults if missing)
+    b = pr.get("bounds", {})
+    def g(k, d): return b.get(k, d)
+    st.session_state["b_breakout_min"] = int(g("breakout_min", 20))
+    st.session_state["b_breakout_max"] = int(g("breakout_max", 120))
+    st.session_state["b_exit_min"] = int(g("exit_min", 10))
+    st.session_state["b_exit_max"] = int(g("exit_max", 60))
+    st.session_state["b_atr_min"] = int(g("atr_min", 7))
+    st.session_state["b_atr_max"] = int(g("atr_max", 30))
+    st.session_state["b_atrmult_min"] = float(g("atr_multiple_min", 1.5))
+    st.session_state["b_atrmult_max"] = float(g("atr_multiple_max", 5.0))
+    st.session_state["b_rpt_min"] = float(g("risk_per_trade_min", 0.002)) * 100.0
+    st.session_state["b_rpt_max"] = float(g("risk_per_trade_max", 0.02)) * 100.0
+    st.session_state["b_tp_min"] = float(g("tp_multiple_min", 0.0))
+    st.session_state["b_tp_max"] = float(g("tp_multiple_max", 6.0))
+    st.session_state["b_allow_trend"] = bool(g("allow_trend_filter", True))
+    st.session_state["b_sma_fast_min"] = int(g("sma_fast_min", 10))
+    st.session_state["b_sma_fast_max"] = int(g("sma_fast_max", 50))
+    st.session_state["b_sma_slow_min"] = int(g("sma_slow_min", 40))
+    st.session_state["b_sma_slow_max"] = int(g("sma_slow_max", 100))
+    st.session_state["b_sma_long_min"] = int(g("sma_long_min", 100))
+    st.session_state["b_sma_long_max"] = int(g("sma_long_max", 300))
+    st.session_state["b_slope_min"] = int(g("long_slope_len_min", 10))
+    st.session_state["b_slope_max"] = int(g("long_slope_len_max", 50))
+    st.session_state["b_hold_min"] = int(g("holding_period_min", 0))
+    st.session_state["b_hold_max"] = int(g("holding_period_max", 120))
+    st.session_state["b_cost_min"] = float(g("cost_bps_min", 0.0))
+    st.session_state["b_cost_max"] = float(g("cost_bps_max", 10.0))
+
+if st.button("Load Profile", key="btn_load_prof"):
+    chosen_id = prof_ids[sel_prof_idx]
+    if chosen_id != "__DEFAULT__":
+        rec = get_param_bounds(chosen_id)
+        if rec:
+            # Queue the profile payload; it will be applied before widgets on next run
+            st.session_state["_apply_profile_payload"] = rec["profile"]
+            st.success(f"Loaded profile: {rec['name']}")
+            st.rerun()
         else:
-            st.info("Select a saved strategy first.")
+            st.warning("Profile not found.")
+    else:
+        st.info("Loaded default system values.")
 
-    if st.button("Run Manual Backtest", type="primary", key="btn_manual"):
-        with st.spinner("Backtesting..."):
-            try:
-                res = backtest_single(
-                    symbol_manual,
-                    start_manual.isoformat(),
-                    end_manual.isoformat(),
-                    breakout_n=st.session_state["mb_breakout"],
-                    exit_n=st.session_state["mb_exit"],
-                    atr_n=st.session_state["mb_atr"],
-                    starting_equity=starting_equity_manual,
-                    atr_multiple=st.session_state["mb_am"],
-                    risk_per_trade=st.session_state["mb_rpt"] / 100.0,
-                    allow_fractional=st.session_state["mb_frac"],
-                )
-                equity = res["equity"]
-                metrics = res["metrics"]
-                st.subheader(f"Manual Results — {symbol_manual}")
-                st.plotly_chart(equity_chart(equity, title=f"Equity — {symbol_manual}"), use_container_width=True)
-                st.write(pd.DataFrame([metrics]))
-                st.success("Done.")
-                st.session_state["last_result"] = {
-                    "symbol": symbol_manual,
-                    "params": {
-                        "breakout_n": st.session_state["mb_breakout"],
-                        "exit_n": st.session_state["mb_exit"],
-                        "atr_n": st.session_state["mb_atr"],
-                        "atr_multiple": st.session_state["mb_am"],
-                        "risk_per_trade": st.session_state["mb_rpt"] / 100.0,
-                        "allow_fractional": st.session_state["mb_frac"],
-                    },
-                }
-            except Exception as e:
-                st.error(f"Error: {e}")
+# ---------- EA settings ----------
+c4, c5, c6 = st.columns(3)
+with c4:
+    starting_equity = st.number_input("Starting Equity ($)", min_value=1000, value=10_000, step=500, key="ev_eq")
+with c5:
+    pop_size = st.slider("Population size", 10, 200, 40, 5, key="ev_pop")
+    generations = st.slider("Generations", 5, 100, 20, 1, key="ev_gen")
+with c6:
+    crossover_rate = st.slider("Crossover rate", 0.0, 1.0, 0.7, 0.05, key="ev_cr")
+    mutation_rate = st.slider("Mutation rate", 0.0, 1.0, 0.35, 0.05, key="ev_mr")
 
-    # Save current settings as a strategy
-    st.markdown("**Save current settings as a Strategy**")
-    default_name = f"{symbol_manual}-Manual"
-    strategy_name = st.text_input("Strategy name", value=default_name, key="mb_save_name")
-    set_default = st.checkbox("Set as default for this ticker", value=False, key="mb_set_default")
-    if st.button("Save Strategy", key="btn_save_strategy"):
-        params_now = {
-            "breakout_n": int(st.session_state["mb_breakout"]),
-            "exit_n": int(st.session_state["mb_exit"]),
-            "atr_n": int(st.session_state["mb_atr"]),
-            "atr_multiple": float(st.session_state["mb_am"]),
-            "risk_per_trade": float(st.session_state["mb_rpt"]) / 100.0,
-            "allow_fractional": bool(st.session_state["mb_frac"]),
-        }
-        rec = save_strategy(symbol_manual, "atr_breakout", params_now, name=strategy_name, is_default=set_default)
-        if set_default:
-            set_default_strategy(symbol_manual, "atr_breakout", rec["id"])
-        st.success(f"Saved strategy: {rec['name']}  ({rec['id'][:8]})")
+# ---------- Bounds ----------
+st.subheader("Parameter Bounds")
+# Core
+cA1, cA2, cA3 = st.columns(3)
+with cA1:
+    breakout_min = st.number_input("Breakout min", 10, 400, 20, 1, key="b_breakout_min")
+    exit_min = st.number_input("Exit min", 5, 300, 10, 1, key="b_exit_min")
+    atr_min = st.number_input("ATR min", 5, 150, 7, 1, key="b_atr_min")
+with cA2:
+    breakout_max = st.number_input("Breakout max", breakout_min + 1, 500, 120, 1, key="b_breakout_max")
+    exit_max = st.number_input("Exit max", exit_min + 1, 300, 60, 1, key="b_exit_max")
+    atr_max = st.number_input("ATR max", atr_min + 1, 200, 30, 1, key="b_atr_max")
+with cA3:
+    atr_multiple_min = st.number_input("ATR multiple min", 0.5, 10.0, 1.5, 0.1, key="b_atrmult_min")
+    atr_multiple_max = st.number_input("ATR multiple max", atr_multiple_min + 0.1, 15.0, 5.0, 0.1, key="b_atrmult_max")
+    risk_per_trade_min = st.number_input("Risk/trade min (%)", 0.05, 5.0, 0.2, 0.05, key="b_rpt_min")
+    risk_per_trade_max = st.number_input("Risk/trade max (%)", risk_per_trade_min + 0.05, 10.0, 2.0, 0.05, key="b_rpt_max")
 
+# Risk/TP/Costs
+cB1, cB2, cB3 = st.columns(3)
+with cB1:
+    tp_multiple_min = st.number_input("TP multiple min", 0.0, 10.0, 0.0, 0.1, key="b_tp_min")
+    tp_multiple_max = st.number_input("TP multiple max", tp_multiple_min + 0.1, 10.0, 6.0, 0.1, key="b_tp_max")
+with cB2:
+    cost_bps_min = st.number_input("Cost bps min", 0.0, 50.0, 0.0, 0.1, key="b_cost_min")
+    cost_bps_max = st.number_input("Cost bps max", cost_bps_min + 0.1, 50.0, 10.0, 0.1, key="b_cost_max")
+with cB3:
+    holding_min = st.number_input("Hold limit min (bars, 0=off)", 0, 252, 0, 1, key="b_hold_min")
+    holding_max = st.number_input("Hold limit max (bars)", holding_min + 1, 252, 120, 1, key="b_hold_max")
 
-# --------------------- Evolutionary Tuning -----------------------
-with tabs[1]:
-    st.markdown("Use an evolutionary algorithm to **maximize Sharpe**; load or save **Parameter Profiles** (bounds + run settings).")
+# Trend
+st.checkbox("Allow tuner to use Trend Filter (fast>slow & long SMA slope up)", value=True, key="b_allow_trend")
+cC1, cC2, cC3 = st.columns(3)
+with cC1:
+    sma_fast_min = st.number_input("SMA fast min", 5, 100, 10, 1, key="b_sma_fast_min")
+    sma_slow_min = st.number_input("SMA slow min", 10, 200, 40, 1, key="b_sma_slow_min")
+with cC2:
+    sma_fast_max = st.number_input("SMA fast max", sma_fast_min + 1, 150, 50, 1, key="b_sma_fast_max")
+    sma_slow_max = st.number_input("SMA slow max", sma_slow_min + 1, 250, 100, 1, key="b_sma_slow_max")
+with cC3:
+    sma_long_min = st.number_input("SMA long min", 50, 400, 100, 1, key="b_sma_long_min")
+    sma_long_max = st.number_input("SMA long max", sma_long_min + 1, 500, 300, 1, key="b_sma_long_max")
+    long_slope_min = st.number_input("Long slope len min", 5, 100, 10, 1, key="b_slope_min")
+    long_slope_max = st.number_input("Long slope len max", long_slope_min + 1, 100, 50, 1, key="b_slope_max")
 
-    # ---------- 1) Ticker & Parameter Profile ----------
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        symbol = st.text_input("Ticker", value="AAPL", key="ev_symbol").upper().strip()
-    with c2:
-        end = st.date_input("End Date", value=date.today(), key="ev_end")
-    with c3:
-        start = st.date_input("Start Date", value=end - timedelta(days=365*3), key="ev_start")
+# ---------- Run evolution ----------
+prog = st.progress(0, text="Idle")
 
-    st.markdown("**Parameter Profile (bounds + run settings)**")
-    profiles = list_param_bounds(symbol=symbol, model="atr_breakout")
-    prof_labels = ["Default (system)"]
-    prof_ids = ["__DEFAULT__"]
-    default_bounds = get_default_param_bounds(symbol, "atr_breakout")
-    if default_bounds:
-        prof_labels.append(f"★ Default for {symbol}  ({default_bounds['id'][:8]})")
-        prof_ids.append(default_bounds["id"])
-    for pb in profiles:
-        if default_bounds and pb["id"] == default_bounds["id"]:
-            continue
-        prof_labels.append(f"{pb['name']}  ({pb['id'][:8]})")
-        prof_ids.append(pb["id"])
+if st.button("Run Evolutionary Tuning", type="primary", key="btn_ev"):
+    b = Bounds(
+        breakout_min=int(breakout_min), breakout_max=int(breakout_max),
+        exit_min=int(exit_min), exit_max=int(exit_max),
+        atr_min=int(atr_min), atr_max=int(atr_max),
+        atr_multiple_min=float(atr_multiple_min), atr_multiple_max=float(atr_multiple_max),
+        risk_per_trade_min=float(risk_per_trade_min)/100.0, risk_per_trade_max=float(risk_per_trade_max)/100.0,
+        tp_multiple_min=float(tp_multiple_min), tp_multiple_max=float(tp_multiple_max),
+        allow_trend_filter=bool(st.session_state["b_allow_trend"]),
+        sma_fast_min=int(sma_fast_min), sma_fast_max=int(sma_fast_max),
+        sma_slow_min=int(sma_slow_min), sma_slow_max=int(sma_slow_max),
+        sma_long_min=int(sma_long_min), sma_long_max=int(sma_long_max),
+        long_slope_len_min=int(long_slope_min), long_slope_len_max=int(long_slope_max),
+        holding_period_min=int(holding_min), holding_period_max=int(holding_max),
+        cost_bps_min=float(cost_bps_min), cost_bps_max=float(cost_bps_max),
+        pop_size=int(pop_size), generations=int(generations),
+        crossover_rate=float(crossover_rate), mutation_rate=float(mutation_rate),
+    )
 
-    sel_prof_idx = st.selectbox("Profiles", list(range(len(prof_labels))),
-                                format_func=lambda i: prof_labels[i], index=0, key="ev_prof_idx")
+    def _cb(done: int, total: int, best_fit: float):
+        prog.progress(min(int(100 * done / total), 100), text=f"Generation {done}/{total} — best Sharpe: {best_fit:.2f}")
 
-    def _apply_profile_to_state(rec):
-        pr = rec["profile"]
-        st.session_state["ev_start"] = date.fromisoformat(pr["start"])
-        st.session_state["ev_end"] = date.fromisoformat(pr["end"])
-        st.session_state["ev_eq"] = float(pr.get("starting_equity", 10000))
-        st.session_state["ev_pop"] = int(pr.get("pop_size", 40))
-        st.session_state["ev_gen"] = int(pr.get("generations", 20))
-        st.session_state["ev_cr"] = float(pr.get("crossover_rate", 0.7))
-        st.session_state["ev_mr"] = float(pr.get("mutation_rate", 0.35))
-        b = pr["bounds"]
-        st.session_state["ev_bmin"] = int(b["breakout_min"])
-        st.session_state["ev_bmax"] = int(b["breakout_max"])
-        st.session_state["ev_emin"] = int(b["exit_min"])
-        st.session_state["ev_emax"] = int(b["exit_max"])
-        st.session_state["ev_amin"] = int(b["atr_min"])
-        st.session_state["ev_amax"] = int(b["atr_max"])
-        st.session_state["ev_am_min"] = float(b["atr_multiple_min"])
-        st.session_state["ev_am_max"] = float(b["atr_multiple_max"])
-        st.session_state["ev_rpt_min"] = float(b["risk_per_trade_min"]) * 100.0
-        st.session_state["ev_rpt_max"] = float(b["risk_per_trade_max"]) * 100.0
+    with st.spinner("Evolving…"):
+        try:
+            best_params, _best_metrics_fit, _hist = evolve_params(
+                symbol=symbol,
+                start=start.isoformat(),
+                end=end.isoformat(),
+                starting_equity=float(starting_equity),
+                bounds=b,
+                pop_size=int(pop_size),
+                generations=int(generations),
+                crossover_rate=float(crossover_rate),
+                mutation_rate=float(mutation_rate),
+                random_seed=42,
+                progress_cb=_cb,
+            )
+            prog.progress(100, text="Done")
 
-    if st.button("Load Profile", key="btn_load_prof"):
-        chosen_id = prof_ids[sel_prof_idx]
-        if chosen_id != "__DEFAULT__":
-            rec = get_param_bounds(chosen_id)
-            if rec:
-                _apply_profile_to_state(rec)
-                st.success(f"Loaded profile: {rec['name']}")
-                st.rerun()
-            else:
-                st.warning("Profile not found.")
-        else:
-            st.info("Loaded default system values.")
-
-    # ---------- 2) Editable run settings + bounds ----------
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        starting_equity = st.number_input("Starting Equity ($)", min_value=1000, value=10_000, step=500, key="ev_eq")
-    with c5:
-        pop_size = st.slider("Population size", 10, 200, 40, 5, key="ev_pop")
-        generations = st.slider("Generations", 5, 100, 20, 1, key="ev_gen")
-    with c6:
-        crossover_rate = st.slider("Crossover rate", 0.0, 1.0, 0.7, 0.05, key="ev_cr")
-        mutation_rate = st.slider("Mutation rate", 0.0, 1.0, 0.35, 0.05, key="ev_mr")
-
-    st.markdown("**Parameter bounds**")
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        breakout_min = st.number_input("Breakout min", 10, 400, 20, 1, key="ev_bmin")
-        breakout_max = st.number_input("Breakout max", breakout_min + 1, 500, 120, 1, key="ev_bmax")
-    with b2:
-        exit_min = st.number_input("Exit min", 5, 300, 10, 1, key="ev_emin")
-        exit_max = st.number_input("Exit max", exit_min + 1, 300, 60, 1, key="ev_emax")
-    with b3:
-        atr_min = st.number_input("ATR min", 5, 150, 7, 1, key="ev_amin")
-        atr_max = st.number_input("ATR max", atr_min + 1, 200, 30, 1, key="ev_amax")
-
-    r1, r2 = st.columns(2)
-    with r1:
-        atr_multiple_min = st.number_input("ATR multiple min", 0.5, 10.0, 1.5, 0.1, key="ev_am_min")
-        atr_multiple_max = st.number_input("ATR multiple max", atr_multiple_min + 0.1, 15.0, 5.0, 0.1, key="ev_am_max")
-    with r2:
-        risk_per_trade_min = st.number_input("Risk per trade min (%)", 0.05, 5.0, 0.2, 0.05, key="ev_rpt_min")
-        risk_per_trade_max = st.number_input("Risk per trade max (%)", risk_per_trade_min + 0.05, 10.0, 2.0, 0.05, key="ev_rpt_max")
-
-    # ---------- Helper: persistent results renderer ----------
-    def render_ev_results():
-        """Show best params/metrics if they exist in session; include SAVE forms."""
-        if "ev_best_params" not in st.session_state or "ev_best_metrics" not in st.session_state:
-            return
-
-        symbol_ss = st.session_state.get("ev_symbol", "TICKER")
-        st.subheader(f"Best Parameters — {symbol_ss}")
-        st.write(pd.DataFrame([st.session_state["ev_best_metrics"]]))
-
-        # Equity curve (already computed and stored), fallback to recompute if missing
-        eq = st.session_state.get("ev_best_equity")
-        if eq is None:
-            bp = st.session_state["ev_best_params"]
+            # Run one final backtest for consistent metrics & equity
             res_best = backtest_single(
-                symbol_ss,
-                st.session_state["ev_start"].isoformat(),
-                st.session_state["ev_end"].isoformat(),
-                bp["breakout_n"], bp["exit_n"], bp["atr_n"],
-                float(st.session_state["ev_eq"]),
-                atr_multiple=bp["atr_multiple"],
-                risk_per_trade=bp["risk_per_trade"],
+                symbol,
+                start.isoformat(),
+                end.isoformat(),
+                best_params["breakout_n"],
+                best_params["exit_n"],
+                best_params["atr_n"],
+                float(starting_equity),
+                atr_multiple=best_params["atr_multiple"],
+                risk_per_trade=best_params["risk_per_trade"],
                 allow_fractional=True,
             )
-            eq = res_best["equity"]
-        st.plotly_chart(
-            equity_chart(eq, title=f"Equity — {symbol_ss} (Best Params)"),
-            use_container_width=True,
-        )
-
-        # -------- Save Parameter Bounds (FORM) --------
-        with st.form("save_bounds_form", clear_on_submit=False):
-            st.markdown("**Save Parameter Bounds Profile**")
-            auto_name = (
-                f"{symbol_ss}_{st.session_state['ev_start']}_{st.session_state['ev_end']}"
-                f"_pop{st.session_state['ev_pop']}_gen{st.session_state['ev_gen']}"
-                f"_b{int(st.session_state['ev_bmin'])}-{int(st.session_state['ev_bmax'])}"
-                f"_e{int(st.session_state['ev_emin'])}-{int(st.session_state['ev_emax'])}"
-                f"_atr{int(st.session_state['ev_amin'])}-{int(st.session_state['ev_amax'])}"
-                f"_am{st.session_state['ev_am_min']:.1f}-{st.session_state['ev_am_max']:.1f}"
-                f"_rpt{st.session_state['ev_rpt_min']:.2f}-{st.session_state['ev_rpt_max']:.2f}"
+            # The engine already applies TP/Trend/Holding/Costs when called via evolve.
+            # backtest_single wrapper doesn't expose those; we keep equity/metrics from evolution result instead:
+            # recompute via engine directly using best_params to ensure parity:
+            from src.backtest.engine import ATRParams, backtest_atr_breakout
+            final_params = ATRParams(
+                breakout_n=int(best_params["breakout_n"]),
+                exit_n=int(best_params["exit_n"]),
+                atr_n=int(best_params["atr_n"]),
+                atr_multiple=float(best_params["atr_multiple"]),
+                risk_per_trade=float(best_params["risk_per_trade"]),
+                allow_fractional=True,
+                slippage_bp=5.0,
+                cost_bps=float(best_params.get("cost_bps", 1.0)),
+                fee_per_trade=0.0,
+                tp_multiple=(None if best_params.get("tp_multiple", 0.0) <= 0 else float(best_params["tp_multiple"])),
+                use_trend_filter=bool(best_params.get("use_trend_filter", False)),
+                sma_fast=int(best_params.get("sma_fast", 30)),
+                sma_slow=int(best_params.get("sma_slow", 50)),
+                sma_long=int(best_params.get("sma_long", 150)),
+                long_slope_len=int(best_params.get("long_slope_len", 15)),
+                holding_period_limit=(None if int(best_params.get("holding_period_limit", 0)) <= 0 else int(best_params["holding_period_limit"])),
             )
-            prof_name = st.text_input("Profile name", value=auto_name, key="ev_prof_name")
-            save_bounds = st.form_submit_button("Save Parameter Bounds")
-            if save_bounds:
-                profile = {
-                    "start": st.session_state["ev_start"].isoformat(),
-                    "end": st.session_state["ev_end"].isoformat(),
-                    "starting_equity": float(st.session_state["ev_eq"]),
-                    "pop_size": int(st.session_state["ev_pop"]),
-                    "generations": int(st.session_state["ev_gen"]),
-                    "crossover_rate": float(st.session_state["ev_cr"]),
-                    "mutation_rate": float(st.session_state["ev_mr"]),
-                    "bounds": {
-                        "breakout_min": int(st.session_state["ev_bmin"]),
-                        "breakout_max": int(st.session_state["ev_bmax"]),
-                        "exit_min": int(st.session_state["ev_emin"]),
-                        "exit_max": int(st.session_state["ev_emax"]),
-                        "atr_min": int(st.session_state["ev_amin"]),
-                        "atr_max": int(st.session_state["ev_amax"]),
-                        "atr_multiple_min": float(st.session_state["ev_am_min"]),
-                        "atr_multiple_max": float(st.session_state["ev_am_max"]),
-                        "risk_per_trade_min": float(st.session_state["ev_rpt_min"]) / 100.0,
-                        "risk_per_trade_max": float(st.session_state["ev_rpt_max"]) / 100.0,
-                    },
-                }
-                rec = save_param_bounds(symbol_ss, "atr_breakout", profile, name=prof_name, is_default=False)
-                st.success(f"Saved profile: {rec['name']}  ({rec['id'][:8]})")
+            final = backtest_atr_breakout(symbol, start.isoformat(), end.isoformat(), float(starting_equity), final_params)
 
-        # -------- Save Best Strategy (FORM) --------
-        with st.form("save_best_form", clear_on_submit=False):
-            st.markdown("**Save Best Model Params**")
-            default_best_name = f"{symbol_ss}-Best"
-            best_name = st.text_input("Strategy name", value=default_best_name, key="ev_best_name")
-            set_default_model = st.checkbox("Set as default model params for this ticker", value=False, key="ev_best_default")
-            save_best = st.form_submit_button("Save Best Strategy")
-            if save_best:
-                srec = save_strategy(symbol_ss, "atr_breakout", st.session_state["ev_best_params"], name=best_name, is_default=set_default_model)
-                if set_default_model:
-                    set_default_strategy(symbol_ss, "atr_breakout", srec["id"])
-                st.success(f"Saved best params as: {srec['name']}  ({srec['id'][:8]})")
+            st.session_state["ev_best_params"] = dict(best_params)
+            st.session_state["ev_best_metrics"] = final["metrics"]
+            st.session_state["ev_best_equity"] = final["equity"]
 
-        # Also update portfolio save hook
-        st.session_state["last_result"] = {"symbol": symbol_ss, "params": st.session_state["ev_best_params"]}
+            st.success("Evolution complete.")
+        except Exception as e:
+            st.error(f"Error during evolution: {e}")
 
-    # ---------- 3) Run evolutionary tuning ----------
-    prog = st.progress(0, text="Idle")
+# ---------- Results (persistent) ----------
+def _render_results():
+    if "ev_best_params" not in st.session_state or "ev_best_metrics" not in st.session_state:
+        return
+    st.subheader(f"Best Parameters — {st.session_state.get('ev_symbol', 'TICKER')}")
+    st.write(pd.DataFrame([st.session_state["ev_best_metrics"]]))
+    st.plotly_chart(
+        equity_chart(st.session_state["ev_best_equity"], title=f"Equity — {st.session_state.get('ev_symbol','TICKER')} (Best)"),
+        use_container_width=True,
+    )
 
-    if st.button("Run Evolutionary Tuning", type="primary", key="btn_ev"):
-        bounds = Bounds(
-            breakout_min=int(st.session_state["ev_bmin"]),
-            breakout_max=int(st.session_state["ev_bmax"]),
-            exit_min=int(st.session_state["ev_emin"]),
-            exit_max=int(st.session_state["ev_emax"]),
-            atr_min=int(st.session_state["ev_amin"]),
-            atr_max=int(st.session_state["ev_amax"]),
-            atr_multiple_min=float(st.session_state["ev_am_min"]),
-            atr_multiple_max=float(st.session_state["ev_am_max"]),
-            risk_per_trade_min=float(st.session_state["ev_rpt_min"]) / 100.0,
-            risk_per_trade_max=float(st.session_state["ev_rpt_max"]) / 100.0,
+    # Save Parameter Bounds Profile (FORM)
+    with st.form("save_bounds_form", clear_on_submit=False):
+        st.markdown("**Save Parameter Bounds Profile**")
+        auto_name = (
+            f"{symbol}_{start}_{end}"
+            f"_pop{st.session_state['ev_pop']}_gen{st.session_state['ev_gen']}"
+            f"_b{int(st.session_state['b_breakout_min'])}-{int(st.session_state['b_breakout_max'])}"
+            f"_e{int(st.session_state['b_exit_min'])}-{int(st.session_state['b_exit_max'])}"
+            f"_atr{int(st.session_state['b_atr_min'])}-{int(st.session_state['b_atr_max'])}"
+            f"_am{st.session_state['b_atrmult_min']:.1f}-{st.session_state['b_atrmult_max']:.1f}"
+            f"_rpt{st.session_state['b_rpt_min']:.2f}-{st.session_state['b_rpt_max']:.2f}"
+            f"_tp{st.session_state['b_tp_min']:.1f}-{st.session_state['b_tp_max']:.1f}"
+            f"_cost{st.session_state['b_cost_min']:.1f}-{st.session_state['b_cost_max']:.1f}"
         )
+        prof_name = st.text_input("Profile name", value=auto_name, key="ev_prof_name")
+        save_bounds = st.form_submit_button("Save Parameter Bounds")
+        if save_bounds:
+            profile = {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "starting_equity": float(st.session_state["ev_eq"]),
+                "pop_size": int(st.session_state["ev_pop"]),
+                "generations": int(st.session_state["ev_gen"]),
+                "crossover_rate": float(st.session_state["ev_cr"]),
+                "mutation_rate": float(st.session_state["ev_mr"]),
+                "bounds": {
+                    "breakout_min": int(st.session_state["b_breakout_min"]),
+                    "breakout_max": int(st.session_state["b_breakout_max"]),
+                    "exit_min": int(st.session_state["b_exit_min"]),
+                    "exit_max": int(st.session_state["b_exit_max"]),
+                    "atr_min": int(st.session_state["b_atr_min"]),
+                    "atr_max": int(st.session_state["b_atr_max"]),
+                    "atr_multiple_min": float(st.session_state["b_atrmult_min"]),
+                    "atr_multiple_max": float(st.session_state["b_atrmult_max"]),
+                    "risk_per_trade_min": float(st.session_state["b_rpt_min"]) / 100.0,
+                    "risk_per_trade_max": float(st.session_state["b_rpt_max"]) / 100.0,
+                    "tp_multiple_min": float(st.session_state["b_tp_min"]),
+                    "tp_multiple_max": float(st.session_state["b_tp_max"]),
+                    "allow_trend_filter": bool(st.session_state["b_allow_trend"]),
+                    "sma_fast_min": int(st.session_state["b_sma_fast_min"]),
+                    "sma_fast_max": int(st.session_state["b_sma_fast_max"]),
+                    "sma_slow_min": int(st.session_state["b_sma_slow_min"]),
+                    "sma_slow_max": int(st.session_state["b_sma_slow_max"]),
+                    "sma_long_min": int(st.session_state["b_sma_long_min"]),
+                    "sma_long_max": int(st.session_state["b_sma_long_max"]),
+                    "long_slope_len_min": int(st.session_state["b_slope_min"]),
+                    "long_slope_len_max": int(st.session_state["b_slope_max"]),
+                    "holding_period_min": int(st.session_state["b_hold_min"]),
+                    "holding_period_max": int(st.session_state["b_hold_max"]),
+                    "cost_bps_min": float(st.session_state["b_cost_min"]),
+                    "cost_bps_max": float(st.session_state["b_cost_max"]),
+                },
+            }
+            rec = save_param_bounds(symbol, "atr_breakout", profile, name=prof_name, is_default=False)
+            st.success(f"Saved profile: {rec['name']}  ({rec['id'][:8]})")
 
-        def _cb(done: int, total: int, best_fit: float):
-            prog.progress(min(int(100 * done / total), 100), text=f"Generation {done}/{total} — best Sharpe: {best_fit:.2f}")
+    # Save Best Strategy (FORM)
+    with st.form("save_best_form", clear_on_submit=False):
+        st.markdown("**Save Best Model Params**")
+        default_best_name = f"{symbol}-Best"
+        best_name = st.text_input("Strategy name", value=default_best_name, key="ev_best_name")
+        set_default_model = st.checkbox("Set as default model params for this ticker", value=False, key="ev_best_default")
+        save_best = st.form_submit_button("Save Best Strategy")
+        if save_best:
+            srec = save_strategy(symbol, "atr_breakout", st.session_state["ev_best_params"], name=best_name, is_default=set_default_model)
+            if set_default_model:
+                set_default_strategy(symbol, "atr_breakout", srec["id"])
+            st.success(f"Saved best params as: {srec['name']}  ({srec['id'][:8]})")
 
-        with st.spinner("Evolving…"):
-            try:
-                best_params, best_metrics, _history = evolve_params(
-                    symbol=st.session_state["ev_symbol"],
-                    start=st.session_state["ev_start"].isoformat(),
-                    end=st.session_state["ev_end"].isoformat(),
-                    starting_equity=float(st.session_state["ev_eq"]),
-                    bounds=bounds,
-                    pop_size=int(st.session_state["ev_pop"]),
-                    generations=int(st.session_state["ev_gen"]),
-                    crossover_rate=float(st.session_state["ev_cr"]),
-                    mutation_rate=float(st.session_state["ev_mr"]),
-                    random_seed=42,
-                    progress_cb=_cb,
-                )
-                prog.progress(100, text="Done")
+    # For portfolio save block
+    st.session_state["last_result"] = {"symbol": symbol, "params": st.session_state["ev_best_params"]}
 
-                # Compute and persist results so they survive reruns
-                res_best = backtest_single(
-                    st.session_state["ev_symbol"],
-                    st.session_state["ev_start"].isoformat(),
-                    st.session_state["ev_end"].isoformat(),
-                    best_params["breakout_n"],
-                    best_params["exit_n"],
-                    best_params["atr_n"],
-                    float(st.session_state["ev_eq"]),
-                    atr_multiple=best_params["atr_multiple"],
-                    risk_per_trade=best_params["risk_per_trade"],
-                    allow_fractional=True,
-                )
+_render_results()
 
-                st.session_state["ev_best_params"] = best_params
-                st.session_state["ev_best_metrics"] = res_best["metrics"]  # use backtested metrics for consistency
-                st.session_state["ev_best_equity"] = res_best["equity"]
-
-                st.success("Evolution complete.")
-            except Exception as e:
-                st.error(f"Error during evolution: {e}")
-
-    # Render results if available (persists across reruns/checkbox toggles)
-    render_ev_results()
-
-# ------------------- Save to Portfolio (shared) -------------------
+# ---------- Save to Portfolio ----------
 st.divider()
 st.subheader("Save this configuration to a Portfolio")
 
@@ -372,7 +379,7 @@ if choice == "— Create new —":
 if st.button("Save to Portfolio", key="btn_save"):
     last = st.session_state.get("last_result")
     if not last:
-        st.warning("Run a backtest or tuning first.")
+        st.warning("Run tuning first.")
     else:
         if choice == "— Create new —":
             if not new_name.strip():
