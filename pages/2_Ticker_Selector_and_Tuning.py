@@ -2,7 +2,8 @@
 import pandas as pd
 import streamlit as st
 from datetime import date, timedelta
-
+from pathlib import Path
+import json
 from src.models.atr_breakout import backtest_single
 from src.tuning.evolve import evolve_params, Bounds
 from src.utils.plotting import equity_chart
@@ -11,6 +12,38 @@ from src.storage import (
     save_strategy, set_default_strategy,
     list_param_bounds, save_param_bounds, get_param_bounds, get_default_param_bounds
 )
+
+@st.cache_data
+def load_universe_index() -> dict:
+    """
+    Reads data/indexes.json and returns a dict:
+    {
+      "All (combined)": [tickers...],
+      "S&P 500": [...],
+      "Nasdaq-100": [...],
+      "Dow Jones Industrial Average": [...]
+    }
+    (tickers are de-duplicated and sorted)
+    """
+    p = Path(__file__).resolve().parents[1] / "data" / "indexes.json"
+    if not p.exists():
+        return {"All (combined)": []}
+
+    with p.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    indexes = payload.get("indexes", {})
+    # dedupe while preserving order, then sort
+    def _dedupe_sorted(seq):
+        return sorted(dict.fromkeys(seq))
+
+    combined = []
+    for lst in indexes.values():
+        combined.extend(lst)
+    combined = _dedupe_sorted(combined)
+
+    cleaned = {name: _dedupe_sorted(lst) for name, lst in indexes.items()}
+    return {"All (combined)": combined, **cleaned}
 
 # ---- Apply queued profile BEFORE widgets are created ----
 if "_apply_profile_payload" in st.session_state:
@@ -60,7 +93,39 @@ st.title("🧬 Evolutionary Tuning (ATR Breakout)")
 # ---------- Ticker & Dates ----------
 c1, c2, c3 = st.columns(3)
 with c1:
-    symbol = st.text_input("Ticker", value="AAPL", key="ev_symbol").upper().strip()
+    # --- Universe & Ticker dropdowns ---
+    universe_map = load_universe_index()
+    universes = list(universe_map.keys()) or ["All (combined)"]
+
+    # remember last universe (optional)
+    default_universe = st.session_state.get("ev_universe", universes[0])
+    if default_universe not in universes:
+        default_universe = universes[0]
+
+    colU, colT = st.columns(2)
+    with colU:
+        universe = st.selectbox("Universe", universes,
+                                index=universes.index(default_universe),
+                                key="ev_universe")
+
+    tickers = universe_map.get(universe, [])
+    # Seed ticker dropdown with last chosen symbol if it’s still in list
+    seed_symbol = st.session_state.get("ev_symbol", tickers[0] if tickers else "AAPL")
+    if seed_symbol not in tickers and tickers:
+        seed_symbol = tickers[0]
+
+    with colT:
+        if tickers:
+            symbol = st.selectbox("Ticker", tickers,
+                                  index=tickers.index(seed_symbol),
+                                  key="ev_symbol_select")
+        else:
+            # Fallback if file missing/empty
+            symbol = st.text_input("Ticker", value=seed_symbol)
+
+    # keep the same key your code expects elsewhere
+    st.session_state["ev_symbol"] = symbol.upper().strip()
+    symbol = st.session_state["ev_symbol"]
 with c2:
     end = st.date_input("End Date", value=date.today(), key="ev_end")
 with c3:
