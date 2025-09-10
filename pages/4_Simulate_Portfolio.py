@@ -3,7 +3,9 @@ import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
 
-from src.storage import list_portfolios, add_simulation, list_strategies, get_strategy
+from src.storage import (
+    list_portfolios, add_simulation, list_strategies, get_strategy, get_default_strategy
+)
 from src.models.atr_breakout import backtest_single
 from src.utils.plotting import equity_chart
 
@@ -35,28 +37,34 @@ with colC:
 
 st.subheader(f"Tickers in '{p['name']}'")
 
-# Strategy selection per ticker
 strategy_selections = {}
 for it in items:
     symbol = it["symbol"]
-    # Build options: first "Use portfolio params", then strategies for this ticker
-    opts = [("Use portfolio params", "PORTFOLIO_DEFAULT")]
-    for s in list_strategies(symbol=symbol, model="atr_breakout"):
-        label = f"{s['name']}  ({s['id'][:8]})"
-        opts.append((label, s["id"]))
+    model = it["model"]
 
-    labels = [x[0] for x in opts]
-    ids = [x[1] for x in opts]
-    key = f"strategy_{p['id']}_{symbol}"
-    default_idx = 0
-    sel_label = st.selectbox(
-        f"{symbol} strategy",
-        labels,
-        index=default_idx,
-        key=key,
-        help="Choose which saved strategy to apply. Default: the params saved in the portfolio."
-    )
-    strategy_selections[symbol] = ids[labels.index(sel_label)]
+    # Build options: default strategy (if exists) first, then others, then a "Use portfolio params" fallback
+    strategies = list_strategies(symbol=symbol, model=model)
+    default_strat = get_default_strategy(symbol, model)
+
+    opts = []
+    ids = []
+
+    if default_strat:
+        opts.append(f"★ Default: {default_strat['name']}  ({default_strat['id'][:8]})")
+        ids.append(default_strat["id"])
+
+    for s in strategies:
+        if not default_strat or s["id"] != default_strat["id"]:
+            opts.append(f"{s['name']}  ({s['id'][:8]})")
+            ids.append(s["id"])
+
+    # Always include the portfolio-saved params option
+    opts.append("Use portfolio params")
+    ids.append("PORTFOLIO_DEFAULT")
+
+    default_idx = 0  # show default strategy first if exists, otherwise first list item; user can pick "Use portfolio params"
+    sel = st.selectbox(f"{symbol} — strategy", opts, index=default_idx, key=f"strategy_{p['id']}_{symbol}")
+    strategy_selections[symbol] = ids[opts.index(sel)]
 
 st.write("---")
 
