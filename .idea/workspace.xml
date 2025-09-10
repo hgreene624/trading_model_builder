@@ -4,7 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="updated with addtional model params and working profile selectors" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/4_Simulate_Portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/4_Simulate_Portfolio.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/tuning/evolve.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/tuning/evolve.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -68,6 +72,7 @@
 }</component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/data" />
       <recent name="$PROJECT_DIR$" />
       <recent name="$PROJECT_DIR$/my-trading-app" />
       <recent name="$PROJECT_DIR$/Initial FIles" />
@@ -90,7 +95,7 @@
       <option name="presentableId" value="Default" />
       <updated>1757515239328</updated>
       <workItem from="1757515240338" duration="9662000" />
-      <workItem from="1757526380162" duration="4346000" />
+      <workItem from="1757526380162" duration="5762000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -156,7 +161,15 @@
       <option name="project" value="LOCAL" />
       <updated>1757531803682</updated>
     </task>
-    <option name="localTasksCounter" value="9" />
+    <task id="LOCAL-00009" summary="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy">
+      <option name="closed" value="true" />
+      <created>1757532285448</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1757532285448</updated>
+    </task>
+    <option name="localTasksCounter" value="10" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -179,6 +192,7 @@
     <MESSAGE value="V1 evolutionary tuning" />
     <MESSAGE value="working param and model profiles" />
     <MESSAGE value="updated with addtional model params and working profile selectors" />
-    <option name="LAST_COMMIT_MESSAGE" value="updated with addtional model params and working profile selectors" />
+    <MESSAGE value="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy" />
+    <option name="LAST_COMMIT_MESSAGE" value="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy" />
   </component>
 </project>

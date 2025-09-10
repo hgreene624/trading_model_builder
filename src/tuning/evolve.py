@@ -180,8 +180,16 @@ def _fitness(symbol: str, start: str, end: str, starting_equity: float, ind: Dic
     )
     res = backtest_atr_breakout(symbol, start, end, float(starting_equity), params)
     metrics = res["metrics"]
-    # Objective = Sharpe (could add DD penalty later)
-    return float(metrics.get("sharpe", 0.0)), metrics
+
+    # Blend risk & return:
+    # score = 0.5*Sharpe + 0.4*TotalReturn - 0.1*DrawdownPenalty
+    sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+    total_return = float(metrics.get("total_return", 0.0) or 0.0)  # e.g. 0.12 = +12%
+    max_dd = float(metrics.get("max_drawdown", 0.0) or 0.0)  # negative value
+    dd_penalty = max(0.0, -max_dd)
+
+    score = 0.5 * sharpe + 0.4 * total_return - 0.1 * dd_penalty
+    return score, metrics
 
 
 def evolve_params(
