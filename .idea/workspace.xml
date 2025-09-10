@@ -5,7 +5,12 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="Working V1 framework. No evolution algo">
+      <change afterPath="$PROJECT_DIR$/bt_check.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/backtest/engine.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/backtest/metrics.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/tuning/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/atr_breakout.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/atr_breakout.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -35,7 +40,7 @@
 }]]></component>
   <component name="GithubPullRequestsUISettings"><![CDATA[{
   "selectedUrlAndAccountId": {
-    "url": "https://github.com/hgreene624/aplaca_trader",
+    "url": "https://github.com/hgreene624/alpaca_trader.git",
     "accountId": "1e92545f-1488-456d-bba4-9ce5a4ab4895"
   }
 }]]></component>
@@ -43,6 +48,9 @@
   "associatedIndex": 4
 }]]></component>
   <component name="ProjectId" id="32Vok2LBOakOgGDlM2tZJLUTjW7" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -88,7 +96,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1757515239328</updated>
-      <workItem from="1757515240338" duration="8316000" />
+      <workItem from="1757515240338" duration="9481000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -114,7 +122,15 @@
       <option name="project" value="LOCAL" />
       <updated>1757524603313</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="Working V1 framework. No evolution algo">
+      <option name="closed" value="true" />
+      <created>1757525043412</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1757525043412</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
