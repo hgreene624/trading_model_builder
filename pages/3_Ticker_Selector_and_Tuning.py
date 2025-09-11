@@ -1,4 +1,4 @@
-# pages/2_Ticker_Selector_and_Tuning.py
+# pages/3_Ticker_Selector_and_Tuning.py
 import pandas as pd
 import streamlit as st
 from datetime import date, timedelta

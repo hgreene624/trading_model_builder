@@ -28,8 +28,8 @@ DIRS = [
 
 FILES = [
     "Home.py",
-    "pages/2_Ticker_Selector_and_Tuning.py",
-    "pages/3_Portfolios.py",
+    "pages/3_Ticker_Selector_and_Tuning.py",
+    "pages/1_Portfolios.py",
     "pages/4_Simulate_Portfolio.py",
     "src/__init__.py",
     "src/storage.py",
@@ -50,8 +50,8 @@ FILES = [
 
 CONTENT = {
     "Home.py": "# TODO: Dashboard page\n",
-    "pages/2_Ticker_Selector_and_Tuning.py": "# TODO: Ticker selector & tuning page\n",
-    "pages/3_Portfolios.py": "# TODO: Portfolios management page\n",
+    "pages/3_Ticker_Selector_and_Tuning.py": "# TODO: Ticker selector & tuning page\n",
+    "pages/1_Portfolios.py": "# TODO: Portfolios management page\n",
     "pages/4_Simulate_Portfolio.py": "# TODO: Portfolio simulation page\n",
     "src/__init__.py": "",
     "src/storage.py": "# TODO: JSON storage helpers\n",

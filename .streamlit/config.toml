@@ -4,3 +4,7 @@ primaryColor = "#16a085"
 backgroundColor = "#0e1117"
 secondaryBackgroundColor = "#1b1f2a"
 textColor = "#fafafa"
+
+[server]
+runOnSave = true
+fileWatcherType = "poll"   # more robust than OS events, a bit more CPU
