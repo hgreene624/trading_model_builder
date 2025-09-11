@@ -1,18 +1,18 @@
+# pages/1_Portfolios.py
 from __future__ import annotations
 
-import os
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
-from typing import List, Dict, Optional
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-
 from dotenv import load_dotenv
 
-from src.universe.indexes import supported_indexes, fetch_indexes
+# Import the universe module so we can access the SUPPORTED catalog (names + URLs)
+from src.universe import indexes as UNV
 from src.storage import list_portfolios, load_portfolio, save_portfolio
+
 try:
     # prefer cached loader if present
     from src.data.cache import get_ohlcv_cached as load_ohlcv_window
@@ -26,16 +26,21 @@ load_dotenv()
 
 st.title("🗂️ Portfolios — Build from Indexes")
 
-# ---- Controls
-idx_df = supported_indexes()
-index_map = {row["title"]: row["key"] for _, row in idx_df.iterrows()}
+# ---- Controls ---------------------------------------------------------------
+
+# Build a {display_name -> key} map from the SUPPORTED catalog
+index_map = {meta["name"]: key for key, meta in UNV.SUPPORTED.items()}
+
 choices = st.multiselect(
     "Select index collections",
     options=list(index_map.keys()),
-    default=["S&P 500", "Nasdaq-100"]
+    default=[name for name in ["S&P 500", "Nasdaq-100"] if name in index_map],
 )
-force_refresh = st.checkbox("Force refresh index membership (fetch from Wikipedia)", value=False,
-                            help="If off, we use cached constituents under storage/universe/.")
+force_refresh = st.checkbox(
+    "Force refresh index membership (fetch from Wikipedia)",
+    value=False,
+    help="If off, we use cached constituents under storage/universe/."
+)
 
 # Timeline defaults
 today = date.today()
@@ -46,17 +51,17 @@ select_end = st.date_input("Selection window end (OOS)", value=date(today.year -
 
 st.caption("Priors → learn robust bounds. Selection → rank names out-of-sample. You can tune & simulate later.")
 
-# ---- Fetch button
+# ---- Fetch button -----------------------------------------------------------
 go = st.button("📥 Get & cache data for selected indexes", use_container_width=True)
 
-# ---- Workspace state
+# ---- Workspace state --------------------------------------------------------
 if "idx_members" not in st.session_state:
     st.session_state.idx_members = pd.DataFrame()
 
 if go and choices:
     keys = [index_map[c] for c in choices]
     with st.spinner("Fetching index constituents…"):
-        members = fetch_indexes(keys, force_refresh=force_refresh)
+        members = UNV.fetch_indexes(keys, force_refresh=force_refresh)
 
     if members.empty:
         st.error("No members fetched. Check your network (Wikipedia) or try again.")
@@ -111,21 +116,24 @@ if go and choices:
     st.session_state.idx_members = members
     st.success(f"Cached data for {len(rows)} symbols. Misses: {misses}. Snapshot saved to {snap_path.name}.")
 
-# ---- If we have members, show filter panel
+# ---- If we have members, show filter panel ----------------------------------
 if not st.session_state.idx_members.empty:
     members = st.session_state.idx_members.copy()
     st.subheader("Filter universe")
 
-    # sector list (may be blank if fetch failed to get sector)
-    sectors = sorted([s for s in members["sector"].dropna().unique().tolist() if s])
+    # sector list (may be blank if fetch couldn't get sector)
+    sectors = sorted([s for s in members.get("sector", pd.Series(dtype=str)).dropna().unique().tolist() if s])
     colA, colB, colC = st.columns(3)
     with colA:
         sel_sectors = st.multiselect("Sectors", options=sectors, default=sectors)
     with colB:
         min_price = st.number_input("Min median close (priors)", min_value=0.0, value=5.0, step=0.5)
     with colC:
-        min_dvol = st.number_input("Min median $ volume (priors)", min_value=0.0, value=2e7, step=1e6,
-                                   help="Median of close*volume over the Priors window")
+        min_dvol = st.number_input(
+            "Min median $ volume (priors)",
+            min_value=0.0, value=2e7, step=1e6,
+            help="Median of close*volume over the Priors window"
+        )
 
     # apply filters
     filt = pd.Series(True, index=members.index)
@@ -137,10 +145,12 @@ if not st.session_state.idx_members.empty:
     filtered = members.loc[filt].copy()
     st.write(f"After filters: **{len(filtered)}** / {len(members)} tickers remain.")
 
-    st.dataframe(filtered[["symbol", "name", "sector", "median_close_priors", "median_dollar_vol_priors"]]
-                 .sort_values("median_dollar_vol_priors", ascending=False)
-                 .reset_index(drop=True),
-                 use_container_width=True, height=360)
+    st.dataframe(
+        filtered[["symbol", "name", "sector", "median_close_priors", "median_dollar_vol_priors"]]
+        .sort_values("median_dollar_vol_priors", ascending=False)
+        .reset_index(drop=True),
+        use_container_width=True, height=360
+    )
 
     st.subheader("Save to portfolio")
     portfolios = list_portfolios()

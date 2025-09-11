@@ -5,3 +5,4 @@ plotly>=5.22
 yfinance>=0.2.43
 python-dotenv>=1.0
 alpaca-py>=0.21
+lxml>6.0.1

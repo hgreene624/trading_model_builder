@@ -1,232 +1,236 @@
-"""
-Fetch and cache index constituents (symbols + name + sector if available).
-
-We try Wikipedia via pandas.read_html (requires lxml or html5lib). If that fails,
-we fall back to any existing cached copy under storage/universe/{key}.json.
-
-Supported:
-- sp500
-- nasdaq100
-- dow30
-"""
-
+# src/universe/indexes.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Optional
-import time
 import json
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
+# We try to fetch from Wikipedia with pandas.read_html.
+# To harden against environments without HTML parsers or flaky network,
+# we cache results under storage/universe/*.json and fall back to a small
+# built-in list so the UI never hard-stops with "No members fetched".
 
-CACHE_DIR = Path("storage/universe")
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
+UNIVERSE_DIR = Path("storage/universe")
+UNIVERSE_DIR.mkdir(parents=True, exist_ok=True)
 
+SUPPORTED: Dict[str, Dict[str, str]] = {
+    "sp500": {
+        "name": "S&P 500",
+        "url": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+    },
+    "nasdaq100": {
+        "name": "Nasdaq-100",
+        "url": "https://en.wikipedia.org/wiki/Nasdaq-100",
+    },
+    "dow30": {
+        "name": "Dow 30",
+        "url": "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average",
+    },
+}
 
-@dataclass
-class IndexSpec:
-    key: str
-    title: str
-    wiki_url: str
-    symbol_col_candidates: List[str]
-    name_col_candidates: List[str]
-    sector_col_candidates: List[str]
-
-
-SUPPORTED_INDEXES: Dict[str, IndexSpec] = {
-    "sp500": IndexSpec(
-        key="sp500",
-        title="S&P 500",
-        wiki_url="https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-        symbol_col_candidates=["Symbol", "Ticker"],
-        name_col_candidates=["Security", "Company", "Name"],
-        sector_col_candidates=["GICS Sector", "Sector"],
-    ),
-    "nasdaq100": IndexSpec(
-        key="nasdaq100",
-        title="Nasdaq-100",
-        wiki_url="https://en.wikipedia.org/wiki/Nasdaq-100",
-        symbol_col_candidates=["Ticker", "Symbol"],
-        name_col_candidates=["Company", "Name", "Security"],
-        sector_col_candidates=["GICS Sector", "Sector"],
-    ),
-    "dow30": IndexSpec(
-        key="dow30",
-        title="Dow 30",
-        wiki_url="https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average",
-        symbol_col_candidates=["Symbol", "Ticker"],
-        name_col_candidates=["Company", "Name", "Security"],
-        sector_col_candidates=["Industry", "Sector"],
-    ),
+# Minimal seeds to avoid empty results if web + cache both fail
+FALLBACK: Dict[str, List[str]] = {
+    "sp500": ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "BRK-B", "JPM", "XOM", "UNH"],
+    "nasdaq100": ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "PEP", "AVGO", "COST"],
+    "dow30": ["AAPL", "MSFT", "GS", "JPM", "DIS", "HD", "KO", "PG", "V", "WMT"],
 }
 
 
-def _read_wiki_table(url: str) -> Optional[pd.DataFrame]:
+def supported_indexes() -> List[str]:
+    return list(SUPPORTED.keys())
+
+
+def _cache_path(key: str) -> Path:
+    return UNIVERSE_DIR / f"{key}.json"
+
+
+def _norm_symbol(x: object) -> str:
+    s = str(x).strip().upper()
+    # Common class-share normalizations (BRK.B -> BRK-B)
+    s = s.replace(".", "-")
+    # Remove footnote markers or stray characters
+    s = s.replace("†", "").replace("*", "")
+    # Very short guards
+    return s
+
+
+def _extract_wiki_tableframes(html: str) -> List[pd.DataFrame]:
+    # pandas.read_html requires an HTML parser (lxml or html5lib). If not
+    # installed, this will raise and we’ll fall back to cache/seed.
     try:
-        tables = pd.read_html(url)
-        # Heuristic: choose the biggest table with a 'Symbol'/'Ticker' column
-        best = None
-        best_rows = 0
-        for t in tables:
-            cols = [str(c) for c in t.columns]
-            if any("Symbol" in c or "Ticker" in c for c in cols):
-                if len(t) > best_rows:
-                    best = t
-                    best_rows = len(t)
-        return best
+        return pd.read_html(html)  # type: ignore[attr-defined]
+    except Exception:
+        return []
+
+
+def _pick_members_table(tables: Sequence[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    # Heuristics: find a table containing a plausible ticker column
+    cand_names = {"symbol", "ticker", "code"}
+    best: Optional[pd.DataFrame] = None
+    best_score = 0
+
+    for t in tables:
+        # Normalize col labels
+        cols = [str(c).strip() for c in t.columns]
+        lower = [c.lower() for c in cols]
+        colmap = {c.lower(): c for c in cols}
+        # candidate ticker column present?
+        ticker_key = next((c for c in lower if c in cand_names), None)
+        if ticker_key is None:
+            continue
+        tk_col = colmap[ticker_key]
+        # score by number of non-null entries
+        score = t[tk_col].notna().sum()
+        if score > best_score:
+            best = t.copy()
+            best_score = score
+    return best
+
+
+def _coerce_members(df: pd.DataFrame, index_key: str) -> pd.DataFrame:
+    # Map commonly occurring column names to canonical ones
+    rename_map = {}
+    for c in df.columns:
+        lc = str(c).strip().lower()
+        if lc in ("symbol", "ticker", "code"):
+            rename_map[c] = "symbol"
+        elif lc in ("security", "company", "company name", "name"):
+            rename_map[c] = "name"
+        elif lc in ("gics sector", "sector"):
+            rename_map[c] = "sector"
+        elif lc in ("gics sub-industry", "industry", "sub-industry"):
+            rename_map[c] = "industry"
+
+    df2 = df.rename(columns=rename_map)
+    if "symbol" not in df2.columns:
+        # Give up on this table
+        return pd.DataFrame(columns=["symbol", "name", "sector", "industry", "index", "source"])  # empty
+
+    out = pd.DataFrame()
+    out["symbol"] = df2["symbol"].map(_norm_symbol)
+    out["name"] = df2.get("name")
+    out["sector"] = df2.get("sector", "Unknown")
+    out["industry"] = df2.get("industry")
+    out["index"] = index_key
+    out["source"] = "web:wikipedia"
+
+    # Drop NA and duplicates
+    out = out.dropna(subset=["symbol"]).drop_duplicates(subset=["symbol"]).reset_index(drop=True)
+    return out
+
+
+def _fetch_from_web(key: str, url: str) -> pd.DataFrame:
+    # Use requests with a real UA to reduce blocking
+    import requests
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        )
+    }
+    r = requests.get(url, headers=headers, timeout=20)
+    r.raise_for_status()
+
+    tables = _extract_wiki_tableframes(r.text)
+    if not tables:
+        return pd.DataFrame(columns=["symbol", "name", "sector", "industry", "index", "source"])  # empty
+
+    t = _pick_members_table(tables)
+    if t is None:
+        return pd.DataFrame(columns=["symbol", "name", "sector", "industry", "index", "source"])  # empty
+
+    return _coerce_members(t, key)
+
+
+def _read_cache(key: str) -> Optional[pd.DataFrame]:
+    p = _cache_path(key)
+    if not p.exists():
+        return None
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        df = pd.DataFrame(payload.get("rows", []))
+        return df
     except Exception:
         return None
 
 
-def _pick_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    for c in candidates:
-        if c in df.columns:
-            return c
-    # also try loose match ignoring case and spaces
-    low = {str(c).strip().lower(): c for c in df.columns}
-    for c in candidates:
-        key = c.strip().lower()
-        if key in low:
-            return low[key]
-    return None
+def _write_cache(key: str, df: pd.DataFrame) -> None:
+    p = _cache_path(key)
+    payload = {
+        "index": key,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "rows": df.to_dict(orient="records"),
+    }
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _normalize_symbols(s: pd.Series) -> pd.Series:
-    # Strip whitespace, drop periods on some symbol formats (e.g., BRK.B -> BRK-B? We'll leave as is)
-    return s.astype(str).str.strip().str.upper().str.replace(r"\s+", "", regex=True)
+def fetch_index(key: str, force_refresh: bool = False) -> pd.DataFrame:
+    """Return a DataFrame with columns: symbol, name, sector, industry, index, source.
 
-
-def fetch_index(spec_key: str, force_refresh: bool = False) -> pd.DataFrame:
+    Order of attempts: cache → web → built-in fallback seeds.
     """
-    Return a DataFrame with columns: symbol, name, sector, index_key, fetched_at.
-    Caches to storage/universe/{key}.json
-    """
-    if spec_key not in SUPPORTED_INDEXES:
-        raise ValueError(f"Unsupported index key: {spec_key}")
+    if key not in SUPPORTED:
+        raise KeyError(f"Unsupported index key: {key}")
 
-    spec = SUPPORTED_INDEXES[spec_key]
-    cache_file = CACHE_DIR / f"{spec.key}.json"
+    if not force_refresh:
+        cached = _read_cache(key)
+        if cached is not None and len(cached) > 0:
+            return cached
 
-    # Load from cache if not forced
-    if cache_file.exists() and not force_refresh:
-        try:
-            data = json.loads(cache_file.read_text(encoding="utf-8"))
-            return pd.DataFrame(data)
-        except Exception:
-            pass  # fallthrough to refetch
-
-    df = _read_wiki_table(spec.wiki_url)
-    if df is None or df.empty:
-        # fallback to cache if exists
-        if cache_file.exists():
-            data = json.loads(cache_file.read_text(encoding="utf-8"))
-            return pd.DataFrame(data)
-        raise RuntimeError(f"Failed to read index members from {spec.title} wiki page")
-
-    sym_col = _pick_col(df, spec.symbol_col_candidates)
-    name_col = _pick_col(df, spec.name_col_candidates)
-    sector_col = _pick_col(df, spec.sector_col_candidates)
-
-    if sym_col is None:
-        raise RuntimeError(f"Could not find symbol column for {spec.title}")
-
-    out = pd.DataFrame()
-    out["symbol"] = _normalize_symbols(df[sym_col])
-    out["name"] = df[name_col].astype(str) if name_col else ""
-    out["sector"] = df[sector_col].astype(str) if sector_col else ""
-    out["index_key"] = spec.key
-    out["index_title"] = spec.title
-    out["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
-
-    # Dedup (some tables include class shares)
-    out = out.drop_duplicates(subset=["symbol"]).reset_index(drop=True)
-
-    # Cache
+    # Try web fetch
     try:
-        cache_file.write_text(out.to_json(orient="records"), encoding="utf-8")
+        df = _fetch_from_web(key, SUPPORTED[key]["url"])
+        if len(df) > 0:
+            _write_cache(key, df)
+            return df
     except Exception:
-        pass
+        pass  # fall through to cache/fallback
 
-    return out
+    # Try cache again (maybe created earlier by another run)
+    cached = _read_cache(key)
+    if cached is not None and len(cached) > 0:
+        return cached
+
+    # Final fallback: minimal seed list
+    seeds = FALLBACK.get(key, [])
+    df = pd.DataFrame({
+        "symbol": [
+            _norm_symbol(s) for s in seeds
+        ],
+        "name": None,
+        "sector": "Unknown",
+        "industry": None,
+        "index": key,
+        "source": "fallback:seed",
+    })
+    if len(df) > 0:
+        _write_cache(key, df)
+    return df
 
 
-def fetch_indexes(keys: List[str], force_refresh: bool = False) -> pd.DataFrame:
-    frames = []
+def fetch_indexes(keys: Sequence[str], force_refresh: bool = False) -> pd.DataFrame:
+    frames: List[pd.DataFrame] = []
     for k in keys:
         try:
             frames.append(fetch_index(k, force_refresh=force_refresh))
         except Exception:
             continue
     if not frames:
-        return pd.DataFrame(columns=["symbol", "name", "sector", "index_key", "index_title", "fetched_at"])
-    return pd.concat(frames, ignore_index=True)
+        return pd.DataFrame(columns=["symbol", "name", "sector", "industry", "index", "source"])  # empty
+    df = pd.concat(frames, ignore_index=True)
+    # de-duplicate symbols (keep the first occurrence)
+    df = df.drop_duplicates(subset=["symbol"]).reset_index(drop=True)
+    return df
 
 
-def supported_indexes() -> pd.DataFrame:
-    return pd.DataFrame([
-        {"key": spec.key, "title": spec.title, "wiki_url": spec.wiki_url}
-        for spec in SUPPORTED_INDEXES.values()
-    ])
-
-
-# ---- Simulation listing helper (for Home.py) ---------------------------------
-# Lightweight lister that scans JSON artifacts produced by simulations/reports.
-# It normalizes a few common fields so the Home page can render a table.
-
-from pathlib import Path as _Path
-import json as _json
-import time as _time
-from typing import List as _List, Dict as _Dict, Tuple as _Tuple
-
-def list_simulations(limit: int = 50,
-                     roots: _Tuple[str, ...] = ("storage/simulations", "storage/reports"),
-                     extensions: _Tuple[str, ...] = (".json",)) -> _List[_Dict]:
-    items: _List[_Dict] = []
-    for root in roots:
-        p = _Path(root)
-        if not p.exists():
-            continue
-        for f in p.rglob("*"):
-            if not f.is_file() or f.suffix.lower() not in extensions:
-                continue
-            try:
-                data = {}
-                try:
-                    data = _json.loads(f.read_text(encoding="utf-8"))
-                except Exception:
-                    # Not a JSON we understand — we still include the file row with defaults
-                    data = {}
-
-                mtime = f.stat().st_mtime
-                created = data.get("created_at") or _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime(mtime))
-
-                items.append({
-                    "path": str(f),
-                    "name": f.name,
-                    "created_at": created,
-                    "portfolio_name": data.get("portfolio_name") or data.get("portfolio") or data.get("meta", {}).get("portfolio", ""),
-                    "start": data.get("start") or data.get("date_start") or data.get("start_date") or data.get("meta", {}).get("start", ""),
-                    "end": data.get("end") or data.get("date_end") or data.get("end_date") or data.get("meta", {}).get("end", ""),
-                    "starting_equity": data.get("starting_equity", data.get("start_equity", None)),
-                    "final_equity": data.get("final_equity", data.get("equity_final", None)),
-                    "modified_ts": mtime,
-                })
-            except Exception:
-                # Skip unreadable/locked files
-                continue
-
-    # newest first
-    items.sort(key=lambda r: r.get("modified_ts", 0), reverse=True)
-    if limit and limit > 0:
-        items = items[:limit]
-    return items
-
-# Ensure symbol is exported if __all__ is present
-try:
-    __all__
-except NameError:
-    __all__ = []
-if isinstance(__all__, list) and "list_simulations" not in __all__:
-    __all__.append("list_simulations")
+__all__ = [
+    "supported_indexes",
+    "fetch_index",
+    "fetch_indexes",
+]

@@ -115,21 +115,37 @@ st.set_page_config(page_title="Trading Research Dashboard", layout="wide")
 # ---- Env
 load_dotenv()
 
-# ---- Sidebar debug + cache clear
-st.sidebar.caption("**Debug**")
-st.sidebar.write("Python:", sys.executable)
-st.sidebar.write("CWD:", os.getcwd())
+# ---- Alpaca connection status -------------------------------------------------
 
-try:
-    import src
-    st.sidebar.write("src path:", inspect.getfile(src))
-except Exception as _e:
-    st.sidebar.write("src import issue:", str(_e))
+def _alpaca_connection_status():
+    """Return (title, message, level) for Alpaca Trading API status."""
+    # Prefer Streamlit secrets, fall back to environment
+    api_key = st.secrets.get("ALPACA_API_KEY", None) if hasattr(st, "secrets") else None
+    api_secret = st.secrets.get("ALPACA_SECRET_KEY", None) if hasattr(st, "secrets") else None
+    base_url = st.secrets.get("ALPACA_BASE_URL", None) if hasattr(st, "secrets") else None
 
-if st.sidebar.button("Clear Streamlit caches"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.sidebar.success("Caches cleared")
+    import os as _os
+    api_key = api_key or _os.getenv("ALPACA_API_KEY")
+    api_secret = api_secret or _os.getenv("ALPACA_SECRET_KEY")
+    base_url = base_url or _os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+
+    paper = True if (base_url and "paper" in base_url) else True  # default to paper
+
+    if not api_key or not api_secret:
+        return (
+            "⚠️ Alpaca: Missing credentials",
+            "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env or Streamlit secrets.",
+            "warning",
+        )
+
+    try:
+        from alpaca.trading.client import TradingClient
+        client = TradingClient(api_key, api_secret, paper=paper)
+        acct = client.get_account()
+        msg = f"Status: {acct.status} | Equity: {acct.equity} | Buying Power: {acct.buying_power}"
+        return ("✅ Alpaca: Connected", msg, "success")
+    except Exception as e:
+        return ("❌ Alpaca: Error", f"{type(e).__name__}: {e}", "error")
 
 # ---- Storage imports (with fallback shims)
 try:
@@ -174,6 +190,15 @@ except Exception as e:
 
 # ---- Title
 st.title("📊 Trading Research Dashboard")
+
+# Connection status banner
+_title, _msg, _level = _alpaca_connection_status()
+if _level == "success":
+    st.success(f"**{_title}** — {_msg}")
+elif _level == "warning":
+    st.warning(f"**{_title}** — {_msg}")
+else:
+    st.error(f"**{_title}** — {_msg}")
 
 # ---- High-level metrics
 try:
