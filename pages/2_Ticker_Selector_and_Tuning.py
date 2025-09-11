@@ -12,6 +12,8 @@ from src.storage import (
     save_strategy, set_default_strategy,
     list_param_bounds, save_param_bounds, get_param_bounds, get_default_param_bounds
 )
+from src.tuning.auto_bounds import suggest_bounds_for, apply_bounds_to_streamlit_state
+
 
 @st.cache_data
 def load_universe_index() -> dict:
@@ -86,6 +88,14 @@ if "_apply_profile_payload" in st.session_state:
     st.session_state["b_hold_max"] = int(b.get("holding_period_max", 120))
     st.session_state["b_cost_min"] = float(b.get("cost_bps_min", 0.0))
     st.session_state["b_cost_max"] = float(b.get("cost_bps_max", 10.0))
+
+# ---- Apply queued auto-bounds BEFORE widgets are created ----
+if "_apply_bounds_payload" in st.session_state:
+    _ab = st.session_state.pop("_apply_bounds_payload")
+    try:
+        apply_bounds_to_streamlit_state(_ab)
+    except Exception:
+        pass
 
 st.set_page_config(page_title="Evolutionary Tuning", page_icon="🧬")
 st.title("🧬 Evolutionary Tuning (ATR Breakout)")
@@ -214,6 +224,35 @@ with c6:
     mutation_rate = st.slider("Mutation rate", 0.0, 1.0, 0.35, 0.05, key="ev_mr")
 
 # ---------- Bounds ----------
+# --- Auto-bounds from recent data ---
+with st.container():
+    c1, c2, c3 = st.columns([1,1,3])
+    with c1:
+        if st.button("Auto-bounds", help="Analyze recent data and set sensible bounds"):
+            # Resolve symbol robustly from session state or the local selectbox value
+            sym = (
+                st.session_state.get("ev_symbol")
+                or st.session_state.get("ev_symbol_select")
+                or st.session_state.get("ticker")
+                or st.session_state.get("symbol")
+                or (symbol if 'symbol' in locals() else None)
+            )
+            sym = (sym or "").strip().upper()
+            start_dt = st.session_state.get("ev_start")
+            end_dt   = st.session_state.get("ev_end")
+            if not sym:
+                st.warning("Select a ticker first.")
+            else:
+                rec = suggest_bounds_for(sym, start_dt, end_dt)
+                st.session_state["_apply_bounds_payload"] = rec
+                st.session_state["auto_bounds_notes"] = rec.get("notes", "Auto-bounds computed.")
+                st.toast(st.session_state["auto_bounds_notes"], icon="✅")
+                st.rerun()
+    with c2:
+        txt = st.session_state.get("auto_bounds_notes")
+        if txt:
+            st.caption(txt)
+
 st.subheader("Parameter Bounds")
 # Core
 cA1, cA2, cA3 = st.columns(3)
