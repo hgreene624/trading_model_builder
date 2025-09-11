@@ -1,0 +1,10 @@
+partial equity allocations
+
+BUG same model in tuning performs differenct is sim with same params and same time period often worse
+
+(FEATURE) in simulation have stock price shown on graphs below main equity graph first axis total equity second axis
+ticker price w/ iundicators for entry and exit
+
+multi plexing simulation of indicviduals within a generation since they are independent
+
+have option to run optimizations on large list or porfolio and have same param settings but each gets its own model config.

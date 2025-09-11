@@ -5,8 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="&#10;- Checkbox to toggle risk-parity vs equal weights.&#10;- Compute weights from daily stddev of returns over sim range.&#10;- Keep per-ticker strategy selection + portfolio params fallback.">
+      <change afterPath="$PROJECT_DIR$/Features.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/4_Simulate_Portfolio.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/4_Simulate_Portfolio.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -95,6 +95,7 @@
       <updated>1757515239328</updated>
       <workItem from="1757515240338" duration="9662000" />
       <workItem from="1757526380162" duration="7046000" />
+      <workItem from="1757550532581" duration="709000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
