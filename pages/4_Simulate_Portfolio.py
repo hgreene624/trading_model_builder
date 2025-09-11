@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 from datetime import date, timedelta
 
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
 # --- Dynamic allocation helpers (beta) ---
 def _wilder_atr(df: pd.DataFrame, n: int) -> pd.Series:
     high, low, close = df["high"], df["low"], df["close"]
@@ -266,7 +269,97 @@ def _simulate_dynamic(items, strategy_selections, start, end, starting_equity,
             "total_return": tot_ret,
         })
 
-    return {"equity": equity, "per_ticker": per_ticker}
+    return {"equity": equity, "per_ticker": per_ticker, "trades_by_symbol": trades_by_symbol, "frames": frames}
+
+def _symbol_price_equity_chart(symbol: str, price: pd.Series, total_eq: pd.Series, trades: list[dict] | None = None, title: str | None = None):
+    """Dual-axis chart: left=total equity, right=symbol price; markers = Buy/Sell on the price line.
+
+    We align trade timestamps to the price index and place markers at the price value on that date
+    so they sit directly on the price curve. If trade price is present, it's ignored for plotting
+    to keep markers on the line (still informative via tooltip).
+    """
+    if title is None:
+        title = f"{symbol}: Price & Portfolio Equity"
+
+    # Ensure Series and aligned index
+    price = price.copy()
+    total_eq = total_eq.copy()
+    df = pd.concat({"equity": total_eq, "price": price}, axis=1).dropna(how="all")
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # Equity on left y
+    fig.add_trace(go.Scatter(x=df.index, y=df["equity"], name="Total Equity", mode="lines"), secondary_y=False)
+    # Price on right y
+    fig.add_trace(go.Scatter(x=df.index, y=df["price"], name=f"{symbol} Price", mode="lines"), secondary_y=True)
+
+    def _first_present(d: dict, keys: list[str]):
+        for k in keys:
+            if k in d and d[k] is not None:
+                return d[k]
+        return None
+
+    def _align_ts(ts_like, idx: pd.DatetimeIndex):
+        if ts_like is None:
+            return None
+        try:
+            t = pd.to_datetime(ts_like)
+        except Exception:
+            return None
+        # If exact match
+        if t in idx:
+            return t
+        # Otherwise snap forward to the next available index (or last if beyond)
+        pos = idx.searchsorted(t)
+        if pos < len(idx):
+            return idx[pos]
+        return idx[-1] if len(idx) else None
+
+    # Trade markers on price axis (place on the price curve)
+    if trades:
+        buys_x, buys_y, sells_x, sells_y, buy_text, sell_text = [], [], [], [], [], []
+        idx = price.index
+        for t in trades:
+            # Support multiple schema variants
+            bx_raw = _first_present(t, ["entry_date", "entry_dt", "entry", "buy_date"])  # date-like
+            sx_raw = _first_present(t, ["exit_date", "exit_dt", "exit", "sell_date"])    # date-like
+            bx = _align_ts(bx_raw, idx)
+            sx = _align_ts(sx_raw, idx)
+            if bx is not None and bx in price.index:
+                buys_x.append(bx)
+                buys_y.append(float(price.loc[bx]))
+                # Tooltip text (show the trade price if present)
+                ep = _first_present(t, ["entry_price", "entry_px", "buy_price"]) or ""
+                buy_text.append(f"Entry @ {ep}")
+            if sx is not None and sx in price.index:
+                sells_x.append(sx)
+                sells_y.append(float(price.loc[sx]))
+                xp = _first_present(t, ["exit_price", "exit_px", "sell_price"]) or ""
+                sell_text.append(f"Exit @ {xp}")
+        if buys_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=buys_x, y=buys_y, mode="markers", name="Buy",
+                    marker_symbol="triangle-up", marker_size=10,
+                    marker_color="green", marker_line_color="green", marker_line_width=1,
+                    text=buy_text, hovertemplate="%{x|%Y-%m-%d}<br>%{text}<extra></extra>",
+                ),
+                secondary_y=True,
+            )
+        if sells_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=sells_x, y=sells_y, mode="markers", name="Sell",
+                    marker_symbol="triangle-down", marker_size=10,
+                    marker_color="red", marker_line_color="red", marker_line_width=1,
+                    text=sell_text, hovertemplate="%{x|%Y-%m-%d}<br>%{text}<extra></extra>",
+                ),
+                secondary_y=True,
+            )
+
+    fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), legend_title_text=None, title=title)
+    fig.update_yaxes(title_text="Equity", secondary_y=False)
+    fig.update_yaxes(title_text=f"{symbol} Price", secondary_y=True)
+    return fig
 
 from src.storage import (
     list_portfolios,
@@ -365,9 +458,12 @@ if st.button("Run Simulation", type="primary"):
                                            deploy_pct, max_concurrent, float(min_alloc), score_metric, secondary_metric)
                 total_eq = result["equity"]
                 per_ticker = result["per_ticker"]
+                trades_map = result.get("trades_by_symbol", {})
+                frames = result.get("frames", {})
             else:
                 per_ticker = []
                 curves = []
+                res_map = {}
 
                 # ------- Compute portfolio weights -------
                 symbols = [it["symbol"] for it in items]
@@ -421,6 +517,7 @@ if st.button("Run Simulation", type="primary"):
                         risk_per_trade=float(params.get("risk_per_trade", 0.01)),
                         allow_fractional=bool(params.get("allow_fractional", True)),
                     )
+                    res_map[symbol] = res
                     eq = res["equity"].rename(symbol)
                     curves.append(eq)
                     per_ticker.append({"symbol": symbol, **res["metrics"]})
@@ -463,6 +560,45 @@ if st.button("Run Simulation", type="primary"):
                     )
                 else:
                     st.write("No trades executed.")
+
+            # --- Per-Ticker Charts (dual-axis with trade markers) ---
+            st.write("---")
+            st.subheader("Per-Ticker Charts")
+            try:
+                for it in items:
+                    symbol = it["symbol"]
+
+                    # Determine params used for this symbol in the run
+                    chosen = strategy_selections.get(symbol, "PORTFOLIO_DEFAULT") if 'strategy_selections' in locals() else "PORTFOLIO_DEFAULT"
+                    if chosen != "PORTFOLIO_DEFAULT":
+                        srec = get_strategy(chosen)
+                        params = srec["params"] if srec else it["params"]
+                    else:
+                        params = it["params"]
+
+                    # Price series for right axis
+                    df_sym = get_ohlcv_cached(symbol, start.isoformat(), end.isoformat())
+                    if df_sym is None or df_sym.empty:
+                        continue
+                    price_series = df_sym["close"].astype(float)
+
+                    # --- Get trade markers without calling backtest_single ---
+                    trades_list: list[dict] = []
+                    # Dynamic mode: use trades emitted by the dynamic simulator
+                    if 'alloc_mode' in locals() and alloc_mode.startswith("Dynamic"):
+                        if 'trades_map' in locals() and isinstance(trades_map, dict):
+                            trades_list = trades_map.get(symbol, []) or []
+                    else:
+                        # Static mode: use trades captured when we ran backtest_single earlier
+                        if 'res_map' in locals() and isinstance(res_map, dict) and symbol in res_map:
+                            maybe = res_map[symbol]
+                            if isinstance(maybe, dict):
+                                trades_list = maybe.get("trades", []) or []
+
+                    fig_sym = _symbol_price_equity_chart(symbol, price_series, total_eq, trades_list)
+                    st.plotly_chart(fig_sym, use_container_width=True)
+            except Exception as _e:
+                st.warning(f"Per-ticker chart rendering skipped: {_e}")
 
             # Save a summary record of this simulation
             add_simulation({
