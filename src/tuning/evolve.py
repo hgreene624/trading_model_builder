@@ -8,7 +8,35 @@ from typing import Callable, Dict, List, Tuple
 import numpy as np
 
 from src.backtest.engine import ATRParams, backtest_atr_breakout
+import math
 
+_rng = random.random
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+def _blend(a, b, alpha=0.5):
+    # BLX/BLEND crossover for floats
+    lo, hi = (a, b) if a <= b else (b, a)
+    range_ = hi - lo
+    lo -= alpha * range_
+    hi += alpha * range_
+    return random.uniform(lo, hi)
+
+def _tournament_select(pop, fits, k=3):
+    # fits[i][0] must be the scalar fitness
+    idxs = [random.randrange(len(pop)) for _ in range(k)]
+    best = max(idxs, key=lambda i: fits[i][0])
+    return pop[best]
+
+def _sig_from_range(lo, hi, frac=0.12):
+    # Gaussian step ~12% of the range by default
+    return max(1e-9, (hi - lo) * frac)
+
+def _log_mut(val, lo, hi, sigma=0.25):
+    # multiplicative/log-space mutation for positive floats
+    nv = val * math.exp(random.gauss(0.0, sigma))
+    return _clamp(nv, lo, hi)
 
 @dataclass
 class Bounds:
@@ -63,30 +91,34 @@ def _clip_float(x: float, lo: float, hi: float) -> float:
 
 
 def _fix(ind: Dict, b: Bounds) -> Dict:
-    ind["breakout_n"] = _clip_int(ind["breakout_n"], b.breakout_min, b.breakout_max)
-    ind["exit_n"] = _clip_int(ind["exit_n"], b.exit_min, b.exit_max)
-    if ind["breakout_n"] <= ind["exit_n"]:
-        ind["breakout_n"] = ind["exit_n"] + 1
-    ind["atr_n"] = _clip_int(ind["atr_n"], b.atr_min, b.atr_max)
+    y = dict(ind)
+    # Core windows
+    y["breakout_n"] = _clip_int(int(y.get("breakout_n", 55)), b.breakout_min, b.breakout_max)
+    y["exit_n"]     = _clip_int(int(y.get("exit_n", 20)), b.exit_min, min(b.exit_max, y["breakout_n"] - 1))
+    if y["exit_n"] >= y["breakout_n"]:
+        y["exit_n"] = max(b.exit_min, int(0.4 * y["breakout_n"]))
+    y["atr_n"]      = _clip_int(int(y.get("atr_n", 14)), b.atr_min, b.atr_max)
 
-    ind["atr_multiple"] = _clip_float(ind["atr_multiple"], b.atr_multiple_min, b.atr_multiple_max)
-    ind["risk_per_trade"] = _clip_float(ind["risk_per_trade"], b.risk_per_trade_min, b.risk_per_trade_max)
-    ind["tp_multiple"] = _clip_float(ind["tp_multiple"], b.tp_multiple_min, b.tp_multiple_max)
+    # Floats
+    y["atr_multiple"]   = _clip_float(float(y.get("atr_multiple", 3.0)), b.atr_multiple_min, b.atr_multiple_max)
+    y["risk_per_trade"] = _clip_float(float(y.get("risk_per_trade", 0.01)), b.risk_per_trade_min, b.risk_per_trade_max)
+    y["tp_multiple"]    = _clip_float(float(y.get("tp_multiple", 0.0)), b.tp_multiple_min, b.tp_multiple_max)
+    y["cost_bps"]       = _clip_float(float(y.get("cost_bps", 0.0)), b.cost_bps_min, b.cost_bps_max)
 
-    ind["sma_fast"] = _clip_int(ind["sma_fast"], b.sma_fast_min, b.sma_fast_max)
-    ind["sma_slow"] = _clip_int(ind["sma_slow"], b.sma_slow_min, b.sma_slow_max)
-    if ind["sma_fast"] >= ind["sma_slow"]:
-        ind["sma_fast"] = max(b.sma_fast_min, ind["sma_slow"] - 1)
-    ind["sma_long"] = _clip_int(ind["sma_long"], b.sma_long_min, b.sma_long_max)
-    ind["long_slope_len"] = _clip_int(ind["long_slope_len"], b.long_slope_len_min, b.long_slope_len_max)
+    # Trend filter ordering
+    sf = _clip_int(int(y.get("sma_fast", 30)), b.sma_fast_min, b.sma_fast_max)
+    ss = _clip_int(int(y.get("sma_slow", 50)), max(b.sma_slow_min, sf + 1), b.sma_slow_max)
+    sl = _clip_int(int(y.get("sma_long", 150)), max(b.sma_long_min, ss + 1), b.sma_long_max)
+    y["sma_fast"], y["sma_slow"], y["sma_long"] = sf, ss, sl
 
-    ind["holding_period_limit"] = _clip_int(ind["holding_period_limit"], b.holding_period_min, b.holding_period_max)
-    ind["cost_bps"] = _clip_float(ind["cost_bps"], b.cost_bps_min, b.cost_bps_max)
+    # Slope len & holding period
+    y["long_slope_len"]      = _clip_int(int(y.get("long_slope_len", 15)), b.long_slope_len_min, b.long_slope_len_max)
+    y["holding_period_limit"] = _clip_int(int(y.get("holding_period_limit", 0)), b.holding_period_min, b.holding_period_max)
 
-    if not b.allow_trend_filter:
-        ind["use_trend_filter"] = False
+    # Bool
+    y["use_trend_filter"] = bool(y.get("use_trend_filter", False)) and bool(b.allow_trend_filter)
 
-    return ind
+    return y
 
 
 def _rand(b: Bounds, rng: random.Random) -> Dict:
@@ -114,45 +146,67 @@ def _rand(b: Bounds, rng: random.Random) -> Dict:
 def _mutate(ind: Dict, b: Bounds, rng: random.Random) -> Dict:
     out = dict(ind)
 
-    # integers
-    if rng.random() < 0.7: out["breakout_n"] += rng.randint(-5, 5)
-    if rng.random() < 0.7: out["exit_n"] += rng.randint(-3, 3)
-    if rng.random() < 0.6: out["atr_n"] += rng.randint(-2, 2)
-    if rng.random() < 0.4: out["sma_fast"] += rng.randint(-3, 3)
-    if rng.random() < 0.4: out["sma_slow"] += rng.randint(-3, 3)
-    if rng.random() < 0.4: out["sma_long"] += rng.randint(-5, 5)
-    if rng.random() < 0.4: out["long_slope_len"] += rng.randint(-2, 2)
-    if rng.random() < 0.4: out["holding_period_limit"] += rng.randint(-10, 10)
+    # ---- integers with Gaussian steps aware of ranges ----
+    if rng.random() < 0.7:
+        sig = max(1.0, _sig_from_range(b.breakout_min, b.breakout_max))
+        out["breakout_n"] = int(round(out.get("breakout_n", 55) + rng.gauss(0, sig)))
 
-    # floats (multiplicative jitter)
-    if rng.random() < 0.6: out["atr_multiple"] *= (1.0 + rng.uniform(-0.2, 0.2))
-    if rng.random() < 0.6: out["risk_per_trade"] *= (1.0 + rng.uniform(-0.25, 0.25))
-    if rng.random() < 0.6: out["tp_multiple"] *= (1.0 + rng.uniform(-0.3, 0.3))
-    if rng.random() < 0.5: out["cost_bps"] *= (1.0 + rng.uniform(-0.4, 0.4))
+    if rng.random() < 0.7:
+        br = max(1, int(out.get("breakout_n", 55)))
+        ratio = _clamp(out.get("exit_n", 20) / br, 0.2, 0.9)
+        ratio += rng.gauss(0, 0.06)
+        out["exit_n"] = int(round(_clamp(ratio, 0.2, 0.9) * br))
 
-    # bool flip
+    if rng.random() < 0.6:
+        sig = max(1.0, _sig_from_range(b.atr_min, b.atr_max, frac=0.15))
+        out["atr_n"] = int(round(out.get("atr_n", 14) + rng.gauss(0, sig)))
+
+    # trend filter windows
+    if rng.random() < 0.5:
+        out["sma_fast"] = int(round(out.get("sma_fast", 30) + rng.gauss(0, 4)))
+    if rng.random() < 0.5:
+        out["sma_slow"] = int(round(out.get("sma_slow", 50) + rng.gauss(0, 5)))
+    if rng.random() < 0.5:
+        out["sma_long"] = int(round(out.get("sma_long", 150) + rng.gauss(0, 8)))
+    if rng.random() < 0.5:
+        out["long_slope_len"] = int(round(out.get("long_slope_len", 15) + rng.gauss(0, 2)))
+
+    if rng.random() < 0.4:
+        out["holding_period_limit"] = int(round(out.get("holding_period_limit", 0) + rng.gauss(0, 10)))
+
+    # ---- floats in log-space (scale-aware) or bounded Gaussian ----
+    if rng.random() < 0.6:
+        out["atr_multiple"] = _log_mut(out.get("atr_multiple", 3.0), b.atr_multiple_min, b.atr_multiple_max, sigma=0.18)
+
+    if rng.random() < 0.6:
+        out["risk_per_trade"] = _log_mut(out.get("risk_per_trade", 0.01), b.risk_per_trade_min, b.risk_per_trade_max, sigma=0.25)
+
+    if rng.random() < 0.6:
+        out["tp_multiple"] = _clamp(out.get("tp_multiple", 0.0) + rng.gauss(0, 0.35), b.tp_multiple_min, b.tp_multiple_max)
+
+    if rng.random() < 0.5:
+        out["cost_bps"] = _clamp(out.get("cost_bps", 0.0) + rng.gauss(0, 0.3), b.cost_bps_min, b.cost_bps_max)
+
+    # ---- rare boolean flip ----
     if b.allow_trend_filter and rng.random() < 0.2:
-        out["use_trend_filter"] = not out["use_trend_filter"]
+        out["use_trend_filter"] = not bool(out.get("use_trend_filter", False))
 
     return _fix(out, b)
 
 
-def _xover(a: Dict, b_: Dict, rng: random.Random) -> Dict:
-    return {
-        "breakout_n": a["breakout_n"] if rng.random() < 0.5 else b_["breakout_n"],
-        "exit_n": a["exit_n"] if rng.random() < 0.5 else b_["exit_n"],
-        "atr_n": a["atr_n"] if rng.random() < 0.5 else b_["atr_n"],
-        "atr_multiple": a["atr_multiple"] if rng.random() < 0.5 else b_["atr_multiple"],
-        "risk_per_trade": a["risk_per_trade"] if rng.random() < 0.5 else b_["risk_per_trade"],
-        "tp_multiple": a["tp_multiple"] if rng.random() < 0.5 else b_["tp_multiple"],
-        "use_trend_filter": a["use_trend_filter"] if rng.random() < 0.5 else b_["use_trend_filter"],
-        "sma_fast": a["sma_fast"] if rng.random() < 0.5 else b_["sma_fast"],
-        "sma_slow": a["sma_slow"] if rng.random() < 0.5 else b_["sma_slow"],
-        "sma_long": a["sma_long"] if rng.random() < 0.5 else b_["sma_long"],
-        "long_slope_len": a["long_slope_len"] if rng.random() < 0.5 else b_["long_slope_len"],
-        "holding_period_limit": a["holding_period_limit"] if rng.random() < 0.5 else b_["holding_period_limit"],
-        "cost_bps": a["cost_bps"] if rng.random() < 0.5 else b_["cost_bps"],
-    }
+def _xover(a: Dict, b_: Dict, rng: random.Random, bounds: Bounds) -> Dict:
+    child = {}
+    # integers: coin-flip inherit
+    for k in ["breakout_n","exit_n","atr_n","sma_fast","sma_slow","sma_long","long_slope_len","holding_period_limit"]:
+        child[k] = a[k] if rng.random() < 0.5 else b_[k]
+    # floats: blend around parents with bounds
+    child["atr_multiple"]   = _clamp(_blend(a["atr_multiple"],   b_["atr_multiple"],   alpha=0.2), bounds.atr_multiple_min, bounds.atr_multiple_max)
+    child["risk_per_trade"] = _clamp(_blend(a["risk_per_trade"], b_["risk_per_trade"], alpha=0.2), bounds.risk_per_trade_min, bounds.risk_per_trade_max)
+    child["tp_multiple"]    = _clamp(_blend(a["tp_multiple"],    b_["tp_multiple"],    alpha=0.2), bounds.tp_multiple_min, bounds.tp_multiple_max)
+    child["cost_bps"]       = _clamp(_blend(a["cost_bps"],       b_["cost_bps"],       alpha=0.2), bounds.cost_bps_min, bounds.cost_bps_max)
+    # bool
+    child["use_trend_filter"] = a["use_trend_filter"] if rng.random() < 0.5 else b_["use_trend_filter"]
+    return _fix(child, bounds)
 
 
 def _fitness(symbol: str, start: str, end: str, starting_equity: float, ind: Dict) -> Tuple[float, Dict]:
@@ -264,7 +318,7 @@ def evolve_params(
             p2 = tournament()
             child = dict(p1)
             if rng.random() < crossover_rate:
-                child = _xover(p1, p2, rng)
+                child = _xover(p1, p2, rng, bounds)
             if rng.random() < mutation_rate:
                 child = _mutate(child, bounds, rng)
             child = _fix(child, bounds)
