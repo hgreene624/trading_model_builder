@@ -134,7 +134,6 @@ try:
 except Exception:
     from src.data.alpaca_data import load_ohlcv as load_ohlcv_window
 
-
 st.set_page_config(page_title="Portfolios", layout="wide")
 load_dotenv()
 

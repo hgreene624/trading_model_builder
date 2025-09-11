@@ -24,9 +24,9 @@ except Exception:
 st.set_page_config(page_title="Portfolios", layout="wide")
 load_dotenv()
 
-st.title("🗂️ Portfolios — Build from Indexes")
+st.title("🗂️ Portfolios — Universe → Filter → Fetch → Save")
 
-# ---- Controls ---------------------------------------------------------------
+# ---- Controls: pick indexes and date windows --------------------------------
 
 # Build a {display_name -> key} map from the SUPPORTED catalog
 index_map = {meta["name"]: key for key, meta in UNV.SUPPORTED.items()}
@@ -35,135 +35,192 @@ choices = st.multiselect(
     "Select index collections",
     options=list(index_map.keys()),
     default=[name for name in ["S&P 500", "Nasdaq-100"] if name in index_map],
+    key="idx_choices",
 )
 force_refresh = st.checkbox(
     "Force refresh index membership (fetch from Wikipedia)",
     value=False,
-    help="If off, we use cached constituents under storage/universe/."
+    help="If off, we use cached constituents under storage/universe/.",
+    key="idx_force_refresh",
 )
 
 # Timeline defaults
 today = date.today()
-priors_start = st.date_input("Priors window start", value=date(today.year - 10, 1, 1))
-priors_end = st.date_input("Priors window end", value=date(today.year - 3, 12, 31))
-select_start = st.date_input("Selection window start (OOS)", value=date(today.year - 2, 1, 1))
-select_end = st.date_input("Selection window end (OOS)", value=date(today.year - 1, 12, 31))
+col_dt1, col_dt2, col_dt3, col_dt4 = st.columns(4)
+with col_dt1:
+    priors_start = st.date_input("Priors window start", value=date(today.year - 10, 1, 1), key="P_start")
+with col_dt2:
+    priors_end = st.date_input("Priors window end", value=date(today.year - 3, 12, 31), key="P_end")
+with col_dt3:
+    select_start = st.date_input("Selection window start (OOS)", value=date(today.year - 2, 1, 1), key="S_start")
+with col_dt4:
+    select_end = st.date_input("Selection window end (OOS)", value=date(today.year - 1, 12, 31), key="S_end")
 
-st.caption("Priors → learn robust bounds. Selection → rank names out-of-sample. You can tune & simulate later.")
+st.caption(
+    "Step 1 fetches constituents only. Apply metadata filters first, then fetch OHLCV for the filtered tickers."
+)
 
-# ---- Fetch button -----------------------------------------------------------
-go = st.button("📥 Get & cache data for selected indexes", use_container_width=True)
+# ---- Session state -----------------------------------------------------------
+ss = st.session_state
+if "idx_meta" not in ss:
+    ss.idx_meta = pd.DataFrame()  # metadata only
+if "idx_members" not in ss:
+    ss.idx_members = pd.DataFrame()  # metadata + (optional) liquidity stats
 
-# ---- Workspace state --------------------------------------------------------
-if "idx_members" not in st.session_state:
-    st.session_state.idx_members = pd.DataFrame()
+# ---- Step 1: Fetch constituents (metadata only) ------------------------------
+col_btn1, col_btn2 = st.columns([1, 2])
+with col_btn1:
+    btn_fetch_meta = st.button("📄 Fetch constituents (metadata only)", use_container_width=True, key="btn_fetch_meta")
+with col_btn2:
+    st.write("")
 
-if go and choices:
-    keys = [index_map[c] for c in choices]
-    with st.spinner("Fetching index constituents…"):
-        members = UNV.fetch_indexes(keys, force_refresh=force_refresh)
-
-    if members.empty:
-        st.error("No members fetched. Check your network (Wikipedia) or try again.")
-        st.stop()
-
-    # Cache OHLCV for Priors + Selection windows
-    uniq_syms = sorted(members["symbol"].unique().tolist())
-    st.write(f"Found **{len(uniq_syms)}** unique tickers across {len(choices)} indexes.")
-    prog = st.progress(0.0)
-    rows = []
-    misses = 0
-
-    for i, sym in enumerate(uniq_syms):
-        ok = False
-        try:
-            df_p = load_ohlcv_window(sym, priors_start.isoformat(), priors_end.isoformat())
-            df_s = load_ohlcv_window(sym, select_start.isoformat(), select_end.isoformat())
-            ok = (df_p is not None and not df_p.empty) and (df_s is not None and not df_s.empty)
-        except Exception:
-            ok = False
-
-        if ok:
-            # compute basic liquidity stats from priors window
-            try:
-                m_close = float(df_p["close"].median())
-                m_dvol = float((df_p["close"] * df_p["volume"]).median())
-            except Exception:
-                m_close, m_dvol = np.nan, np.nan
-            rows.append({
-                "symbol": sym,
-                "median_close_priors": m_close,
-                "median_dollar_vol_priors": m_dvol,
-            })
+if btn_fetch_meta:
+    if not choices:
+        st.warning("Select at least one index.")
+    else:
+        keys = [index_map[c] for c in choices]
+        with st.spinner("Fetching index constituents…"):
+            members = UNV.fetch_indexes(keys, force_refresh=force_refresh)
+        if members.empty:
+            st.error("No members fetched. Check your network (Wikipedia) or try again.")
         else:
-            misses += 1
+            ss.idx_meta = members.copy()
+            ss.idx_members = members.copy()  # start equal; will enrich after OHLCV
+            st.success(f"Fetched {len(members)} symbols across {len(choices)} indexes.")
 
-        if (i + 1) % 10 == 0 or (i + 1) == len(uniq_syms):
-            prog.progress((i + 1) / len(uniq_syms))
+# ---- Metadata filters (no OHLCV needed) --------------------------------------
+if not ss.idx_meta.empty:
+    st.subheader("Filter by metadata (pre-bars)")
+    meta = ss.idx_meta.copy()
 
-    liq = pd.DataFrame(rows)
-    members = members.merge(liq, on="symbol", how="left")
+    # sector/industry lists may be partly missing depending on wiki tables
+    sectors = sorted([s for s in meta.get("sector", pd.Series(dtype=str)).dropna().unique().tolist() if s])
+    industries = sorted([s for s in meta.get("industry", pd.Series(dtype=str)).dropna().unique().tolist() if s])
 
-    # Save a snapshot
-    out_dir = Path("storage/universe")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    snap_path = out_dir / f"members__{'_'.join(keys)}__{today.isoformat()}.parquet"
-    try:
-        members.to_parquet(snap_path, index=False)
-    except Exception:
-        members.to_csv(snap_path.with_suffix(".csv"), index=False)
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        sel_sectors = st.multiselect("Sectors", options=sectors, default=sectors, key="ms_sectors")
+    with c2:
+        sel_industries = st.multiselect("Industries", options=industries, key="ms_industries")
+    with c3:
+        sym_query = st.text_input("Symbol filter (substring)", value="", key="ti_symbol_filter")
 
-    st.session_state.idx_members = members
-    st.success(f"Cached data for {len(rows)} symbols. Misses: {misses}. Snapshot saved to {snap_path.name}.")
-
-# ---- If we have members, show filter panel ----------------------------------
-if not st.session_state.idx_members.empty:
-    members = st.session_state.idx_members.copy()
-    st.subheader("Filter universe")
-
-    # sector list (may be blank if fetch couldn't get sector)
-    sectors = sorted([s for s in members.get("sector", pd.Series(dtype=str)).dropna().unique().tolist() if s])
-    colA, colB, colC = st.columns(3)
-    with colA:
-        sel_sectors = st.multiselect("Sectors", options=sectors, default=sectors)
-    with colB:
-        min_price = st.number_input("Min median close (priors)", min_value=0.0, value=5.0, step=0.5)
-    with colC:
-        min_dvol = st.number_input(
-            "Min median $ volume (priors)",
-            min_value=0.0, value=2e7, step=1e6,
-            help="Median of close*volume over the Priors window"
-        )
-
-    # apply filters
-    filt = pd.Series(True, index=members.index)
+    f = pd.Series(True, index=meta.index)
     if sectors:
-        filt &= members["sector"].isin(sel_sectors)
-    filt &= (members["median_close_priors"].fillna(0) >= float(min_price))
-    filt &= (members["median_dollar_vol_priors"].fillna(0) >= float(min_dvol))
+        f &= meta["sector"].isin(sel_sectors)
+    if sel_industries:
+        f &= meta["industry"].isin(sel_industries)
+    if sym_query.strip():
+        s = sym_query.strip().upper()
+        f &= meta["symbol"].str.contains(s, case=False, na=False)
 
-    filtered = members.loc[filt].copy()
-    st.write(f"After filters: **{len(filtered)}** / {len(members)} tickers remain.")
-
+    meta_filt = meta.loc[f].copy()
+    st.write(f"Filtered (metadata-only): **{len(meta_filt)}** / {len(meta)} tickers")
     st.dataframe(
-        filtered[["symbol", "name", "sector", "median_close_priors", "median_dollar_vol_priors"]]
-        .sort_values("median_dollar_vol_priors", ascending=False)
-        .reset_index(drop=True),
-        use_container_width=True, height=360
+        meta_filt[[c for c in ["symbol", "name", "sector", "industry"] if c in meta_filt.columns]].reset_index(drop=True),
+        use_container_width=True,
+        height=300,
     )
 
+    # Optionally limit how many symbols to fetch bars for
+    colK1, colK2 = st.columns([1, 1])
+    with colK1:
+        max_to_fetch = st.number_input("Max tickers to fetch bars", min_value=1, max_value=2000, value=min(200, len(meta_filt)), key="ni_max_to_fetch")
+    with colK2:
+        st.caption("Use this to control initial data load time. You can refine filters and fetch more later.")
+
+    # ---- Step 2: Fetch OHLCV for the filtered list (compute liquidity) --------
+    if st.button("📥 Fetch OHLCV & compute liquidity for filtered", type="primary", use_container_width=True, key="btn_fetch_bars"):
+        tickers = meta_filt["symbol"].head(int(max_to_fetch)).tolist()
+        if not tickers:
+            st.warning("No symbols to fetch.")
+        else:
+            prog = st.progress(0.0)
+            rows = []
+            misses = 0
+            for i, sym in enumerate(tickers):
+                ok = False
+                try:
+                    df_p = load_ohlcv_window(sym, priors_start.isoformat(), priors_end.isoformat())
+                    df_s = load_ohlcv_window(sym, select_start.isoformat(), select_end.isoformat())
+                    ok = (df_p is not None and not df_p.empty) and (df_s is not None and not df_s.empty)
+                except Exception:
+                    ok = False
+                if ok:
+                    try:
+                        m_close = float(df_p["close"].median())
+                        m_dvol = float((df_p["close"] * df_p["volume"]).median())
+                    except Exception:
+                        m_close, m_dvol = np.nan, np.nan
+                    rows.append({
+                        "symbol": sym,
+                        "median_close_priors": m_close,
+                        "median_dollar_vol_priors": m_dvol,
+                    })
+                else:
+                    misses += 1
+                if (i + 1) % 10 == 0 or (i + 1) == len(tickers):
+                    prog.progress((i + 1) / max(1, len(tickers)))
+
+            liq = pd.DataFrame(rows)
+            enriched = meta.merge(liq, on="symbol", how="left")
+            ss.idx_members = enriched
+
+            # snapshot for provenance
+            out_dir = Path("storage/universe")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            keys = [index_map[c] for c in choices] if choices else ["custom"]
+            snap_path = out_dir / f"members_enriched__{'_'.join(keys)}__{today.isoformat()}.parquet"
+            try:
+                enriched.to_parquet(snap_path, index=False)
+            except Exception:
+                enriched.to_csv(snap_path.with_suffix(".csv"), index=False)
+
+            st.success(f"Enriched {len(rows)} symbols with OHLCV. Misses: {misses}. Snapshot: {snap_path.name}")
+
+# ---- Post-bars filters (need liquidity columns) ------------------------------
+if not ss.idx_members.empty and ("median_close_priors" in ss.idx_members.columns):
+    st.subheader("Filter by liquidity (post-bars)")
+    dfm = ss.idx_members.copy()
+
+    cA, cB = st.columns(2)
+    with cA:
+        min_price = st.number_input("Min median close (priors)", min_value=0.0, value=5.0, step=0.5, key="ni_min_price")
+    with cB:
+        min_dvol = st.number_input("Min median $ volume (priors)", min_value=0.0, value=2e7, step=1e6, key="ni_min_dvol")
+
+    f2 = pd.Series(True, index=dfm.index)
+    f2 &= (dfm["median_close_priors"].fillna(0) >= float(min_price))
+    f2 &= (dfm["median_dollar_vol_priors"].fillna(0) >= float(min_dvol))
+    filtered = dfm.loc[f2].copy()
+
+    st.write(f"After liquidity filters: **{len(filtered)}** / {len(dfm)} tickers remain.")
+    st.dataframe(
+        filtered[[
+            "symbol",
+            *[c for c in ["name", "sector"] if c in filtered.columns],
+            "median_close_priors",
+            "median_dollar_vol_priors",
+        ]]
+        .sort_values("median_dollar_vol_priors", ascending=False)
+        .reset_index(drop=True),
+        use_container_width=True,
+        height=340,
+    )
+
+    # ---- Save to portfolio ----------------------------------------------------
     st.subheader("Save to portfolio")
     portfolios = list_portfolios()
     col1, col2 = st.columns([1, 2])
     with col1:
-        mode = st.radio("Save mode", options=["Add to existing", "Create new"], horizontal=False)
+        mode = st.radio("Save mode", options=["Add to existing", "Create new"], horizontal=False, key="radio_save_mode")
     with col2:
         if mode == "Add to existing":
-            target = st.selectbox("Select portfolio", options=portfolios or ["(none)"])
+            target = st.selectbox("Select portfolio", options=portfolios or ["(none)"], key="sb_existing_port")
         else:
-            target = st.text_input("New portfolio name", value="my_universe")
+            target = st.text_input("New portfolio name", value="my_universe", key="ti_new_port_name")
 
-    if st.button("💾 Save selection to portfolio", type="primary", use_container_width=True):
+    if st.button("💾 Save selection to portfolio", type="primary", use_container_width=True, key="btn_save_port"):
         syms = sorted(filtered["symbol"].unique().tolist())
         if not syms:
             st.warning("No symbols to save.")
@@ -187,4 +244,7 @@ if not st.session_state.idx_members.empty:
                     save_portfolio(target, obj)
                     st.success(f"Created portfolio '{target}' with {len(syms)} tickers.")
 else:
-    st.info("Select one or more indexes above and click **Get & cache data**.")
+    if ss.idx_meta.empty:
+        st.info("Use **Fetch constituents (metadata only)** to start. Then filter and fetch OHLCV for the subset you want.")
+    else:
+        st.info("You can fetch OHLCV for the filtered metadata set to enable liquidity filters.")
