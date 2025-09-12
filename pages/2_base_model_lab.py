@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import date, timedelta
 from typing import Dict, List, Tuple
+import inspect
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -9,11 +10,33 @@ import streamlit as st
 from src.storage import list_portfolios, load_portfolio, base_model_path, write_json
 from src.data.alpaca_data import load_ohlcv
 # from src.data.cache import get_ohlcv_cached as load_ohlcv  # if you prefer caching
+from src.models.general_trainer import train_general_model, TrainConfig
+
+from src.models.base_model_utils import (
+    compute_block_stats,
+    suggest_priors_from_metrics,
+)
+from src.storage import save_base_metrics_ctx, load_latest_base_metrics
 
 st.set_page_config(page_title="Base-Model Lab", layout="wide")
 st.title("🧪 Base-Model Lab (priors from portfolio)")
 
-# -------- UI controls
+# ------------------------- helpers -------------------------
+CTX_KEY = "bm_ctx"          # holds computed priors/metrics/tickers/windows
+GM_RES_KEY = "gm_results"   # holds general model training results
+
+def _get_ctx() -> dict | None:
+    return st.session_state.get(CTX_KEY)
+
+def _set_ctx(d: dict) -> None:
+    st.session_state[CTX_KEY] = d
+
+def _clear_ctx() -> None:
+    for k in (CTX_KEY, GM_RES_KEY):
+        if k in st.session_state:
+            del st.session_state[k]
+
+# -------- UI controls (global) --------
 c0, c1, c2 = st.columns([1.2, 1, 1])
 with c0:
     portfolios = list_portfolios()
@@ -31,99 +54,121 @@ select_end = today
 
 st.caption(f"Priors: **{priors_start} → {priors_end}** (long history).  Selection (OOS): **{select_start} → {select_end}**.")
 
-run = st.button("📊 Compute metrics & suggest priors", type="primary", use_container_width=True)
-st.divider()
 
-def tr_atr_pct(df: pd.DataFrame) -> pd.Series:
-    prev_close = df["close"].shift(1)
-    tr = pd.concat([
-        (df["high"] - df["low"]).abs(),
-        (df["high"] - prev_close).abs(),
-        (df["low"] - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(14).mean()
-    return (atr / df["close"]).replace([np.inf, -np.inf], np.nan)
+# --- Param sampler -----------------------------------------------------------
+def _sample_params(priors: Dict[str, Dict], rng: np.random.Generator) -> Dict:
+    out = {}
+    for k, spec in priors.items():
+        lo = spec.get("low")
+        hi = spec.get("high")
+        seed = spec.get("seed", {})
+        dist = seed.get("dist", "uniform")
+        if k == "use_trend_filter":
+            p = float(seed.get("p", 0.5))
+            out[k] = bool(rng.random() < p)
+            continue
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            if dist == "gamma":
+                kshape = float(seed.get("k", 2.0))
+                theta = float(seed.get("theta", 5.0))
+                val = float(rng.gamma(kshape, theta))
+                val = lo + (val % max(1e-9, (hi - lo)))
+            else:
+                val = float(lo) + float(rng.random()) * (float(hi) - float(lo))
+            if all(isinstance(x, (int, np.integer)) for x in (lo, hi)) and k not in {"atr_multiple", "risk_per_trade", "tp_multiple", "cost_bps"}:
+                val = int(round(val))
+            out[k] = val
+        else:
+            out[k] = lo
+    return out
 
-def momentum(df: pd.DataFrame, n: int) -> float:
-    return float(df["close"].pct_change(n).iloc[-1]) if len(df) > n else np.nan
+# --- Safe backtest wrapper: filters unsupported params so runs never "error" ---
+def _run_backtest_safe(sym: str, start: str, end: str, params: Dict, starting_equity: float = 10_000.0) -> Dict:
+    try:
+        from src.models.atr_breakout import backtest_single  # type: ignore
+    except Exception as e:
+        return {"error": f"import backtest_single failed: {e}"}
 
-def sharpe_like(rets: pd.Series) -> float:
-    if rets.std(ddof=0) == 0 or rets.dropna().empty:
-        return 0.0
-    # daily sharpe; approximate annual ~ sqrt(252) scaling can be done outside
-    return float(np.sqrt(252) * rets.mean() / (rets.std(ddof=0) + 1e-12))
+    # Filter kwargs to what the strategy actually accepts
+    try:
+        sig = inspect.signature(backtest_single)
+        allowed = set(sig.parameters.keys()) - {"symbol", "start", "end", "starting_equity"}
+        filtered = {k: v for k, v in params.items() if k in allowed}
+    except Exception:
+        filtered = params
 
-def compute_block_stats(df: pd.DataFrame) -> Dict[str, float]:
-    if df.empty:
-        return {}
-    df = df.copy()
-    df["ret"] = df["close"].pct_change()
-    r = df["ret"].dropna()
-    sharpe_d = sharpe_like(r)
-    cagr = float((df["close"].iloc[-1] / df["close"].iloc[0]) ** (252 / max(1, len(df))) - 1.0)
-    dd = float((df["close"] / df["close"].cummax() - 1.0).min())
-    atrp = tr_atr_pct(df)
-    r2 = np.nan
-    # trendiness via log-linear R²
-    y = np.log(df["close"].dropna())
-    if len(y) >= 60:
-        x = np.arange(len(y))
-        A = np.vstack([x, np.ones_like(x)]).T
-        beta, alpha = np.linalg.lstsq(A, y.values, rcond=None)[0]
-        yhat = alpha + beta * x
-        ss_res = np.sum((y.values - yhat) ** 2)
-        ss_tot = np.sum((y.values - y.mean()) ** 2)
-        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    try:
+        return backtest_single(sym, start, end, starting_equity=starting_equity, **filtered)
+    except Exception as e:
+        # Last resort: run with no params beyond required
+        try:
+            return backtest_single(sym, start, end, starting_equity=starting_equity)
+        except Exception:
+            return {"error": str(e)}
 
+# --- CV evaluator (robust, never returns 'error') -----------------------------
+def _cv_eval(sym: str, params: Dict, folds: List[Tuple[str, str]]) -> Dict:
+    sh_list, tr_list = [], []
+    for fs, fe in folds:
+        m = _run_backtest_safe(sym, fs, fe, params, starting_equity=10_000.0)
+        sh_list.append(float(m.get("sharpe", 0.0) or 0.0))
+        tr_list.append(int(m.get("trades", 0) or 0))
     return {
-        "sharpe_ann": sharpe_d,         # already annualized-ish
-        "cagr": cagr,
-        "max_dd": dd,
-        "median_atr_pct": float(np.nanmedian(atrp)) if len(atrp.dropna()) else np.nan,
-        "mom_63": momentum(df, 63),
-        "mom_252": momentum(df, 252),
-        "trend_r2": r2,
-        "rows": int(len(df)),
-        "start": str(df.index[0].date()),
-        "end": str(df.index[-1].date()),
+        "cv_sharpe": float(np.mean(sh_list)) if sh_list else -1e9,
+        "cv_trades": int(np.sum(tr_list)),
+        "fold_sharpes": sh_list,
+        "fold_trades": tr_list,
     }
 
-def suggest_priors_from_metrics(df_metrics: pd.DataFrame) -> Dict[str, Dict]:
-    """
-    Heuristics that map portfolio metrics to Trend/Breakout v2 priors.
-    You can refine these later or replace with CV sampling.
-    """
-    # Portfolio medians
-    med_atr = float(df_metrics["median_atr_pct"].median())
-    med_trend = float(df_metrics["trend_r2"].median())
-    # Heuristic breakout windows: more trendiness → longer lookback; more vol → shorter.
-    # We clamp to sensible ranges; EA will search within these bounds.
-    if not np.isfinite(med_trend):
-        med_trend = 0.2
-    base_lo = int(np.clip(12 - 8 * med_trend + 100 * med_atr, 8, 40))
-    base_hi = int(np.clip(36 + 12 * med_trend + 160 * med_atr, 25, 80))
+# ===================== STAGE 1: COMPUTE METRICS & PRIORS =====================
+with st.expander("📂 Load previously saved metrics (skip recompute)", expanded=False):
+    if port and st.button("Load latest saved metrics for this portfolio", use_container_width=True, key="bm_load_latest"):
+        loaded = load_latest_base_metrics(port)
+        if loaded:
+            # Rebuild ctx from saved blob
+            import pandas as pd
+            pri_df = pd.DataFrame(loaded.get("pri_df", []))
+            sel_df = pd.DataFrame(loaded.get("sel_df", []))
+            if not pri_df.empty and "ticker" in pri_df.columns:
+                pri_df = pri_df.set_index("ticker")
+            if not sel_df.empty and "ticker" in sel_df.columns:
+                sel_df = sel_df.set_index("ticker")
 
-    priors = {
-        "breakout_n": {"low": base_lo, "high": base_hi, "seed": {"dist": "gamma", "k": 2.2, "theta": 10}},
-        "exit_n": {"low": max(4, int(base_lo*0.4)), "high": max(8, int(base_hi*0.8)), "seed": {"dist": "gamma", "k": 1.8, "theta": 8}},
-        "atr_n": {"low": 10, "high": 22, "seed": {"dist": "uniform"}},
-        "atr_multiple": {"low": 2.0, "high": 3.5, "seed": {"dist": "uniform"}},
-        "tp_multiple": {"low": 1.2, "high": 3.2, "seed": {"dist": "uniform"}},
-        "holding_period_limit": {"low": 20, "high": 160, "seed": {"dist": "uniform"}},
-        "risk_per_trade": {"low": 0.006, "high": 0.015, "seed": {"dist": "uniform"}},  # 0.6%–1.5% to chase higher CAGR
-        "use_trend_filter": {"low": 0, "high": 1, "seed": {"dist": "bernoulli", "p": 0.7}},
-        "sma_fast": {"low": 10, "high": 40, "seed": {"dist": "uniform"}},
-        "sma_slow": {"low": 50, "high": 120, "seed": {"dist": "uniform"}},
-        "sma_long": {"low": 180, "high": 280, "seed": {"dist": "uniform"}},
-        "long_slope_len": {"low": 10, "high": 30, "seed": {"dist": "uniform"}},
-        "cost_bps": {"low": 1.0, "high": 6.0, "seed": {"dist": "uniform"}},
-        # optional volatility/CHOP gates you can implement in strategy:
-        "chop_max": {"low": 38, "high": 60, "seed": {"dist": "uniform"}},
-        "atr_ratio_max": {"low": 1.2, "high": 2.2, "seed": {"dist": "uniform"}},  # ATR vs its MA
-    }
-    return priors
+            ctx = {
+                "port": loaded["meta"]["port"],
+                "tickers": loaded["meta"].get("tickers", []),
+                "pri_df": pri_df,
+                "sel_df": sel_df,
+                "priors": loaded.get("priors", {}),
+                "windows": loaded["meta"].get("windows", {}),
+                "errors": loaded["meta"].get("errors", []),
+                "created": loaded["meta"].get("created"),
+            }
+            _set_ctx(ctx)
+            st.success("Loaded saved metrics/priors. Scroll down to continue.")
+            # Auto-persist the computed metrics so you can reload later
+            try:
+                outp = save_base_metrics_ctx(ctx)
+                st.caption(f"Saved computed metrics → `{outp}`")
+            except Exception as e:
+                st.warning(f"Could not save metrics cache: {e}")
 
-if run and port:
+        else:
+            st.info("No saved metrics found for this portfolio yet.")
+
+with st.form("compute_form"):
+    compute_btn = st.form_submit_button("📊 Compute metrics & suggest priors", use_container_width=True)
+    reset_btn = st.form_submit_button("🔄 Reset page state")
+
+if reset_btn:
+    _clear_ctx()
+    st.experimental_rerun()
+
+if compute_btn:
+    if not port:
+        st.error("Pick a portfolio first.")
+        st.stop()
+
     obj = load_portfolio(port)
     if not obj:
         st.error(f"Portfolio '{port}' not found or empty.")
@@ -137,7 +182,7 @@ if run and port:
     st.write(f"Found **{len(tickers)}** tickers in portfolio **{port}**.")
     prog = st.progress(0.0)
     pri_rows, sel_rows = [], []
-    err_log = []
+    err_log: List[str] = []
 
     for i, sym in enumerate(tickers):
         try:
@@ -160,11 +205,6 @@ if run and port:
 
         prog.progress((i + 1) / len(tickers))
 
-    if err_log:
-        with st.expander("⚠️ Data load warnings (click to expand)"):
-            for line in err_log:
-                st.write("- ", line)
-
     pri_df = pd.DataFrame(pri_rows).set_index("ticker") if pri_rows else pd.DataFrame()
     sel_df = pd.DataFrame(sel_rows).set_index("ticker") if sel_rows else pd.DataFrame()
 
@@ -172,48 +212,78 @@ if run and port:
         st.error("No usable data in the Priors window. Try widening the dates or adjusting the portfolio.")
         st.stop()
 
-    # ---- Suggest priors from the portfolio's Priors-window metrics
     priors = suggest_priors_from_metrics(pri_df)
 
-    # ---- UI: show metrics & priors
+    ctx = {
+        "port": port,
+        "tickers": tickers,
+        "pri_df": pri_df,
+        "sel_df": sel_df,
+        "priors": priors,
+        "windows": {
+            "priors_start": priors_start.isoformat(),
+            "priors_end": priors_end.isoformat(),
+            "select_start": select_start.isoformat(),
+            "select_end": select_end.isoformat(),
+        },
+        "errors": err_log,
+        "created": today.isoformat(),
+    }
+    _set_ctx(ctx)
+    st.success("Metrics & priors computed. You can now save the spec or train the general model.")
+
+ctx = _get_ctx()
+
+# ===================== STAGE 2: DISPLAY + SAVE SPEC =====================
+if ctx:
+    pri_df: pd.DataFrame = ctx["pri_df"]
+    sel_df: pd.DataFrame = ctx["sel_df"]
+    priors: Dict[str, Dict] = ctx["priors"]
+    tickers: List[str] = ctx["tickers"]
+
+    if ctx.get("errors"):
+        with st.expander("⚠️ Data load warnings (click to expand)"):
+            for line in ctx["errors"]:
+                st.write("- ", line)
+
     cA, cB = st.columns([1, 1])
     with cA:
-        st.subheader("Priors window metrics (portfolio)")
-        st.dataframe(pri_df, use_container_width=True, height=300)
-        if not pri_df.empty:
-            med = pri_df.median(numeric_only=True)
-            st.caption(
-                f"Median Sharpe≈{med.get('sharpe_ann', float('nan')):.2f} | "
-                f"CAGR≈{(med.get('cagr', float('nan')) or 0)*100:.1f}% | "
-                f"MaxDD≈{med.get('max_dd', float('nan')):.2%} | "
-                f"ATR%≈{(med.get('median_atr_pct', float('nan')) or 0)*100:.2f}% | "
-                f"trend R²≈{med.get('trend_r2', float('nan')):.2f}"
-            )
-
+        with st.expander("Priors window metrics (portfolio)", expanded=False):
+            st.dataframe(pri_df, use_container_width=True, height=300)
+            if not pri_df.empty:
+                med = pri_df.median(numeric_only=True)
+                st.caption(
+                    f"Median Sharpe≈{med.get('sharpe_ann', float('nan')):.2f} | "
+                    f"CAGR≈{(med.get('cagr', float('nan')) or 0)*100:.1f}% | "
+                    f"MaxDD≈{med.get('max_dd', float('nan')):.2%} | "
+                    f"ATR%≈{(med.get('median_atr_pct', float('nan')) or 0)*100:.2f}% | "
+                    f"trend R²≈{med.get('trend_r2', float('nan')):.2f}"
+                )
     with cB:
-        st.subheader("Selection window metrics (OOS, for ranking)")
-        if not sel_df.empty:
-            st.dataframe(sel_df, use_container_width=True, height=300)
-        else:
-            st.info("No selection-window data for these tickers (or window too short).")
+        with st.expander("Selection window metrics (OOS, for ranking)", expanded=False):
+            if not sel_df.empty:
+                st.dataframe(sel_df, use_container_width=True, height=300)
+            else:
+                st.info("No selection-window data for these tickers (or window too short).")
 
     st.subheader("Suggested priors (Trend/Breakout v2)")
-    st.json(priors)
+    _pri_rows = [{"param": k, "low": v.get("low"), "high": v.get("high"), "seed": v.get("seed")} for k, v in priors.items()]
+    _pri_df = pd.DataFrame(_pri_rows).set_index("param")
+    with st.expander("Show suggested priors", expanded=False):
+        st.dataframe(_pri_df, use_container_width=True, height=320)
 
-    # ---- Save spec
     archetype = "trend_breakout_v2"
-    default_name = f"{archetype}__{port}__{today.isoformat()}"
+    default_name = f"{archetype}__{ctx['port']}__{today.isoformat()}"
     model_name = st.text_input("Base model name", value=default_name, help="File will be saved under storage/base_models/")
-    save_btn = st.button("💾 Save Base Model Spec", use_container_width=True)
 
-    if save_btn:
+    if st.button("💾 Save Base Model Spec", use_container_width=True):
         spec = {
             "meta": {
                 "archetype": archetype,
-                "portfolio": port,
+                "portfolio": ctx["port"],
                 "created": today.isoformat(),
-                "priors_window": {"start": priors_start.isoformat(), "end": priors_end.isoformat()},
-                "selection_window": {"start": select_start.isoformat(), "end": select_end.isoformat()},
+                "priors_window": {"start": ctx["windows"]["priors_start"], "end": ctx["windows"]["priors_end"]},
+                "selection_window": {"start": ctx["windows"]["select_start"], "end": ctx["windows"]["select_end"]},
                 "tickers": tickers,
                 "counts": {"priors_nonempty": int(len(pri_df)), "selection_nonempty": int(len(sel_df))},
             },
@@ -223,16 +293,144 @@ if run and port:
                 "selection": sel_df.reset_index().to_dict(orient="records"),
             },
         }
-
-        # Try using your helper; fall back to a sane path if signature differs.
         try:
-            out_path = base_model_path(archetype, port, today.isoformat())
-        except TypeError:
-            from pathlib import Path
-            out_path = Path(f"storage/base_models/{model_name}.json").as_posix()
-
-        try:
+            try:
+                out_path = base_model_path(archetype, ctx["port"], today.isoformat())
+            except TypeError:
+                from pathlib import Path
+                out_path = Path(f"storage/base_models/{model_name}.json").as_posix()
             write_json(out_path, spec)
             st.success(f"Saved base model spec → `{out_path}`")
         except Exception as e:
             st.error(f"Failed to save spec: {e}")
+
+# ============ STAGE 3: Train General Base Model (CV random search) ============
+# ============ STAGE 3: Train General Base Model (CV random search) ============
+if ctx:
+    st.divider()
+    st.subheader("🧠 Train General Base Model (CV random search)")
+
+    with st.expander("Configure training", expanded=True):
+        form = st.form("gm_form")
+        with form:
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            with c1: K = st.number_input("K per ticker", 8, 4096, 256, 8)
+            with c2: n_folds = st.number_input("CV folds", 2, 8, 3, 1)
+            with c3: min_tr = st.number_input("Min trades/fold", 0, 50, 2, 1)
+            with c4: enforce = st.checkbox("Enforce trades", value=False)
+            with c5: seed = st.number_input("Seed", 0, 999_999, 2025, 1)
+            with c6: max_t = st.number_input("Max tickers", 1, len(ctx["tickers"]), min(50, len(ctx["tickers"])), 1)
+            go = st.form_submit_button("🎯 Train")
+
+    if go:
+        # progress callback to render status
+        prog = st.progress(0.0, text="Starting…")
+        def cb(pct: float, msg: str):
+            prog.progress(min(max(pct, 0.0), 1.0), text=f"Training… {msg}")
+
+        cfg = TrainConfig(K=K, n_folds=n_folds, min_trades_fold=min_tr, enforce_trades=enforce, seed=seed)
+        tickers = ctx["tickers"][: int(max_t)]
+        res = train_general_model(
+            tickers=tickers,
+            priors=ctx["priors"],
+            priors_start=date.fromisoformat(ctx["windows"]["priors_start"]),
+            priors_end=date.fromisoformat(ctx["windows"]["priors_end"]),
+            strategy_dotted="src.models.atr_breakout",  # adjust if different
+            cfg=cfg,
+            progress_cb=cb,
+        )
+        st.success(f"Done. Evaluated {len(tickers)} tickers.")
+        st.dataframe(res["leaderboard"], use_container_width=True, height=320)
+
+        # Show smoke test & a couple of per-ticker diagnostics
+        with st.expander("Debug / smoke test"):
+            st.json(res.get("debug", {}))
+
+        st.session_state["gm_results"] = res
+
+    # Save button stays the same but now uses session_state["gm_results"]
+# ---------------- Baseline Strategy Filter (optional) -------------------------
+st.divider()
+with st.expander("⚡ Quick baseline filter (optional)", expanded=False):
+    st.subheader("Random K-sample filter")
+    st.markdown(
+        "We randomly sample **K** parameter sets per ticker from the suggested priors, "
+        "backtest them on the **Priors** window (train) and the **Selection** window (validation), "
+        "then keep tickers whose **validation Sharpe** and **trade count** meet your thresholds. "
+        "This yields a cleaner universe for the Evolution tuner."
+    )
+
+    ctx = _get_ctx()
+    if ctx:
+        tickers = ctx["tickers"]
+        priors = ctx["priors"]
+        priors_start = date.fromisoformat(ctx["windows"]["priors_start"])
+        priors_end = date.fromisoformat(ctx["windows"]["priors_end"])
+        select_start = date.fromisoformat(ctx["windows"]["select_start"])
+        select_end = date.fromisoformat(ctx["windows"]["select_end"])
+
+        cX, cY, cZ, cW, cR = st.columns([1, 1, 1, 1, 1])
+        with cX:
+            K = st.number_input("Samples per ticker (K)", min_value=4, max_value=200, value=24, step=4, key="bm_K")
+        with cY:
+            min_sh = st.number_input("Min validation Sharpe", min_value=-2.0, max_value=5.0, value=0.30, step=0.05, key="bm_sh")
+        with cZ:
+            min_tr = st.number_input("Min validation trades", min_value=0, max_value=200, value=8, step=1, key="bm_tr")
+        with cW:
+            max_ticks = st.number_input("Max tickers to test", min_value=1, max_value=len(tickers), value=min(50, len(tickers)), step=1, key="bm_max")
+        with cR:
+            seed_ui = st.number_input("Random seed", min_value=0, max_value=999_999, value=1337, step=1, key="bm_seed")
+
+        go = st.button("🚀 Run baseline filter", use_container_width=True, key="bm_run")
+
+        if go:
+            rng = np.random.default_rng(int(seed_ui))
+            tested = 0
+            kept = []
+            dropped = []
+            prog2 = st.progress(0.0, text="Running baseline filter…")
+            test_list = tickers[: int(max_ticks)]
+            for i, sym in enumerate(test_list):
+                best = None
+                for s in range(int(K)):
+                    p = _sample_params(priors, rng)
+                    res_train = _run_backtest_safe(sym, priors_start.isoformat(), priors_end.isoformat(), p)
+                    res_valid = _run_backtest_safe(sym, select_start.isoformat(), select_end.isoformat(), p)
+                    sh = float(res_valid.get("sharpe", 0.0) or 0.0)
+                    tr = int(res_valid.get("trades", 0) or 0)
+                    score = sh
+                    if (best is None) or (score > best.get("score", -1e9)):
+                        best = {
+                            "symbol": sym,
+                            "score": score,
+                            "sharpe_v": sh,
+                            "trades_v": tr,
+                            "params": p,
+                            "metrics_train": res_train,
+                            "metrics_valid": res_valid,
+                        }
+                tested += 1
+                if best is None:
+                    dropped.append({"symbol": sym, "reason": "no successful runs"})
+                else:
+                    if (best["sharpe_v"] >= float(min_sh)) and (best["trades_v"] >= int(min_tr)):
+                        kept.append(best)
+                    else:
+                        best["reason"] = f"val Sharpe {best['sharpe_v']:.2f}, trades {best['trades_v']}"
+                        dropped.append(best)
+                prog2.progress((i + 1) / max(1, len(test_list)))
+
+            st.success(f"Baseline done. Tested {tested} tickers. Kept {len(kept)}; Dropped {len(dropped)}.")
+            if kept:
+                kept_df_rows = []
+                for r in kept:
+                    row = {"ticker": r["symbol"], "val_sharpe": r["sharpe_v"], "val_trades": r["trades_v"]}
+                    row.update({f"p_{k}": v for k, v in r["params"].items()})
+                    kept_df_rows.append(row)
+                st.dataframe(pd.DataFrame(kept_df_rows), use_container_width=True, height=280)
+            if dropped:
+                with st.expander("Dropped (didn't meet thresholds)"):
+                    st.dataframe(pd.DataFrame([{"ticker": r.get("symbol"), "reason": r.get("reason", "")} for r in dropped]), use_container_width=True, height=220)
+            st.session_state["bm_candidates"] = kept
+    else:
+        st.info("Run **Compute metrics & suggest priors** first to enable this section.")

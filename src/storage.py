@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 
+import pandas as pd
 # ---- Root & directories -------------------------------------------------------
 
 ROOT = Path(".")
@@ -35,6 +36,65 @@ def read_json(path: Path) -> Any:
 
 
 # ---- Portfolio helpers --------------------------------------------------------
+
+# --- Base-model metrics persistence ------------------------------------------
+from pathlib import Path
+import json
+from datetime import datetime
+
+def _bm_metrics_dir() -> Path:
+    p = Path("storage/base_models/metrics_cache")
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def read_json(path: str | Path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+def save_base_metrics_ctx(ctx: dict) -> str:
+    """
+    Persist the computed metrics/prior context from Base-Model Lab.
+    """
+    win = ctx.get("windows", {})
+    port = ctx.get("port", "unknown")
+    key = f"{port}__{win.get('priors_start')}__{win.get('priors_end')}__{win.get('select_start')}__{win.get('select_end')}"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = {
+        "meta": {
+            "port": port,
+            "created": ts,
+            "windows": win,
+            "tickers": ctx.get("tickers", []),
+            "errors": ctx.get("errors", []),
+        },
+        "priors": ctx.get("priors", {}),
+        "pri_df": ctx.get("pri_df", pd.DataFrame()).reset_index().to_dict(orient="records") if "pri_df" in ctx else [],
+        "sel_df": ctx.get("sel_df", pd.DataFrame()).reset_index().to_dict(orient="records") if "sel_df" in ctx else [],
+    }
+    out_path = _bm_metrics_dir() / f"{key}__{ts}.json"
+    with open(out_path, "w") as f:
+        json.dump(out, f)
+    return out_path.as_posix()
+
+def list_base_metrics(port: str | None = None) -> list[str]:
+    d = _bm_metrics_dir()
+    allf = sorted([p.name for p in d.glob("*.json")])
+    if port:
+        allf = [f for f in allf if f.startswith(f"{port}__")]
+    return allf
+
+def load_base_metrics(file_name: str) -> dict | None:
+    p = _bm_metrics_dir() / file_name
+    if not p.exists():
+        return None
+    return read_json(p)
+
+def load_latest_base_metrics(port: str) -> dict | None:
+    files = list_base_metrics(port)
+    if not files:
+        return None
+    latest = sorted(files)[-1]
+    return load_base_metrics(latest)
 
 def _safe_name(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip("_")
