@@ -8,7 +8,8 @@ import inspect
 import math
 import numpy as np
 import pandas as pd
-
+from src.data.cache import get_ohlcv_cached
+import inspect
 # Adapter that resolves the strategy module
 from src.models.strategy_adapter import StrategyAdapter
 
@@ -85,46 +86,43 @@ def _safe_backtest(
     starting_equity: float,
 ) -> Dict[str, Any]:
     """
-    Calls adapter.backtest(...) with filtered kwargs, never raises.
-    Falls back to bare minimum call if parameter mismatch occurs.
+    Call adapter.backtest(...) with filtered kwargs.
+    - Prechecks that we actually have bars in [start, end]
+    - Only passes kwargs accepted by the target
+    - Normalizes tuple / {'metrics': {...}} returns
+    - Returns {'_error': ...} on failure (handled later)
     """
+    # 1) Pre-flight data check
     try:
-        # Try to get the signature from adapter target
-        target = adapter.get_callable()  # should return the backtest function
+        df = get_ohlcv_cached(symbol, start, end)  # your cache wrapper
+        if df is None or len(df) < 50:  # too few bars to do anything meaningful
+            return {"_error": f"no_data({symbol} {start}->{end})", "sharpe": 0.0, "trades": 0}
+    except Exception as e:
+        return {"_error": f"data_error({symbol}): {e}", "sharpe": 0.0, "trades": 0}
+
+    # 2) Build kwargs limited to target signature
+    try:
+        target = adapter.get_callable()
+        sig = inspect.signature(target)
+        allowed = set(sig.parameters.keys())
     except Exception:
         target = None
+        allowed = set()
 
     kwargs = dict(symbol=symbol, start=start, end=end, starting_equity=starting_equity)
-    if target is not None:
-        try:
-            sig = inspect.signature(target)
-            allowed = set(sig.parameters.keys())
-            # Merge only allowed parameters
-            for k, v in params.items():
-                if k in allowed:
-                    kwargs[k] = v
-        except Exception:
-            # If we can't introspect, pass only obviously safe fields
-            pass
-    else:
-        # No target info, pass only obvious fields
-        for k in ("breakout_n", "exit_n", "atr_n", "atr_multiple", "risk_per_trade",
-                  "tp_multiple", "use_trend_filter", "sma_fast", "sma_slow",
-                  "sma_long", "long_slope_len", "holding_period_limit", "cost_bps"):
-            if k in params:
-                kwargs[k] = params[k]
+    for k, v in params.items():
+        if not allowed or k in allowed:
+            kwargs[k] = v
 
+    # 3) Call and normalize
     try:
         res = adapter.backtest(**kwargs)
+        # If adapter returned {'metrics': {...}}, it already normalizes to metrics dict
+        if not isinstance(res, dict):
+            return {"_error": "bad_return_shape", "sharpe": 0.0, "trades": 0}
+        return res
     except Exception as e:
-        # Last-chance fallback: minimal call
-        try:
-            res = adapter.backtest(symbol=symbol, start=start, end=end, starting_equity=starting_equity)
-        except Exception:
-            res = {"error": str(e)}
-
-    return res if isinstance(res, dict) else {}
-
+        return {"_error": f"bt_error({symbol}): {e}", "sharpe": 0.0, "trades": 0}
 
 # ------------------------------ CV handling -----------------------------------
 def _make_folds(priors_start: date, priors_end: date, n_folds: int) -> List[Tuple[str, str]]:
@@ -155,31 +153,31 @@ def _cv_eval(
     min_trades_fold: int,
     enforce_trades: bool,
 ) -> Dict[str, Any]:
-    shs, trs = [], []
+    shs, trs, errs = [], [], []
     for fs, fe in folds:
         raw = _safe_backtest(adapter, symbol, fs, fe, params, starting_equity)
+        if "_error" in raw:
+            errs.append(raw["_error"])
         m = _normalize_metrics(raw)
         shs.append(m["sharpe"])
         trs.append(m["trades"])
 
-    # Enforce minimum trades per fold if requested
     if enforce_trades and any(t < int(min_trades_fold) for t in trs):
         return {
             "cv_sharpe": -1e9,
             "cv_trades": int(np.sum(trs)),
             "fold_sharpes": shs,
             "fold_trades": trs,
+            "errors": errs,
         }
 
-    cv_sh = float(np.mean(shs)) if shs else -1e9
     return {
-        "cv_sharpe": cv_sh,
+        "cv_sharpe": float(np.mean(shs)) if shs else -1e9,
         "cv_trades": int(np.sum(trs)),
         "fold_sharpes": shs,
         "fold_trades": trs,
+        "errors": errs,
     }
-
-
 # ----------------------------- Sampler (uniform/gamma/bernoulli) --------------
 def _sample_params(priors: Dict[str, Dict[str, Any]], rng: np.random.Generator) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
@@ -258,8 +256,12 @@ def train_general_model(
             )
             score = cv["cv_sharpe"]
 
-            if (best is None) or (score > best["score"]):
-                best = {"score": score, "params": p, "cv": cv}
+            # inside the sym-loop, after computing `best`
+            if best is None:
+                debug["errors"].append(f"{sym}: no successful runs")
+            else:
+                if best["cv"].get("errors"):
+                    debug["errors"].append({sym: best["cv"]["errors"]})
 
             done += 1
             if progress_cb:
