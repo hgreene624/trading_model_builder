@@ -4,9 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="basemodel refactor. no error but not computing">
-      <change beforePath="$PROJECT_DIR$/src/models/strategy_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/strategy_adapter.py" afterDir="false" />
-    </list>
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="basemodel refactor. computing but slow" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -95,7 +93,7 @@
       <workItem from="1757526380162" duration="7046000" />
       <workItem from="1757550532581" duration="709000" />
       <workItem from="1757607810653" duration="5747000" />
-      <workItem from="1757688005912" duration="5082000" />
+      <workItem from="1757688005912" duration="5446000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -225,7 +223,15 @@
       <option name="project" value="LOCAL" />
       <updated>1757692456160</updated>
     </task>
-    <option name="localTasksCounter" value="17" />
+    <task id="LOCAL-00017" summary="basemodel refactor. computing but slow">
+      <option name="closed" value="true" />
+      <created>1757693482121</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1757693482121</updated>
+    </task>
+    <option name="localTasksCounter" value="18" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -256,6 +262,7 @@
     <MESSAGE value="setup for storing and fetching historical data from wiki and alpaca. need to confirm local storage and seperate metadata and historical data fetching" />
     <MESSAGE value="working metadata filter for portfolio data fetching" />
     <MESSAGE value="basemodel refactor. no error but not computing" />
-    <option name="LAST_COMMIT_MESSAGE" value="basemodel refactor. no error but not computing" />
+    <MESSAGE value="basemodel refactor. computing but slow" />
+    <option name="LAST_COMMIT_MESSAGE" value="basemodel refactor. computing but slow" />
   </component>
 </project>

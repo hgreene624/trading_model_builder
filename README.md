@@ -1,3 +1,10 @@
+# Streamlit secrets 
+ ALPACA_API_KEY = "PKJRWXFDB2JIGVU4LJAF"
+ ALPACA_SECRET_KEY = "sj6eTg3e18TgU7vcP4mF1c5sug3ND4PT7naKoGkS"
+ ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+ ALPACA_DATA_URL = "https://data.alpaca.markets"
+
+
 # Starter Implementation (v1)
 
 This is a minimal working version of the Streamlit trading research app you scaffolded.
