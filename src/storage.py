@@ -2,272 +2,197 @@
 from __future__ import annotations
 
 import json
-import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Iterable
-
-import pandas as pd
-# ---- Root & directories -------------------------------------------------------
-
-ROOT = Path(".")
-STOR = ROOT / "storage"
-
-PORT_DIR = STOR / "portfolios"
-BASE_DIR = STOR / "base_models"
-REPORT_DIR = STOR / "reports"
-SIM_DIR = STOR / "simulations"
-CACHE_DIR = STOR / "cache"
-UNIVERSE_DIR = STOR / "universe"
-
-for d in (STOR, PORT_DIR, BASE_DIR, REPORT_DIR, SIM_DIR, CACHE_DIR, UNIVERSE_DIR):
-    d.mkdir(parents=True, exist_ok=True)
-
-
-# ---- JSON IO -----------------------------------------------------------------
-
-def write_json(path: Path, obj: Any) -> None:
-    """Pretty-write JSON with UTF-8, ensuring parent exists."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-# ---- Portfolio helpers --------------------------------------------------------
-
-# --- Base-model metrics persistence ------------------------------------------
-from pathlib import Path
-import json
+import os
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
 
-def _bm_metrics_dir() -> Path:
-    p = Path("storage/base_models/metrics_cache")
+# --------------------------- roots & helpers ---------------------------
+
+ROOT = Path.cwd() / "storage"  # project-local storage root
+PORTFOLIOS_DIR = ROOT / "portfolios"
+PORTFOLIO_MODELS_DIR = ROOT / "portfolio_models"
+BASE_METRICS_DIR = ROOT / "base_metrics"
+SIMULATIONS_DIR = ROOT / "simulations"
+
+for p in (ROOT, PORTFOLIOS_DIR, PORTFOLIO_MODELS_DIR, BASE_METRICS_DIR, SIMULATIONS_DIR):
     p.mkdir(parents=True, exist_ok=True)
-    return p
-
-def read_json(path: str | Path):
-    with open(path, "r") as f:
-        return json.load(f)
-
-def save_base_metrics_ctx(ctx: dict) -> str:
-    """
-    Persist the computed metrics/prior context from Base-Model Lab.
-    """
-    win = ctx.get("windows", {})
-    port = ctx.get("port", "unknown")
-    key = f"{port}__{win.get('priors_start')}__{win.get('priors_end')}__{win.get('select_start')}__{win.get('select_end')}"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = {
-        "meta": {
-            "port": port,
-            "created": ts,
-            "windows": win,
-            "tickers": ctx.get("tickers", []),
-            "errors": ctx.get("errors", []),
-        },
-        "priors": ctx.get("priors", {}),
-        "pri_df": ctx.get("pri_df", pd.DataFrame()).reset_index().to_dict(orient="records") if "pri_df" in ctx else [],
-        "sel_df": ctx.get("sel_df", pd.DataFrame()).reset_index().to_dict(orient="records") if "sel_df" in ctx else [],
-    }
-    out_path = _bm_metrics_dir() / f"{key}__{ts}.json"
-    with open(out_path, "w") as f:
-        json.dump(out, f)
-    return out_path.as_posix()
-
-def list_base_metrics(port: str | None = None) -> list[str]:
-    d = _bm_metrics_dir()
-    allf = sorted([p.name for p in d.glob("*.json")])
-    if port:
-        allf = [f for f in allf if f.startswith(f"{port}__")]
-    return allf
-
-def load_base_metrics(file_name: str) -> dict | None:
-    p = _bm_metrics_dir() / file_name
-    if not p.exists():
-        return None
-    return read_json(p)
-
-def load_latest_base_metrics(port: str) -> dict | None:
-    files = list_base_metrics(port)
-    if not files:
-        return None
-    latest = sorted(files)[-1]
-    return load_base_metrics(latest)
-
-def _safe_name(name: str) -> str:
-    return "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip("_")
 
 
-def portfolio_path(name: str) -> Path:
-    return PORT_DIR / f"{_safe_name(name)}.json"
+def _json_default(o: Any):
+    """Safe JSON conversion for dataclasses & numpy-ish types."""
+    try:
+        import numpy as np  # local import in case not installed yet
+
+        if isinstance(o, (np.integer,)):
+            return int(o)
+        if isinstance(o, (np.floating,)):
+            return float(o)
+        if isinstance(o, (np.bool_,)):
+            return bool(o)
+        if isinstance(o, (np.ndarray,)):
+            return o.tolist()
+    except Exception:
+        pass
+
+    if is_dataclass(o):
+        return asdict(o)
+    if isinstance(o, (set,)):
+        return list(o)
+    if hasattr(o, "isoformat"):
+        try:
+            return o.isoformat()
+        except Exception:
+            pass
+    return str(o)
 
 
-def list_portfolios() -> List[str]:
-    """Return portfolio names (without extension)."""
-    return sorted(p.stem for p in PORT_DIR.glob("*.json"))
+def read_json(path: Path, default: Any = None) -> Any:
+    try:
+        if not path.exists():
+            return default
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
 
 
-def load_portfolio(name: str) -> Optional[Dict[str, Any]]:
-    p = portfolio_path(name)
-    return read_json(p) if p.exists() else None
-
-
-def save_portfolio(name: str,
-                   obj_or_tickers: Dict[str, Any] | Iterable[str] | None = None,
-                   filters: Optional[Dict[str, Any]] = None) -> Path:
-    """
-    Flexible saver (backward compatible):
-
-    - save_portfolio("core", {"name":"core","tickers":[...], ...})
-    - save_portfolio("core", ["AAPL","MSFT"], filters={"min_price":5})
-
-    Returns the path written.
-    """
-    p = portfolio_path(name)
-
-    if isinstance(obj_or_tickers, dict):
-        obj = dict(obj_or_tickers)  # shallow copy
-        if "name" not in obj:
-            obj["name"] = name
-        if "tickers" in obj:
-            obj["tickers"] = sorted({str(t).upper() for t in obj["tickers"]})
-        obj.setdefault("updated", time.strftime("%Y-%m-%d"))
-        write_json(p, obj)
-        return p
-
-    # Build from tickers + filters
-    tickers: List[str] = []
-    if obj_or_tickers is not None:
-        tickers = sorted({str(t).upper() for t in obj_or_tickers})
-    obj = {
-        "name": name,
-        "tickers": tickers,
-        "filters": filters or {},
-        "updated": time.strftime("%Y-%m-%d"),
-    }
-    write_json(p, obj)
-    return p
-
-
-# ---- Base model specs ---------------------------------------------------------
-
-def base_model_path(archetype: str, portfolio: str, tag: str) -> Path:
-    safe_arch = _safe_name(archetype)
-    safe_port = _safe_name(portfolio)
-    safe_tag = _safe_name(tag)
-    return BASE_DIR / f"{safe_arch}__{safe_port}__{safe_tag}.json"
-
-
-def save_base_spec(archetype: str, portfolio: str, tag: str, spec: Dict[str, Any]) -> Path:
-    """Persist a base model spec JSON under storage/base_models."""
-    path = base_model_path(archetype, portfolio, tag)
-    payload = dict(spec)
-    payload.setdefault("archetype", archetype)
-    payload.setdefault("portfolio", portfolio)
-    payload.setdefault("tag", tag)
-    payload.setdefault("saved_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
-    write_json(path, payload)
+def write_json(path: Path, obj: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, default=_json_default)
     return path
 
 
-def list_base_specs(filter_portfolio: Optional[str] = None) -> List[Dict[str, Any]]:
-    """List all saved base model specs (parsed JSON)."""
-    out: List[Dict[str, Any]] = []
-    for f in BASE_DIR.glob("*.json"):
-        try:
-            obj = read_json(f)
-            if filter_portfolio and obj.get("portfolio") != filter_portfolio:
-                continue
-            obj["_path"] = str(f)
-            out.append(obj)
-        except Exception:
-            continue
-    # newest first (by file mtime)
-    out.sort(key=lambda o: Path(o["_path"]).stat().st_mtime, reverse=True)
-    return out
+def _now_stamp() -> str:
+    # e.g. 2025-09-10T12-34-56
+    return datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
 
-# ---- Simulations / reports listing (for Home.py) ------------------------------
+# --------------------------- portfolios --------------------------------
 
-def list_simulations(limit: int = 50,
-                     roots: Tuple[str, ...] = ("storage/simulations", "storage/reports"),
-                     extensions: Tuple[str, ...] = (".json",)) -> List[Dict[str, Any]]:
+def _portfolio_path(name: str) -> Path:
+    # Each portfolio is one JSON file: {"name":..., "tickers":[...], "meta":{...}}
+    safe = name.strip().replace("/", "_")
+    return PORTFOLIOS_DIR / f"{safe}.json"
+
+
+def list_portfolios() -> List[str]:
+    return sorted([p.stem for p in PORTFOLIOS_DIR.glob("*.json")])
+
+
+def load_portfolio(name: str) -> Dict[str, Any]:
+    return read_json(_portfolio_path(name), default={"name": name, "tickers": [], "meta": {}}) or {"name": name, "tickers": [], "meta": {}}
+
+
+def save_portfolio(name: str, tickers: Iterable[str], meta: Optional[Dict[str, Any]] = None) -> Path:
+    obj = {
+        "name": name,
+        "tickers": sorted(set([t.strip().upper() for t in tickers if t and str(t).strip()])),
+        "meta": meta or {},
+        "updated": _now_stamp(),
+    }
+    return write_json(_portfolio_path(name), obj)
+
+
+# ----------------------- portfolio models (general models) --------------------
+
+def portfolio_models_dir(portfolio: str) -> Path:
+    safe = portfolio.strip().replace("/", "_")
+    d = PORTFOLIO_MODELS_DIR / safe
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def list_portfolio_models(portfolio: str) -> List[str]:
+    d = portfolio_models_dir(portfolio)
+    return sorted([p.stem for p in d.glob("*.json")])
+
+
+def load_portfolio_model(portfolio: str, model_name: str) -> Dict[str, Any]:
+    d = portfolio_models_dir(portfolio)
+    return read_json(d / f"{model_name}.json", default={}) or {}
+
+
+def save_portfolio_model(portfolio: str, model_name: str, payload: Dict[str, Any]) -> Path:
+    d = portfolio_models_dir(portfolio)
+    return write_json(d / f"{model_name}.json", payload)
+
+
+# ----------------------- base-model metrics snapshots -------------------------
+
+def base_model_path(portfolio: str) -> Path:
+    """Directory where base-model metric snapshots for a portfolio live."""
+    safe = portfolio.strip().replace("/", "_")
+    d = BASE_METRICS_DIR / safe
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def save_base_metrics_ctx(ctx: Dict[str, Any]) -> Path:
     """
-    Scan simulation/report artifact folders for JSON summaries and normalize keys.
-
-    Returns a list of dicts with:
-      path, name, created_at, portfolio_name, start, end, starting_equity, final_equity
-    Sorted by modified time (newest first).
+    Save the computed metrics/priors context blob so the Base-Model Lab can reload
+    without recomputing. One file per snapshot.
     """
-    items: List[Dict[str, Any]] = []
-    for root in roots:
-        p = Path(root)
-        if not p.exists():
-            continue
-        for f in p.rglob("*"):
-            if not f.is_file() or f.suffix.lower() not in extensions:
-                continue
-            try:
-                try:
-                    data = read_json(f)
-                except Exception:
-                    data = {}
-
-                mtime = f.stat().st_mtime
-                created = data.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(mtime))
-                portfolio = data.get("portfolio_name") or data.get("portfolio") or data.get("meta", {}).get("portfolio", "")
-
-                items.append({
-                    "path": str(f),
-                    "name": f.name,
-                    "created_at": created,
-                    "portfolio_name": portfolio,
-                    "start": data.get("start") or data.get("date_start") or data.get("start_date") or data.get("meta", {}).get("start", ""),
-                    "end": data.get("end") or data.get("date_end") or data.get("end_date") or data.get("meta", {}).get("end", ""),
-                    "starting_equity": data.get("starting_equity", data.get("start_equity", None)),
-                    "final_equity": data.get("final_equity", data.get("equity_final", None)),
-                    "modified_ts": mtime,
-                    "size": f.stat().st_size,
-                })
-            except Exception:
-                continue
-
-    items.sort(key=lambda r: r.get("modified_ts", 0), reverse=True)
-    if limit and limit > 0:
-        items = items[:limit]
-    return items
+    port = (ctx.get("port") or "unknown").strip()
+    d = base_model_path(port)
+    snap = {
+        "meta": {
+            "port": port,
+            "created": _now_stamp(),
+            "windows": ctx.get("windows", {}),
+            "tickers": ctx.get("tickers", []),
+            "errors": ctx.get("errors", []),
+        },
+        # To keep files smaller, store pri_df / sel_df as records (list of dicts)
+        "pri_df": (ctx.get("pri_df") or pd.DataFrame()).reset_index().to_dict(orient="records") if "pd" in globals() else [],
+        "sel_df": (ctx.get("sel_df") or pd.DataFrame()).reset_index().to_dict(orient="records") if "pd" in globals() else [],
+        "priors": ctx.get("priors", {}),
+    }
+    path = d / f"metrics__{_now_stamp()}.json"
+    return write_json(path, snap)
 
 
-# ---- Simple cache helpers (optional) -----------------------------------------
-
-def cache_path(name: str) -> Path:
-    return CACHE_DIR / f"{_safe_name(name)}.json"
-
-
-def cache_write(name: str, obj: Any) -> Path:
-    p = cache_path(name)
-    write_json(p, obj)
-    return p
+def load_latest_base_metrics(portfolio: str) -> Optional[Dict[str, Any]]:
+    d = base_model_path(portfolio)
+    files = sorted(d.glob("metrics__*.json"))
+    if not files:
+        return None
+    # Latest by name (timestamp embedded)
+    return read_json(files[-1], default=None)
 
 
-def cache_read(name: str) -> Optional[Any]:
-    p = cache_path(name)
-    return read_json(p) if p.exists() else None
+# ----------------------------- simulations -----------------------------------
+
+def simulations_dir() -> Path:
+    SIMULATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    return SIMULATIONS_DIR
 
 
-__all__ = [
-    # dirs
-    "STOR", "PORT_DIR", "BASE_DIR", "REPORT_DIR", "SIM_DIR", "CACHE_DIR", "UNIVERSE_DIR",
-    # json
-    "write_json", "read_json",
-    # portfolios
-    "portfolio_path", "list_portfolios", "save_portfolio", "load_portfolio",
-    # base models
-    "base_model_path", "save_base_spec", "list_base_specs",
-    # sims
-    "list_simulations",
-    # cache
-    "cache_path", "cache_write", "cache_read",
-]
+def list_simulations() -> List[str]:
+    d = simulations_dir()
+    return sorted([p.stem for p in d.glob("*.json")])
+
+
+def load_simulation(name: str) -> Dict[str, Any]:
+    return read_json(simulations_dir() / f"{name}.json", default={}) or {}
+
+
+def save_simulation(name: str, payload: Dict[str, Any]) -> Path:
+    return write_json(simulations_dir() / f"{name}.json", payload)
+
+
+# ------------------------- (optional) datasets/meta ---------------------------
+
+def datasets_dir() -> Path:
+    d = ROOT / "datasets"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# Avoid mypy error for pandas in save_base_metrics_ctx when Streamlit runs before imports
+try:
+    import pandas as pd  # noqa: E402
+except Exception:
+    pd = None  # type: ignore

@@ -4,7 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="basemodel refactor. computing but slow" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="with API Info">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_base_model_lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/backtest/engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/backtest/engine.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/general_trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/general_trainer.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -93,7 +98,8 @@
       <workItem from="1757526380162" duration="7046000" />
       <workItem from="1757550532581" duration="709000" />
       <workItem from="1757607810653" duration="5747000" />
-      <workItem from="1757688005912" duration="5446000" />
+      <workItem from="1757688005912" duration="6364000" />
+      <workItem from="1757773917628" duration="2680000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -231,7 +237,15 @@
       <option name="project" value="LOCAL" />
       <updated>1757693482121</updated>
     </task>
-    <option name="localTasksCounter" value="18" />
+    <task id="LOCAL-00018" summary="with API Info">
+      <option name="closed" value="true" />
+      <created>1757693799387</created>
+      <option name="number" value="00018" />
+      <option name="presentableId" value="LOCAL-00018" />
+      <option name="project" value="LOCAL" />
+      <updated>1757693799387</updated>
+    </task>
+    <option name="localTasksCounter" value="19" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -263,6 +277,7 @@
     <MESSAGE value="working metadata filter for portfolio data fetching" />
     <MESSAGE value="basemodel refactor. no error but not computing" />
     <MESSAGE value="basemodel refactor. computing but slow" />
-    <option name="LAST_COMMIT_MESSAGE" value="basemodel refactor. computing but slow" />
+    <MESSAGE value="with API Info" />
+    <option name="LAST_COMMIT_MESSAGE" value="with API Info" />
   </component>
 </project>

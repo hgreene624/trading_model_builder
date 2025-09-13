@@ -7,7 +7,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.storage import list_portfolios, load_portfolio, base_model_path, write_json
+from src.storage import (
+    list_portfolios, load_portfolio, base_model_path, write_json,
+    save_portfolio_model, list_portfolio_models, load_portfolio_model,
+)
 from src.data.alpaca_data import load_ohlcv
 # from src.data.cache import get_ohlcv_cached as load_ohlcv  # if you prefer caching
 from src.models.general_trainer import train_general_model, TrainConfig
@@ -53,6 +56,14 @@ select_start = date(today.year - select_years, today.month, today.day)
 select_end = today
 
 st.caption(f"Priors: **{priors_start} → {priors_end}** (long history).  Selection (OOS): **{select_start} → {select_end}**.")
+
+# Show ticker count for the selected portfolio
+try:
+    _obj0 = load_portfolio(port) if port else None
+    _tick0 = _obj0.get("tickers", []) if _obj0 else []
+    st.metric("Tickers in portfolio", len(_tick0))
+except Exception:
+    pass
 
 
 # --- Param sampler -----------------------------------------------------------
@@ -272,37 +283,7 @@ if ctx:
     with st.expander("Show suggested priors", expanded=False):
         st.dataframe(_pri_df, use_container_width=True, height=320)
 
-    archetype = "trend_breakout_v2"
-    default_name = f"{archetype}__{ctx['port']}__{today.isoformat()}"
-    model_name = st.text_input("Base model name", value=default_name, help="File will be saved under storage/base_models/")
-
-    if st.button("💾 Save Base Model Spec", use_container_width=True):
-        spec = {
-            "meta": {
-                "archetype": archetype,
-                "portfolio": ctx["port"],
-                "created": today.isoformat(),
-                "priors_window": {"start": ctx["windows"]["priors_start"], "end": ctx["windows"]["priors_end"]},
-                "selection_window": {"start": ctx["windows"]["select_start"], "end": ctx["windows"]["select_end"]},
-                "tickers": tickers,
-                "counts": {"priors_nonempty": int(len(pri_df)), "selection_nonempty": int(len(sel_df))},
-            },
-            "priors": priors,
-            "metrics": {
-                "priors": pri_df.reset_index().to_dict(orient="records"),
-                "selection": sel_df.reset_index().to_dict(orient="records"),
-            },
-        }
-        try:
-            try:
-                out_path = base_model_path(archetype, ctx["port"], today.isoformat())
-            except TypeError:
-                from pathlib import Path
-                out_path = Path(f"storage/base_models/{model_name}.json").as_posix()
-            write_json(out_path, spec)
-            st.success(f"Saved base model spec → `{out_path}`")
-        except Exception as e:
-            st.error(f"Failed to save spec: {e}")
+    st.caption("Priors computed. Proceed to training below. (Spec saving removed to reduce clutter.)")
 
 # ============ STAGE 3: Train General Base Model (CV random search) ============
 # ============ STAGE 3: Train General Base Model (CV random search) ============
@@ -345,8 +326,66 @@ if ctx:
         # Show smoke test & a couple of per-ticker diagnostics
         with st.expander("Debug / smoke test"):
             st.json(res.get("debug", {}))
+            if isinstance(res.get("cv_summary"), dict):
+                st.caption("Cross‑validation summary:")
+                st.json(res["cv_summary"])
 
         st.session_state["gm_results"] = res
+
+        # --- Save / compare portfolio models ---
+        st.subheader("💾 Save & compare portfolio models")
+
+        default_pm_name = f"{ctx['port']}__{today.isoformat()}__GM"
+        pm_name = st.text_input("Portfolio model name", value=default_pm_name, key="gm_pm_name")
+        if st.button("Save portfolio model", use_container_width=True, key="gm_save_btn"):
+            try:
+                save_portfolio_model(ctx["port"], pm_name, res)
+                st.success(f"Saved portfolio model '{pm_name}'.")
+            except Exception as e:
+                st.error(f"Save failed: {e}")
+
+        # List & compare saved models for this portfolio
+        try:
+            saved_names = list_portfolio_models(ctx["port"]) or []
+        except Exception:
+            saved_names = []
+
+        if saved_names:
+            rows = []
+            for nm in saved_names:
+                try:
+                    blob = load_portfolio_model(ctx["port"], nm) or {}
+                    # Try to summarize with leaderboard if present
+                    cv_sh_mean = np.nan
+                    cv_tr_sum = 0
+                    if isinstance(blob.get("leaderboard"), (list, tuple)):
+                        _lb = pd.DataFrame(blob["leaderboard"]) if blob["leaderboard"] else pd.DataFrame()
+                        if not _lb.empty:
+                            if "cv_sharpe" in _lb.columns:
+                                cv_sh_mean = float(_lb["cv_sharpe"].astype(float).mean())
+                            if "cv_trades" in _lb.columns:
+                                cv_tr_sum = int(_lb["cv_trades"].fillna(0).astype(int).sum())
+                    rows.append({
+                        "model": nm,
+                        "tickers": len((blob.get("per_ticker") or {})),
+                        "cv_sharpe_mean": cv_sh_mean,
+                        "cv_trades_total": cv_tr_sum,
+                    })
+                except Exception:
+                    rows.append({"model": nm, "tickers": np.nan, "cv_sharpe_mean": np.nan, "cv_trades_total": 0})
+
+            comp_df = pd.DataFrame(rows)
+            if not comp_df.empty:
+                comp_df = comp_df.sort_values(["cv_sharpe_mean", "cv_trades_total"], ascending=[False, False])
+                st.dataframe(comp_df, use_container_width=True, height=260)
+        else:
+            st.caption("No saved portfolio models yet for this portfolio.")
+
+        # Show skipped tickers/errors if any
+        _skipped = res.get("skipped", {}) if isinstance(res, dict) else {}
+        if _skipped:
+            with st.expander("Skipped tickers / errors", expanded=False):
+                st.json(_skipped)
 
     # Save button stays the same but now uses session_state["gm_results"]
 # ---------------- Baseline Strategy Filter (optional) -------------------------
