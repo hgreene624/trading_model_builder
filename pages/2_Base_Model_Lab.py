@@ -1,475 +1,218 @@
 # pages/2_Base_Model_Lab.py
 from __future__ import annotations
-from datetime import date, timedelta
-from typing import Dict, List, Tuple
-import inspect
-import numpy as np
+
+import os
+from datetime import datetime
+import io
+import json
+
 import pandas as pd
 import streamlit as st
 
 from src.storage import (
-    list_portfolios, load_portfolio, base_model_path, write_json,
-    save_portfolio_model, list_portfolio_models, load_portfolio_model,
+    list_portfolios,
+    load_portfolio,
+    list_portfolio_models,
+    save_portfolio_model,
+    save_training_log,
 )
-from src.data.alpaca_data import load_ohlcv
-# from src.data.cache import get_ohlcv_cached as load_ohlcv  # if you prefer caching
-from src.models.general_trainer import train_general_model, TrainConfig
-
-from src.models.base_model_utils import (
-    compute_block_stats,
-    suggest_priors_from_metrics,
-)
-from src.storage import save_base_metrics_ctx, load_latest_base_metrics
-
-st.set_page_config(page_title="Base-Model Lab", layout="wide")
-st.title("🧪 Base-Model Lab (priors from portfolio)")
-
-# ------------------------- helpers -------------------------
-CTX_KEY = "bm_ctx"          # holds computed priors/metrics/tickers/windows
-GM_RES_KEY = "gm_results"   # holds general model training results
-
-def _get_ctx() -> dict | None:
-    return st.session_state.get(CTX_KEY)
-
-def _set_ctx(d: dict) -> None:
-    st.session_state[CTX_KEY] = d
-
-def _clear_ctx() -> None:
-    for k in (CTX_KEY, GM_RES_KEY):
-        if k in st.session_state:
-            del st.session_state[k]
-
-# -------- UI controls (global) --------
-c0, c1, c2 = st.columns([1.2, 1, 1])
-with c0:
-    portfolios = list_portfolios()
-    port = st.selectbox("Portfolio", portfolios, index=0 if portfolios else None)
-with c1:
-    priors_years = st.number_input("Priors window (years)", value=8, min_value=3, max_value=20, step=1)
-with c2:
-    select_years = st.number_input("Selection window (years, OOS)", value=2, min_value=1, max_value=5, step=1)
-
-today = date.today()
-priors_start = date(today.year - priors_years, today.month, today.day)
-priors_end = date(today.year - select_years, today.month, today.day) - timedelta(days=1)
-select_start = date(today.year - select_years, today.month, today.day)
-select_end = today
-
-st.caption(f"Priors: **{priors_start} → {priors_end}** (long history).  Selection (OOS): **{select_start} → {select_end}**.")
-
-# Show ticker count for the selected portfolio
-try:
-    _obj0 = load_portfolio(port) if port else None
-    _tick0 = _obj0.get("tickers", []) if _obj0 else []
-    st.metric("Tickers in portfolio", len(_tick0))
-except Exception:
-    pass
+from src.models.general_trainer import train_general_model
 
 
-# --- Param sampler -----------------------------------------------------------
-def _sample_params(priors: Dict[str, Dict], rng: np.random.Generator) -> Dict:
-    out = {}
-    for k, spec in priors.items():
-        lo = spec.get("low")
-        hi = spec.get("high")
-        seed = spec.get("seed", {})
-        dist = seed.get("dist", "uniform")
-        if k == "use_trend_filter":
-            p = float(seed.get("p", 0.5))
-            out[k] = bool(rng.random() < p)
-            continue
-        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
-            if dist == "gamma":
-                kshape = float(seed.get("k", 2.0))
-                theta = float(seed.get("theta", 5.0))
-                val = float(rng.gamma(kshape, theta))
-                val = lo + (val % max(1e-9, (hi - lo)))
-            else:
-                val = float(lo) + float(rng.random()) * (float(hi) - float(lo))
-            if all(isinstance(x, (int, np.integer)) for x in (lo, hi)) and k not in {"atr_multiple", "risk_per_trade", "tp_multiple", "cost_bps"}:
-                val = int(round(val))
-            out[k] = val
-        else:
-            out[k] = lo
-    return out
+st.set_page_config(page_title="Base Model Lab", layout="wide")
+st.title("📦 Base Model Lab (Portfolio-level)")
 
-# --- Safe backtest wrapper: filters unsupported params so runs never "error" ---
-def _run_backtest_safe(sym: str, start: str, end: str, params: Dict, starting_equity: float = 10_000.0) -> Dict:
-    try:
-        from src.models.atr_breakout import backtest_single  # type: ignore
-    except Exception as e:
-        return {"error": f"import backtest_single failed: {e}"}
-
-    # Filter kwargs to what the strategy actually accepts
-    try:
-        sig = inspect.signature(backtest_single)
-        allowed = set(sig.parameters.keys()) - {"symbol", "start", "end", "starting_equity"}
-        filtered = {k: v for k, v in params.items() if k in allowed}
-    except Exception:
-        filtered = params
-
-    try:
-        return backtest_single(sym, start, end, starting_equity=starting_equity, **filtered)
-    except Exception as e:
-        # Last resort: run with no params beyond required
-        try:
-            return backtest_single(sym, start, end, starting_equity=starting_equity)
-        except Exception:
-            return {"error": str(e)}
-
-# --- CV evaluator (robust, never returns 'error') -----------------------------
-def _cv_eval(sym: str, params: Dict, folds: List[Tuple[str, str]]) -> Dict:
-    sh_list, tr_list = [], []
-    for fs, fe in folds:
-        m = _run_backtest_safe(sym, fs, fe, params, starting_equity=10_000.0)
-        sh_list.append(float(m.get("sharpe", 0.0) or 0.0))
-        tr_list.append(int(m.get("trades", 0) or 0))
+# ────────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────────────────────────────────────
+def _default_params() -> dict:
+    """
+    Sane defaults for the ATR breakout-style strategy. These are the *base model*
+    params used for CV evaluation. You can tweak them here or in the UI.
+    """
     return {
-        "cv_sharpe": float(np.mean(sh_list)) if sh_list else -1e9,
-        "cv_trades": int(np.sum(tr_list)),
-        "fold_sharpes": sh_list,
-        "fold_trades": tr_list,
+        "breakout_n": 55,
+        "exit_n": 35,
+        "atr_n": 14,
+        "atr_multiple": 2.5,
+        "tp_multiple": 2.2,
+        "holding_period_limit": 120,
+        "risk_per_trade": 0.008,  # 0.8%
+        "use_trend_filter": True,
+        "sma_fast": 20,
+        "sma_slow": 60,
+        "sma_long": 200,
+        "long_slope_len": 20,
+        "cost_bps": 2.0,
+        # optional gates if supported by your engine:
+        "chop_max": 55,
+        "atr_ratio_max": 1.8,
+        # execution policy (engine reads this); default = "close"
+        "execution": "close",
     }
 
-# ===================== STAGE 1: COMPUTE METRICS & PRIORS =====================
-with st.expander("📂 Load previously saved metrics (skip recompute)", expanded=False):
-    if port and st.button("Load latest saved metrics for this portfolio", use_container_width=True, key="bm_load_latest"):
-        loaded = load_latest_base_metrics(port)
-        if loaded:
-            # Rebuild ctx from saved blob
-            import pandas as pd
-            pri_df = pd.DataFrame(loaded.get("pri_df", []))
-            sel_df = pd.DataFrame(loaded.get("sel_df", []))
-            if not pri_df.empty and "ticker" in pri_df.columns:
-                pri_df = pri_df.set_index("ticker")
-            if not sel_df.empty and "ticker" in sel_df.columns:
-                sel_df = sel_df.set_index("ticker")
 
-            ctx = {
-                "port": loaded["meta"]["port"],
-                "tickers": loaded["meta"].get("tickers", []),
-                "pri_df": pri_df,
-                "sel_df": sel_df,
-                "priors": loaded.get("priors", {}),
-                "windows": loaded["meta"].get("windows", {}),
-                "errors": loaded["meta"].get("errors", []),
-                "created": loaded["meta"].get("created"),
-            }
-            _set_ctx(ctx)
-            st.success("Loaded saved metrics/priors. Scroll down to continue.")
-            # Auto-persist the computed metrics so you can reload later
-            try:
-                outp = save_base_metrics_ctx(ctx)
-                st.caption(f"Saved computed metrics → `{outp}`")
-            except Exception as e:
-                st.warning(f"Could not save metrics cache: {e}")
+def _strategy_choices() -> list[str]:
+    # Add more dotted strategy modules as you add adapters.
+    return ["src.models.atr_breakout"]
 
-        else:
-            st.info("No saved metrics found for this portfolio yet.")
 
-with st.form("compute_form"):
-    compute_btn = st.form_submit_button("📊 Compute metrics & suggest priors", use_container_width=True)
-    reset_btn = st.form_submit_button("🔄 Reset page state")
+# ────────────────────────────────────────────────────────────────────────────────
+# Layout
+# ────────────────────────────────────────────────────────────────────────────────
+left, right = st.columns([1.0, 1.4], gap="large")
 
-if reset_btn:
-    _clear_ctx()
-    st.experimental_rerun()
+with left:
+    st.subheader("Portfolio & Training")
 
-if compute_btn:
-    if not port:
-        st.error("Pick a portfolio first.")
+    ports = list_portfolios()
+    if not ports:
+        st.warning("No portfolios found. Create one on the **Portfolios** page first.")
         st.stop()
 
-    obj = load_portfolio(port)
-    if not obj:
-        st.error(f"Portfolio '{port}' not found or empty.")
-        st.stop()
+    port_name = st.selectbox("Portfolio", options=ports, index=0, key="bm_port")
+    port_obj = load_portfolio(port_name) or {}
+    tickers = list(port_obj.get("tickers", []))
+    st.info(f"Selected portfolio **{port_name}** with **{len(tickers)}** tickers.")
 
-    tickers: List[str] = obj.get("tickers", [])
-    if not tickers:
-        st.warning("This portfolio has no tickers yet.")
-        st.stop()
+    # Strategy + base params
+    strategy_dotted = st.selectbox("Strategy", _strategy_choices(), index=0, key="bm_strategy")
 
-    st.write(f"Found **{len(tickers)}** tickers in portfolio **{port}**.")
-    prog = st.progress(0.0)
-    pri_rows, sel_rows = [], []
-    err_log: List[str] = []
+    st.markdown("**Base Model Parameters**")
+    with st.expander("Edit base params (used for CV evaluation)", expanded=False):
+        p = _default_params()
+        # Integers
+        p["breakout_n"] = st.number_input("breakout_n (entry lookback)", 5, 300, p["breakout_n"], 1)
+        p["exit_n"] = st.number_input("exit_n (exit lookback)", 4, 300, p["exit_n"], 1)
+        p["atr_n"] = st.number_input("atr_n", 5, 60, p["atr_n"], 1)
+        p["sma_fast"] = st.number_input("sma_fast", 5, 100, p["sma_fast"], 1)
+        p["sma_slow"] = st.number_input("sma_slow", 10, 200, p["sma_slow"], 1)
+        p["sma_long"] = st.number_input("sma_long", 100, 400, p["sma_long"], 1)
+        p["long_slope_len"] = st.number_input("long_slope_len", 5, 60, p["long_slope_len"], 1)
+        p["holding_period_limit"] = st.number_input("holding_period_limit (days)", 5, 400, p["holding_period_limit"], 1)
 
-    for i, sym in enumerate(tickers):
-        try:
-            with st.spinner(f"Loading {sym} …"):
-                df_p = load_ohlcv(sym, priors_start.isoformat(), priors_end.isoformat())
-                df_s = load_ohlcv(sym, select_start.isoformat(), select_end.isoformat())
-        except Exception as e:
-            err_log.append(f"{sym}: {e}")
-            df_p, df_s = pd.DataFrame(), pd.DataFrame()
-
-        if not df_p.empty:
-            stats_p = compute_block_stats(df_p)
-            stats_p["ticker"] = sym
-            pri_rows.append(stats_p)
-
-        if not df_s.empty:
-            stats_s = compute_block_stats(df_s)
-            stats_s["ticker"] = sym
-            sel_rows.append(stats_s)
-
-        prog.progress((i + 1) / len(tickers))
-
-    pri_df = pd.DataFrame(pri_rows).set_index("ticker") if pri_rows else pd.DataFrame()
-    sel_df = pd.DataFrame(sel_rows).set_index("ticker") if sel_rows else pd.DataFrame()
-
-    if pri_df.empty:
-        st.error("No usable data in the Priors window. Try widening the dates or adjusting the portfolio.")
-        st.stop()
-
-    priors = suggest_priors_from_metrics(pri_df)
-
-    ctx = {
-        "port": port,
-        "tickers": tickers,
-        "pri_df": pri_df,
-        "sel_df": sel_df,
-        "priors": priors,
-        "windows": {
-            "priors_start": priors_start.isoformat(),
-            "priors_end": priors_end.isoformat(),
-            "select_start": select_start.isoformat(),
-            "select_end": select_end.isoformat(),
-        },
-        "errors": err_log,
-        "created": today.isoformat(),
-    }
-    _set_ctx(ctx)
-    st.success("Metrics & priors computed. You can now save the spec or train the general model.")
-
-ctx = _get_ctx()
-
-# ===================== STAGE 2: DISPLAY + SAVE SPEC =====================
-if ctx:
-    pri_df: pd.DataFrame = ctx["pri_df"]
-    sel_df: pd.DataFrame = ctx["sel_df"]
-    priors: Dict[str, Dict] = ctx["priors"]
-    tickers: List[str] = ctx["tickers"]
-
-    if ctx.get("errors"):
-        with st.expander("⚠️ Data load warnings (click to expand)"):
-            for line in ctx["errors"]:
-                st.write("- ", line)
-
-    cA, cB = st.columns([1, 1])
-    with cA:
-        with st.expander("Priors window metrics (portfolio)", expanded=False):
-            st.dataframe(pri_df, use_container_width=True, height=300)
-            if not pri_df.empty:
-                med = pri_df.median(numeric_only=True)
-                st.caption(
-                    f"Median Sharpe≈{med.get('sharpe_ann', float('nan')):.2f} | "
-                    f"CAGR≈{(med.get('cagr', float('nan')) or 0)*100:.1f}% | "
-                    f"MaxDD≈{med.get('max_dd', float('nan')):.2%} | "
-                    f"ATR%≈{(med.get('median_atr_pct', float('nan')) or 0)*100:.2f}% | "
-                    f"trend R²≈{med.get('trend_r2', float('nan')):.2f}"
-                )
-    with cB:
-        with st.expander("Selection window metrics (OOS, for ranking)", expanded=False):
-            if not sel_df.empty:
-                st.dataframe(sel_df, use_container_width=True, height=300)
-            else:
-                st.info("No selection-window data for these tickers (or window too short).")
-
-    st.subheader("Suggested priors (Trend/Breakout v2)")
-    _pri_rows = [{"param": k, "low": v.get("low"), "high": v.get("high"), "seed": v.get("seed")} for k, v in priors.items()]
-    _pri_df = pd.DataFrame(_pri_rows).set_index("param")
-    with st.expander("Show suggested priors", expanded=False):
-        st.dataframe(_pri_df, use_container_width=True, height=320)
-
-    st.caption("Priors computed. Proceed to training below. (Spec saving removed to reduce clutter.)")
-
-# ============ STAGE 3: Train General Base Model (CV random search) ============
-# ============ STAGE 3: Train General Base Model (CV random search) ============
-if ctx:
-    st.divider()
-    st.subheader("🧠 Train General Base Model (CV random search)")
-
-    with st.expander("Configure training", expanded=True):
-        form = st.form("gm_form")
-        with form:
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            with c1: K = st.number_input("K per ticker", 8, 4096, 256, 8)
-            with c2: n_folds = st.number_input("CV folds", 2, 8, 3, 1)
-            with c3: min_tr = st.number_input("Min trades/fold", 0, 50, 2, 1)
-            with c4: enforce = st.checkbox("Enforce trades", value=False)
-            with c5: seed = st.number_input("Seed", 0, 999_999, 2025, 1)
-            with c6: max_t = st.number_input("Max tickers", 1, len(ctx["tickers"]), min(50, len(ctx["tickers"])), 1)
-            go = st.form_submit_button("🎯 Train")
-
-    if go:
-        # progress callback to render status
-        prog = st.progress(0.0, text="Starting…")
-        def cb(pct: float, msg: str):
-            prog.progress(min(max(pct, 0.0), 1.0), text=f"Training… {msg}")
-
-        cfg = TrainConfig(K=K, n_folds=n_folds, min_trades_fold=min_tr, enforce_trades=enforce, seed=seed)
-        tickers = ctx["tickers"][: int(max_t)]
-        res = train_general_model(
-            tickers=tickers,
-            priors=ctx["priors"],
-            priors_start=date.fromisoformat(ctx["windows"]["priors_start"]),
-            priors_end=date.fromisoformat(ctx["windows"]["priors_end"]),
-            strategy_dotted="src.models.atr_breakout",  # adjust if different
-            cfg=cfg,
-            progress_cb=cb,
+        # Floats
+        p["atr_multiple"] = st.number_input("atr_multiple", 0.5, 10.0, float(p["atr_multiple"]), 0.1)
+        p["tp_multiple"] = st.number_input("tp_multiple", 0.5, 10.0, float(p["tp_multiple"]), 0.1)
+        p["risk_per_trade"] = st.number_input(
+            "risk_per_trade (fraction of equity)",
+            0.0005, 0.05, float(p["risk_per_trade"]), 0.0005, format="%.4f"
         )
-        st.success(f"Done. Evaluated {len(tickers)} tickers.")
-        st.dataframe(res["leaderboard"], use_container_width=True, height=320)
+        p["cost_bps"] = st.number_input("cost_bps (one-way)", 0.0, 20.0, float(p["cost_bps"]), 0.1)
 
-        # Show smoke test & a couple of per-ticker diagnostics
-        with st.expander("Debug / smoke test"):
-            st.json(res.get("debug", {}))
-            if isinstance(res.get("cv_summary"), dict):
-                st.caption("Cross‑validation summary:")
-                st.json(res["cv_summary"])
+        # Booleans
+        p["use_trend_filter"] = st.checkbox("use_trend_filter", value=bool(p["use_trend_filter"]))
 
-        st.session_state["gm_results"] = res
+        # Optional gates if supported
+        p["chop_max"] = st.number_input("chop_max (optional)", 0, 100, int(p.get("chop_max", 55)), 1)
+        p["atr_ratio_max"] = st.number_input("atr_ratio_max (optional)", 0.1, 5.0, float(p.get("atr_ratio_max", 1.8)), 0.1)
 
-        # --- Save / compare portfolio models ---
-        st.subheader("💾 Save & compare portfolio models")
+        # Execution policy (close is default per your decision)
+        p["execution"] = st.selectbox("Execution policy", ["close"], index=0)
 
-        default_pm_name = f"{ctx['port']}__{today.isoformat()}__GM"
-        pm_name = st.text_input("Portfolio model name", value=default_pm_name, key="gm_pm_name")
-        if st.button("Save portfolio model", use_container_width=True, key="gm_save_btn"):
-            try:
-                save_portfolio_model(ctx["port"], pm_name, res)
-                st.success(f"Saved portfolio model '{pm_name}'.")
-            except Exception as e:
-                st.error(f"Save failed: {e}")
+    # CV / runtime knobs
+    st.markdown("**Cross-Validation & Runtime**")
+    folds = st.number_input("CV folds", 2, 10, 4, 1, key="bm_folds")
+    equity = st.number_input("Starting equity ($)", 1000.0, 1_000_000.0, 10_000.0, 100.0, key="bm_equity")
+    min_trades = st.number_input("Min trades (valid) to keep a symbol", 0, 200, 4, 1, key="bm_min_trades")
 
-        # List & compare saved models for this portfolio
-        try:
-            saved_names = list_portfolio_models(ctx["port"]) or []
-        except Exception:
-            saved_names = []
+    max_w = os.cpu_count() or 4
+    workers = st.number_input("CPU workers", 1, max_w, min(4, max_w), 1, key="bm_workers")
 
-        if saved_names:
-            rows = []
-            for nm in saved_names:
-                try:
-                    blob = load_portfolio_model(ctx["port"], nm) or {}
-                    # Try to summarize with leaderboard if present
-                    cv_sh_mean = np.nan
-                    cv_tr_sum = 0
-                    if isinstance(blob.get("leaderboard"), (list, tuple)):
-                        _lb = pd.DataFrame(blob["leaderboard"]) if blob["leaderboard"] else pd.DataFrame()
-                        if not _lb.empty:
-                            if "cv_sharpe" in _lb.columns:
-                                cv_sh_mean = float(_lb["cv_sharpe"].astype(float).mean())
-                            if "cv_trades" in _lb.columns:
-                                cv_tr_sum = int(_lb["cv_trades"].fillna(0).astype(int).sum())
-                    rows.append({
-                        "model": nm,
-                        "tickers": len((blob.get("per_ticker") or {})),
-                        "cv_sharpe_mean": cv_sh_mean,
-                        "cv_trades_total": cv_tr_sum,
-                    })
-                except Exception:
-                    rows.append({"model": nm, "tickers": np.nan, "cv_sharpe_mean": np.nan, "cv_trades_total": 0})
+    run_btn = st.button("🚀 Train base (portfolio) model", type="primary", use_container_width=True)
 
-            comp_df = pd.DataFrame(rows)
-            if not comp_df.empty:
-                comp_df = comp_df.sort_values(["cv_sharpe_mean", "cv_trades_total"], ascending=[False, False])
-                st.dataframe(comp_df, use_container_width=True, height=260)
+with right:
+    st.subheader("Results")
+
+    if run_btn:
+        if not tickers:
+            st.error("This portfolio has no tickers.")
+            st.stop()
+
+        # UI elements for live progress
+        bar = st.progress(0)
+        line = st.empty()
+        subline = st.empty()
+
+        total_syms = len(tickers)
+        state = {"done": 0, "current": None, "fold_i": 0, "fold_n": 0}
+
+
+        def hook(ev: dict):
+            phase = ev.get("phase")
+            if phase == "prefetch_start":
+                line.markdown(
+                    f"**Prefetching OHLCV** · {ev.get('symbols_total', 0)} symbols · workers={ev.get('workers')}")
+                subline.write("")
+                bar.progress(0)
+            elif phase == "prefetch_progress":
+                i = int(ev.get("i", 0));
+                n = int(ev.get("n", 1))
+                sym = ev.get("symbol")
+                ok = ev.get("ok", False)
+                bar.progress(int(i / max(1, n) * 100))
+                subline.markdown(f"• Cached `{sym}`  ✅" if ok else f"• Cached `{sym}`  ⚠️ failed")
+            elif phase == "prefetch_done":
+                bar.progress(100)
+                line.markdown(f"**Prefetch complete** · ok={ev.get('ok', 0)} · errors={ev.get('errors', 0)}")
+                subline.write("")
+                bar.progress(0)  # reset for training
+
+            elif phase == "start":
+                bar.progress(0)
+                line.markdown(f"**Starting training** · {total_syms} symbols · workers={ev.get('workers')}")
+                subline.write("")
+            elif phase == "queued":
+                i = int(ev.get("i", 0));
+                n = int(ev.get("n", 1))
+                subline.markdown(f"• Queued `{ev.get('symbol')}` ({i}/{n})")
+            elif phase == "fold_start":
+                state["fold_i"] = int(ev.get("i", 0))
+                state["fold_n"] = int(ev.get("n", 0))
+                subline.markdown(f"• Fold {state['fold_i']}/{state['fold_n']} [{ev.get('start')} → {ev.get('end')}]")
+            elif phase == "symbol_done":
+                state["done"] = int(ev.get("i", state["done"]))
+                done = state["done"]
+                n = int(ev.get("n", total_syms))
+                bar.progress(min(100, int(done / max(1, n) * 100)))
+                msg = f"Finished `{ev.get('symbol')}` · trades={ev.get('cv_trades', 0)} · sharpe={ev.get('cv_sharpe', 0):.2f}"
+                line.markdown(msg)
+                subline.write("")
+            elif phase == "done":
+                bar.progress(100)
+                line.markdown(f"**Completed** · {ev.get('rows')} rows across {ev.get('symbols')} symbols")
+                subline.write("")
+        # Run training with progress hook
+        res = train_general_model(
+            portfolio=port_name,
+            strategy_dotted=strategy_dotted,
+            params=p,
+            folds=int(folds),
+            starting_equity=float(equity),
+            min_trades=int(min_trades),
+            workers=int(workers),
+            progress_hook=hook,     # ← live updates
+        )
+
+        st.session_state["base_train_res"] = res
+
+        # Build leaderboard + show results (unchanged from your version)
+        lb = pd.DataFrame(res.get("leaderboard", []))
+        n_eval = int(lb["symbol"].nunique()) if ("symbol" in lb.columns and not lb.empty) else 0
+
+        errs_top = res.get("errors", []) or (res.get("log", {}) or {}).get("errors", []) or []
+        st.success(f"Done: {n_eval} symbols evaluated. Errors: {len(errs_top)}")
+
+        if lb.empty:
+            st.warning("No leaderboard rows (maybe min_trades too high or CV returned no trades).")
         else:
-            st.caption("No saved portfolio models yet for this portfolio.")
+            sort_cols = [c for c in ["cv_sharpe", "cv_cagr", "cv_trades"] if c in lb.columns]
+            if sort_cols:
+                lb = lb.sort_values(sort_cols, ascending=[False] * len(sort_cols)).reset_index(drop=True)
+            numeric_cols = [c for c, dt in zip(lb.columns, lb.dtypes) if pd.api.types.is_numeric_dtype(dt)]
+            fmt_map = {c: "{:.4f}" for c in numeric_cols if c != "cv_trades"}
+            if "cv_trades" in lb.columns:
+                fmt_map["cv_trades"] = "{:.0f}"
+            st.dataframe(lb.style.format(fmt_map), use_container_width=True, height=420)
 
-        # Show skipped tickers/errors if any
-        _skipped = res.get("skipped", {}) if isinstance(res, dict) else {}
-        if _skipped:
-            with st.expander("Skipped tickers / errors", expanded=False):
-                st.json(_skipped)
-
-    # Save button stays the same but now uses session_state["gm_results"]
-# ---------------- Baseline Strategy Filter (optional) -------------------------
-st.divider()
-with st.expander("⚡ Quick baseline filter (optional)", expanded=False):
-    st.subheader("Random K-sample filter")
-    st.markdown(
-        "We randomly sample **K** parameter sets per ticker from the suggested priors, "
-        "backtest them on the **Priors** window (train) and the **Selection** window (validation), "
-        "then keep tickers whose **validation Sharpe** and **trade count** meet your thresholds. "
-        "This yields a cleaner universe for the Evolution tuner."
-    )
-
-    ctx = _get_ctx()
-    if ctx:
-        tickers = ctx["tickers"]
-        priors = ctx["priors"]
-        priors_start = date.fromisoformat(ctx["windows"]["priors_start"])
-        priors_end = date.fromisoformat(ctx["windows"]["priors_end"])
-        select_start = date.fromisoformat(ctx["windows"]["select_start"])
-        select_end = date.fromisoformat(ctx["windows"]["select_end"])
-
-        cX, cY, cZ, cW, cR = st.columns([1, 1, 1, 1, 1])
-        with cX:
-            K = st.number_input("Samples per ticker (K)", min_value=4, max_value=200, value=24, step=4, key="bm_K")
-        with cY:
-            min_sh = st.number_input("Min validation Sharpe", min_value=-2.0, max_value=5.0, value=0.30, step=0.05, key="bm_sh")
-        with cZ:
-            min_tr = st.number_input("Min validation trades", min_value=0, max_value=200, value=8, step=1, key="bm_tr")
-        with cW:
-            max_ticks = st.number_input("Max tickers to test", min_value=1, max_value=len(tickers), value=min(50, len(tickers)), step=1, key="bm_max")
-        with cR:
-            seed_ui = st.number_input("Random seed", min_value=0, max_value=999_999, value=1337, step=1, key="bm_seed")
-
-        go = st.button("🚀 Run baseline filter", use_container_width=True, key="bm_run")
-
-        if go:
-            rng = np.random.default_rng(int(seed_ui))
-            tested = 0
-            kept = []
-            dropped = []
-            prog2 = st.progress(0.0, text="Running baseline filter…")
-            test_list = tickers[: int(max_ticks)]
-            for i, sym in enumerate(test_list):
-                best = None
-                for s in range(int(K)):
-                    p = _sample_params(priors, rng)
-                    res_train = _run_backtest_safe(sym, priors_start.isoformat(), priors_end.isoformat(), p)
-                    res_valid = _run_backtest_safe(sym, select_start.isoformat(), select_end.isoformat(), p)
-                    sh = float(res_valid.get("sharpe", 0.0) or 0.0)
-                    tr = int(res_valid.get("trades", 0) or 0)
-                    score = sh
-                    if (best is None) or (score > best.get("score", -1e9)):
-                        best = {
-                            "symbol": sym,
-                            "score": score,
-                            "sharpe_v": sh,
-                            "trades_v": tr,
-                            "params": p,
-                            "metrics_train": res_train,
-                            "metrics_valid": res_valid,
-                        }
-                tested += 1
-                if best is None:
-                    dropped.append({"symbol": sym, "reason": "no successful runs"})
-                else:
-                    if (best["sharpe_v"] >= float(min_sh)) and (best["trades_v"] >= int(min_tr)):
-                        kept.append(best)
-                    else:
-                        best["reason"] = f"val Sharpe {best['sharpe_v']:.2f}, trades {best['trades_v']}"
-                        dropped.append(best)
-                prog2.progress((i + 1) / max(1, len(test_list)))
-
-            st.success(f"Baseline done. Tested {tested} tickers. Kept {len(kept)}; Dropped {len(dropped)}.")
-            if kept:
-                kept_df_rows = []
-                for r in kept:
-                    row = {"ticker": r["symbol"], "val_sharpe": r["sharpe_v"], "val_trades": r["trades_v"]}
-                    row.update({f"p_{k}": v for k, v in r["params"].items()})
-                    kept_df_rows.append(row)
-                st.dataframe(pd.DataFrame(kept_df_rows), use_container_width=True, height=280)
-            if dropped:
-                with st.expander("Dropped (didn't meet thresholds)"):
-                    st.dataframe(pd.DataFrame([{"ticker": r.get("symbol"), "reason": r.get("reason", "")} for r in dropped]), use_container_width=True, height=220)
-            st.session_state["bm_candidates"] = kept
-    else:
-        st.info("Run **Compute metrics & suggest priors** first to enable this section.")
+        # (keep your Export log / Save model UI below)

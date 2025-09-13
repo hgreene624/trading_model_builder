@@ -4,11 +4,17 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="with API Info">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="updated data model to have savable portfolio level general model">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_base_model_lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/backtest/engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/backtest/engine.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/bt_check.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/indexes.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/1_Portfolios.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/1_Portfolios.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/quick_check.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/quick_check_alpaca.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/src/models/general_trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/general_trainer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/strategy_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/strategy_adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/storage.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/storage.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -99,7 +105,9 @@
       <workItem from="1757550532581" duration="709000" />
       <workItem from="1757607810653" duration="5747000" />
       <workItem from="1757688005912" duration="6364000" />
-      <workItem from="1757773917628" duration="2680000" />
+      <workItem from="1757773917628" duration="11173000" />
+      <workItem from="1757785819263" duration="1841000" />
+      <workItem from="1757787673277" duration="312000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -245,7 +253,15 @@
       <option name="project" value="LOCAL" />
       <updated>1757693799387</updated>
     </task>
-    <option name="localTasksCounter" value="19" />
+    <task id="LOCAL-00019" summary="updated data model to have savable portfolio level general model">
+      <option name="closed" value="true" />
+      <created>1757777505127</created>
+      <option name="number" value="00019" />
+      <option name="presentableId" value="LOCAL-00019" />
+      <option name="project" value="LOCAL" />
+      <updated>1757777505127</updated>
+    </task>
+    <option name="localTasksCounter" value="20" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -278,6 +294,7 @@
     <MESSAGE value="basemodel refactor. no error but not computing" />
     <MESSAGE value="basemodel refactor. computing but slow" />
     <MESSAGE value="with API Info" />
-    <option name="LAST_COMMIT_MESSAGE" value="with API Info" />
+    <MESSAGE value="updated data model to have savable portfolio level general model" />
+    <option name="LAST_COMMIT_MESSAGE" value="updated data model to have savable portfolio level general model" />
   </component>
 </project>
