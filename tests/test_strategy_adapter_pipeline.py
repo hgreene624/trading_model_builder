@@ -38,7 +38,7 @@ BASE_PARAMS: Dict[str, Any] = {
     "atr_multiple": 2.0,
     "tp_multiple": 0.5,
     "holding_period_limit": 5,
-    # extras present in other parts of the app — we’ll filter to match ATRParams:
+    # extras in UI—filtered out to match ATRParams when calling run_strategy:
     "use_trend_filter": False,
     "sma_fast": 20,
     "sma_slow": 50,
@@ -82,20 +82,25 @@ def leg(title: str, fn, *args, **kwargs):
         print("ERROR :", repr(e))
         return False, e
 
-
 def df_info(df: pd.DataFrame | pd.Series, name: str):
-    if df is None or (hasattr(df, "empty") and df.empty):
+    # Avoid pandas truthiness; check emptiness via attribute
+    if df is None:
+        print(f"{name}: <None>")
+        return
+    is_empty = getattr(df, "empty", None)
+    if is_empty is True:
         print(f"{name}: EMPTY")
         return
-    if isinstance(df, pd.Series):
-        print(f"{name}: rows={len(df)} index={type(df.index).__name__}")
-    else:
-        print(f"{name}: rows={len(df)} cols={list(df.columns)} index={type(df.index).__name__}")
+
     try:
+        if isinstance(df, pd.Series):
+            print(f"{name}: rows={len(df)} index={type(df.index).__name__}")
+        else:
+            print(f"{name}: rows={len(df)} cols={list(df.columns)} index={type(df.index).__name__}")
         print("  head:", df.index[0], "tail:", df.index[-1])
     except Exception:
+        # Keep this non-fatal—diagnostic only
         pass
-
 
 def assert_metrics_contract(metrics: Dict[str, Any]):
     missing = [k for k in REQUIRED_METRIC_KEYS if k not in metrics]
@@ -118,10 +123,7 @@ def leg_env():
     print("Tickers        :", TICKERS)
     print("Days back      :", DAYS_BACK)
     print("Starting equity:", STARTING_EQUITY)
-    if PORTFOLIO_NAME:
-        print("Portfolio name :", PORTFOLIO_NAME)
-    else:
-        print("Portfolio name : <none> (trainer leg will be skipped)")
+    print("Portfolio name :", PORTFOLIO_NAME or "<none>")
 
 
 def leg_imports():
@@ -131,7 +133,7 @@ def leg_imports():
     S = importlib.import_module(STRATEGY_DOTTED)
     GT = importlib.import_module("src.models.general_trainer")
     EV = importlib.import_module("src.optimization.evolutionary")
-    M = importlib.import_module("src.backtest.metrics") # <- we’ll compute metrics here
+    M = importlib.import_module("src.backtest.metrics")
     print("\n" + "=" * 72)
     print("Module paths")
     print("=" * 72)
@@ -225,6 +227,8 @@ def _retry_strip_kwargs(callable_fn, sym, start, end, equity, params: Dict[str, 
 
 
 def leg_strategy_run(S, M, start, end):
+    import pandas as pd
+
     banner("Strategy.run_strategy() exact contract")
     run = getattr(S, "run_strategy", None)
     if run is None:
@@ -233,70 +237,106 @@ def leg_strategy_run(S, M, start, end):
     params = _filter_params_for_strategy(S, BASE_PARAMS)
     print("Params passed to run_strategy:", sorted(params.keys()))
 
+    def _safe_len(x):
+        try:
+            return len(x)
+        except Exception:
+            return "??"
+
     summaries = {}
     for sym in TICKERS:
-        ok, out = leg(f"RUN run_strategy on {sym}", _retry_strip_kwargs, run, sym, start, end, STARTING_EQUITY, params)
+        ok, out = leg(
+            f"RUN run_strategy on {sym}",
+            _retry_strip_kwargs,
+            run,
+            sym,
+            start,
+            end,
+            STARTING_EQUITY,
+            params,
+        )
         if not ok:
             raise out
         if not isinstance(out, dict):
             raise AssertionError(f"{sym}: run_strategy should return dict, got {type(out).__name__}")
 
-        # Your strategy returns: equity (Series), daily_returns (Series), trades (list), meta (dict)
         equity = out.get("equity")
         trades = out.get("trades")
         daily = out.get("daily_returns")
 
-        # Ensure daily_returns is available; derive if missing/empty
-        if daily is None or (hasattr(daily, "empty") and daily.empty):
+        # ---- Type/shape guards (never rely on pandas truthiness) ----
+        if not isinstance(equity, pd.Series):
+            # tolerate a 1-col DataFrame by squeezing
+            if hasattr(equity, "squeeze"):
+                equity = equity.squeeze()
+            if not isinstance(equity, pd.Series):
+                raise TypeError(f"{sym}: 'equity' should be a pandas Series, got {type(equity).__name__}")
+
+        if daily is not None and not isinstance(daily, pd.Series):
+            if hasattr(daily, "squeeze"):
+                daily = daily.squeeze()
+            if not isinstance(daily, pd.Series):
+                raise TypeError(f"{sym}: 'daily_returns' should be Series or None, got {type(daily).__name__}")
+
+        # Derive daily if missing/empty (no boolean evaluation of Series)
+        derive_daily = (daily is None) or (getattr(daily, "empty", False) is True)
+        if derive_daily:
             daily = equity.pct_change().fillna(0.0)
 
-        # Sanity printouts
+        # ---- Sanity prints (no boolean checks on pandas objects) ----
         df_info(equity, f"{sym}.equity")
-        print(f"{sym}.trades: {type(trades).__name__} len={len(trades) if isinstance(trades, list) else '??'}")
+        print(f"{sym}.trades: {type(trades).__name__} len={_safe_len(trades)}")
         df_info(daily, f"{sym}.daily_returns")
 
-        # Compute metrics locally using your metrics module
-        # Expectation: src.metrics exposes compute_core_metrics(equity: Series, trades: List[dict]|DataFrame) -> Dict[str, Any]
+        # ---- Compute metrics using your backtest.metrics ----
         compute = getattr(M, "compute_core_metrics", None)
         if compute is None:
-            raise AttributeError("src.metrics missing compute_core_metrics()")
+            raise AttributeError("src.backtest.metrics missing compute_core_metrics()")
 
         metrics = compute(equity=equity, daily_returns=daily, trades=trades)
         assert_metrics_contract(metrics)
-        print(f"{sym}: trades={metrics.get('trades')} total_return={metrics.get('total_return'):.4f} sharpe={metrics.get('sharpe'):.3f}")
+        print(
+            f"{sym}: trades={metrics.get('trades')} "
+            f"total_return={float(metrics.get('total_return', 0.0)):.4f} "
+            f"sharpe={float(metrics.get('sharpe', 0.0)):.3f}"
+        )
         summaries[sym] = metrics
+
     return summaries
 
-
-def leg_general_trainer(GT):
+def leg_general_trainer(GT, start, end, tickers, S):
     banner("General Trainer (portfolio CV) — optional")
-    if not PORTFOLIO_NAME:
-        print("SKIP: No STRAT_TEST_PORTFOLIO provided.")
-        return None
     train = getattr(GT, "train_general_model", None)
     if train is None:
         raise AttributeError("src.models.general_trainer missing train_general_model")
+
+    params_for_strat = _filter_params_for_strategy(S, BASE_PARAMS)
     ok, res = leg(
-        f"train_general_model on portfolio='{PORTFOLIO_NAME}'",
+        f"train_general_model on tickers={tickers}",
         train,
-        PORTFOLIO_NAME,
-        STRATEGY_DOTTED,
-        BASE_PARAMS,
-        2,
-        STARTING_EQUITY,
-        1,
-        1,
-        None,
-        None,
+        STRATEGY_DOTTED,          # strategy_dotted: str
+        tickers,                  # tickers: List[str]
+        start,                    # start
+        end,                      # end
+        STARTING_EQUITY,          # starting_equity: float
+        params_for_strat,         # base_params: Dict[str, Any]
     )
     if not ok:
         raise res
     if not isinstance(res, dict):
         raise AssertionError(f"train_general_model should return dict, got {type(res).__name__}")
-    for k in ("leaderboard", "logs", "errors"):
-        if k not in res:
-            raise AssertionError(f"train_general_model missing key '{k}'")
-    print("trainer.leaderboard rows:", len(res.get("leaderboard", [])))
+
+    # Validate structure per your docstring
+    for key in ("strategy", "params", "period", "results", "aggregate"):
+        if key not in res:
+            raise AssertionError(f"train_general_model missing key '{key}'")
+
+    agg = res.get("aggregate", {}) or {}
+    if "metrics" not in agg:
+        raise AssertionError("aggregate missing 'metrics'")
+    print("aggregate.metrics keys:", sorted(list(agg.get("metrics", {}).keys()))[:12], "...")
+
+    print("trainer.results rows:", len(res.get("results", [])))
     return res
 
 
@@ -330,7 +370,7 @@ def leg_evolutionary(EV, start, end):
         alpha_cagr=1.0,
         beta_calmar=1.0,
         gamma_sharpe=0.25,
-        # holding preferences (not day-trading, not buy/hold)
+        # holding preferences
         min_holding_days=3.0,
         max_holding_days=30.0,
         holding_penalty_weight=1.0,
@@ -379,7 +419,7 @@ def main() -> int:
     if not ok:
         return 1
 
-    ok, _tr = leg("General Trainer (optional)", leg_general_trainer, GT)
+    ok, _tr = leg("General Trainer (optional)", leg_general_trainer, GT, start, end, TICKERS, S)
     if not ok:
         return 1
 

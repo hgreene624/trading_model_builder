@@ -1,150 +1,134 @@
 # src/data/loader.py
 from __future__ import annotations
 
-from datetime import datetime
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional
-import importlib
+
 import pandas as pd
 
+# Local providers
+from . import alpaca_data as A
+from . import yf as Y
 
-# -------------------- internal: column normalization -------------------- #
-def _normalize_ohlcv(df: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
-    """
-    Ensure columns: open, high, low, close, volume; DatetimeIndex in UTC; sorted ascending.
 
-    Robustly handles MultiIndex columns from providers that return shapes like:
-      ('Open','AAPL') or ('AAPL','Open') or ('AAPL','open') ...
-    If `symbol` is provided, we try to slice the MultiIndex on ANY level that matches it.
-    """
+def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure columns: open, high, low, close, volume; DatetimeIndex in UTC; sorted ascending."""
     if df is None or df.empty:
         return df
-
     df = df.copy()
 
-    # If MultiIndex columns, try to slice to the requested symbol on any level
+    # Flatten multiindex columns if present (e.g., ("AAPL","open"))
     if isinstance(df.columns, pd.MultiIndex):
-        if symbol:
-            sym_lower = str(symbol).lower()
-            # Try each level to find the ticker
-            for lvl in range(df.columns.nlevels):
-                level_vals = [str(x).lower() for x in df.columns.get_level_values(lvl)]
-                if sym_lower in level_vals:
-                    try:
-                        sliced = df.xs(symbol, axis=1, level=lvl)
-                        df = sliced
-                        break
-                    except Exception:
-                        # Sometimes levels hold upper/lower symbols inconsistently - try case-insensitive
-                        # Build a mapper to match case-insensitive
-                        idx_map = {}
-                        for tup in df.columns:
-                            parts = [str(x) for x in (tup if isinstance(tup, tuple) else (tup,))]
-                            if len(parts) > lvl and parts[lvl].lower() == sym_lower:
-                                idx_map[tup] = tuple([p for i, p in enumerate(parts) if i != lvl])
-                        if idx_map:
-                            df = df.rename(columns=idx_map)
-                            # Drop the now-redundant level if still MultiIndex
-                            if isinstance(df.columns, pd.MultiIndex) and df.columns.nlevels > 1:
-                                # Try to collapse duplicated levels if any
-                                try:
-                                    df.columns = pd.MultiIndex.from_tuples(
-                                        [tuple(c for c in col if c is not None) for col in df.columns]
-                                    )
-                                except Exception:
-                                    pass
-                            break
+        df.columns = [str(x[-1]).lower() for x in df.columns]
+    else:
+        df.columns = [str(c).lower() for c in df.columns]
 
-        # If still MultiIndex after slicing, flatten by picking the token that looks like a field name
-        if isinstance(df.columns, pd.MultiIndex):
-            def pick_field(col) -> str:
-                # Examine every element for OHLCV keywords
-                parts = [str(x).strip().lower() for x in (col if isinstance(col, tuple) else (col,))]
-                wanted = {"open", "high", "low", "close", "volume", "adj close", "adj_close", "adjclose"}
-                for p in parts:
-                    if p in wanted:
-                        return p
-                # aliases
-                alias = {"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"}
-                for p in parts:
-                    if p in alias:
-                        return alias[p]
-                # fallback: last token
-                return parts[-1] if parts else "close"
-
-            df.columns = [pick_field(col) for col in df.columns]
-
-    # Lower-case all columns for easier matching
-    df.columns = [str(c).lower() for c in df.columns]
-
-    # Map common variants to canonical names
-    rename_map = {
-        "adj close": "adj_close",
-        "adjclose": "adj_close",
-        "adj_close": "adj_close",
-        "open_price": "open",
-        "close_price": "close",
-        "high_price": "high",
-        "low_price": "low",
-        "o": "open",
-        "h": "high",
-        "l": "low",
-        "c": "close",
-        "v": "volume",
+    # Rename common variants to standard names
+    ren = {}
+    alias_map = {
+        "open": ("open", "o", "open_price", "adj_open", "open_adj"),
+        "high": ("high", "h", "high_price", "adj_high", "high_adj"),
+        "low": ("low", "l", "low_price", "adj_low", "low_adj"),
+        "close": ("close", "c", "close_price", "adj_close", "close_adj"),
+        "volume": ("volume", "v"),
     }
-    df.rename(columns=rename_map, inplace=True)
+    for want, aliases in alias_map.items():
+        if want not in df.columns:
+            for cand in aliases:
+                if cand in df.columns:
+                    ren[cand] = want
+                    break
+    if ren:
+        df.rename(columns=ren, inplace=True)
 
-    # If we still don’t have all OHLC, just return what we have (caller can decide to error)
-    have = set(df.columns)
-    need = {"open", "high", "low", "close"}
-    if not need.issubset(have):
-        return df
-
-    # Build a datetime index if needed
+    # Ensure DatetimeIndex UTC
     if not isinstance(df.index, pd.DatetimeIndex):
-        lower = {c.lower(): c for c in df.columns}
-        for t in ("timestamp", "time", "date", "datetime"):
-            if t in lower:
-                df.index = pd.to_datetime(df[lower[t]], utc=True, errors="coerce")
-                if t != "timestamp":
-                    df.drop(columns=[lower[t]], inplace=True, errors="ignore")
+        for ts_col in ("timestamp", "time", "date", "datetime"):
+            if ts_col in df.columns:
+                df.index = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
+                if ts_col != "timestamp":
+                    df.drop(columns=[ts_col], inplace=True, errors="ignore")
                 break
 
-    # Ensure UTC tz-aware index
     if isinstance(df.index, pd.DatetimeIndex):
         df.index = df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
 
     df.sort_index(inplace=True)
-
-    # Keep only the core columns if present
-    keep = [c for c in ("open", "high", "low", "close", "volume", "adj_close") if c in df.columns]
-    return df[keep] if keep else df
+    return df
 
 
-# -------------------- public: unified loader -------------------- #
+def _widen_daily_end(end: datetime, timeframe: str) -> datetime:
+    """For daily bars, nudge end forward so we don't miss the latest completed session."""
+    if timeframe.lower() in {"1d", "1day", "d", "day"}:
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        return (end + timedelta(days=1)).astimezone(timezone.utc)
+    return end
+
+
+def _print_one_line(provider: str, symbol: str, df: Optional[pd.DataFrame]):
+    rows = 0 if df is None else len(df)
+    cols = [] if (df is None or df.empty) else list(df.columns)
+    print(f"[loader] provider={provider} symbol={symbol} rows={rows} cols={cols[:5]}{'...' if len(cols) > 5 else ''}")
+
+
 def get_ohlcv(
     symbol: str,
     start: datetime,
     end: datetime,
-    timeframe: Optional[str] = None,
+    timeframe: str = "1d",
+    *,
+    force_provider: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Unified OHLCV loader used by training/backtests.
-    Tries Alpaca first; on any error or empty result, falls back to Yahoo Finance.
-    Returns a DataFrame with columns: open, high, low, close, [volume[, adj_close]], UTC index.
+    Unified OHLCV loader with:
+      - Provider selection: Alpaca first, then Yahoo fallback (default), or forced via env.
+      - Wider end-bound for daily bars to avoid off-by-one misses.
+      - One-line proof of provider used (to stdout).
+    Env:
+      DATA_PROVIDER = 'alpaca' | 'yf' | 'auto' (default: auto)
+      ALPACA_FEED   = 'iex' | 'sip' (we pass through to Alpaca only)
     """
-    # Try Alpaca (modern alpaca-py backend)
-    try:
-        alpaca = importlib.import_module("src.data.alpaca_data")
-        df_a = alpaca.load_ohlcv(symbol, start, end, timeframe or "1Day")
-        df_a = _normalize_ohlcv(df_a, symbol)
-        if df_a is not None and not df_a.empty and {"open", "high", "low", "close"}.issubset({c.lower() for c in df_a.columns}):
-            return df_a
-    except Exception:
-        # swallow and fallback to YF
-        pass
+    provider_env = (force_provider or os.getenv("DATA_PROVIDER", "auto")).strip().lower()
+    use_alpaca_first = provider_env in {"auto", "alpaca"}
+    use_yf = provider_env in {"auto", "yf"}
 
-    # Fallback: Yahoo Finance
-    yf = importlib.import_module("src.data.yf")
-    df_y = yf.load_ohlcv(symbol, start, end, timeframe or "1d")
-    df_y = _normalize_ohlcv(df_y, symbol)
-    return df_y
+    end_adj = _widen_daily_end(end, timeframe)
+
+    last_err: Optional[Exception] = None
+
+    # 1) Try Alpaca
+    if use_alpaca_first:
+        try:
+            feed = os.getenv("ALPACA_FEED", "iex")
+            df = A.load_ohlcv(symbol, start, end_adj, timeframe=timeframe, feed=feed)
+            df = _normalize_ohlcv(df)
+            # Ensure canonical columns are present
+            if df is not None and not df.empty and {"open", "high", "low", "close"}.issubset(df.columns):
+                _print_one_line("alpaca", symbol, df)
+                return df
+            # If we reach here, data is empty or missing columns; fall through
+            _print_one_line("alpaca-empty", symbol, df)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[loader] alpaca error symbol={symbol}: {repr(e)}")
+
+    # 2) Fallback to Yahoo
+    if use_yf:
+        try:
+            df = Y.load_ohlcv(symbol, start, end_adj, timeframe=timeframe)
+            df = _normalize_ohlcv(df)
+            if df is not None and not df.empty and {"open", "high", "low", "close"}.issubset(df.columns):
+                _print_one_line("yahoo", symbol, df)
+                return df
+            _print_one_line("yahoo-empty", symbol, df)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[loader] yahoo error symbol={symbol}: {repr(e)}")
+
+    # If neither worked
+    msg = f"No data returned for {symbol} ({provider_env})."
+    if last_err is not None:
+        raise RuntimeError(msg) from last_err
+    raise RuntimeError(msg)
