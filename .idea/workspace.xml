@@ -4,9 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="added day trading guards with holding limits">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working Strategy Adapter page. with help tips">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -105,7 +106,7 @@
       <workItem from="1757949490554" duration="2758000" />
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
-      <workItem from="1758033823981" duration="5667000" />
+      <workItem from="1758033823981" duration="7617000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -307,7 +308,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758039203520</updated>
     </task>
-    <option name="localTasksCounter" value="26" />
+    <task id="LOCAL-00026" summary="working Strategy Adapter page. with help tips">
+      <option name="closed" value="true" />
+      <created>1758039999562</created>
+      <option name="number" value="00026" />
+      <option name="presentableId" value="LOCAL-00026" />
+      <option name="project" value="LOCAL" />
+      <updated>1758039999562</updated>
+    </task>
+    <option name="localTasksCounter" value="27" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -347,6 +356,7 @@
     <MESSAGE value="working 80/20 model param refactor. No base model training happening yet" />
     <MESSAGE value="working 80/20 model param refactor. evolution started and testing with trades" />
     <MESSAGE value="added day trading guards with holding limits" />
-    <option name="LAST_COMMIT_MESSAGE" value="added day trading guards with holding limits" />
+    <MESSAGE value="working Strategy Adapter page. with help tips" />
+    <option name="LAST_COMMIT_MESSAGE" value="working Strategy Adapter page. with help tips" />
   </component>
 </project>

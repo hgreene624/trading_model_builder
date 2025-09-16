@@ -2,29 +2,33 @@
 """
 Evolutionary parameter search with progress reporting + logging.
 
-Enhancements in this revision:
-- Fitness = α*CAGR + β*Calmar + γ*Sharpe  -  λ * holding_penalty(avg_holding_days)
-    • holding_penalty = 0 if avg_holding_days in [min_holding_days, max_holding_days]
-      else linear distance outside the band
-- Exposed knobs (UI-ready later):
-    • mutation_rate, elite_frac, random_inject_frac
-    • min_trades, require_hold_days, eps_mdd, eps_sharpe
-    • alpha_cagr, beta_calmar, gamma_sharpe
-    • min_holding_days, max_holding_days, holding_penalty_weight
-- Survivor selection still enforces min_trades gate via fitness
-- Gen telemetry: best/avg score, avg trades, % no-trades, elite/breed/inject counts
-- Anomaly logging: under_min_trades, degenerate_fitness
+New in this revision:
+- Parallel evaluation with ProcessPoolExecutor (n_jobs)
+- Swing hard gate: min_avg_holding_days_gate (score=0 if avg_hold < gate)
+- Trade-rate band penalty:
+    trades_per_symbol_per_year = total_trades / num_symbols / years
+    soft penalty outside [trade_rate_min, trade_rate_max]
+- Fitness:
+    base = α*CAGR + β*Calmar + γ*Sharpe
+    hold_pen = λ_hold * penalty(avg_holding_days outside [min_hold, max_hold])
+    rate_pen = λ_rate * penalty(trade_rate outside [rate_min, rate_max])
+    score = base - hold_pen - rate_pen
+- All knobs exposed as function args (UI-ready)
 """
 
 from __future__ import annotations
 import random
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
+from datetime import date, datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from src.models.general_trainer import train_general_model
 from src.utils.training_logger import TrainingLogger
 from src.utils.progress import ProgressCallback, console_progress
 
+
+# ----------------------------- Sampling ops ------------------------------
 
 def random_param(param_space: Dict[str, Tuple]) -> Dict[str, Any]:
     """Sample a random param set from (low, high) ranges. Int vs float inferred from bounds."""
@@ -56,6 +60,8 @@ def crossover(p1: Dict[str, Any], p2: Dict[str, Any]) -> Dict[str, Any]:
     return {k: (p1[k] if random.random() < 0.5 else p2[k]) for k in p1}
 
 
+# ------------------------------ Penalties --------------------------------
+
 def _holding_penalty(avg_hold_days: float, lo: float, hi: float) -> float:
     """Linear penalty outside [lo, hi]. Zero inside the band."""
     if lo <= avg_hold_days <= hi:
@@ -65,11 +71,23 @@ def _holding_penalty(avg_hold_days: float, lo: float, hi: float) -> float:
     return float(avg_hold_days - hi)
 
 
+def _rate_penalty(trade_rate: float, lo: float, hi: float) -> float:
+    """Linear penalty outside [lo, hi] for trades per symbol per year."""
+    if lo <= trade_rate <= hi:
+        return 0.0
+    if trade_rate < lo:
+        return float(lo - trade_rate)
+    return float(trade_rate - hi)
+
+
+# ------------------------------ Fitness ----------------------------------
+
 def _clamped_fitness(
     metrics: Dict[str, Any],
     *,
     # gates & clamps
     min_trades: int,
+    min_avg_holding_days_gate: float,
     require_hold_days: bool,
     eps_mdd: float,
     eps_sharpe: float,
@@ -81,23 +99,34 @@ def _clamped_fitness(
     min_holding_days: float,
     max_holding_days: float,
     holding_penalty_weight: float,
+    # trade rate preference
+    trade_rate_min: float,
+    trade_rate_max: float,
+    trade_rate_penalty_weight: float,
+    # context for rate
+    num_symbols: int,
+    years: float,
 ) -> float:
     """
     Robust fitness:
         base = α*CAGR + β*Calmar + γ*Sharpe
-        penalty = λ * holding_penalty(avg_holding_days, [min_holding_days, max_holding_days])
-        score = base - penalty
-    With safety:
-        - if trades < min_trades: score = 0
-        - if require_hold_days and avg_holding_days <= 0: score = 0
-        - if |max_drawdown| < eps_mdd: Calmar := 0
-        - if |Sharpe| < eps_sharpe:    Sharpe := 0
+        hold_pen = λ_hold * penalty(avg_holding_days in [min_hold, max_hold])
+        rate_pen = λ_rate * penalty(trade_rate in [rate_min, rate_max])
+        score = base - hold_pen - rate_pen
+    Safety:
+        - trades < min_trades => 0
+        - avg_hold < min_avg_holding_days_gate => 0
+        - require_hold_days and avg_hold <= 0 => 0
+        - |MDD| < eps_mdd => Calmar := 0
+        - |Sharpe| < eps_sharpe => Sharpe := 0
     """
     trades = int(metrics.get("trades", 0) or 0)
     if trades < min_trades:
         return 0.0
 
     avg_hold = float(metrics.get("avg_holding_days", 0.0) or 0.0)
+    if avg_hold < float(min_avg_holding_days_gate):
+        return 0.0
     if require_hold_days and avg_hold <= 0.0:
         return 0.0
 
@@ -113,9 +142,42 @@ def _clamped_fitness(
         sharpe = 0.0
 
     base = (alpha_cagr * cagr) + (beta_calmar * calmar) + (gamma_sharpe * sharpe)
-    penalty = holding_penalty_weight * _holding_penalty(avg_hold, min_holding_days, max_holding_days)
-    return float(base - penalty)
 
+    hold_pen = holding_penalty_weight * _holding_penalty(avg_hold, min_holding_days, max_holding_days)
+
+    trade_rate = 0.0
+    if num_symbols > 0 and years > 0:
+        trade_rate = float(trades) / float(num_symbols) / float(years)
+    rate_pen = trade_rate_penalty_weight * _rate_penalty(trade_rate, trade_rate_min, trade_rate_max)
+
+    return float(base - hold_pen - rate_pen)
+
+
+# --------------------------- Child evaluation ----------------------------
+
+def _eval_one(
+    strategy_dotted: str,
+    tickers: List[str],
+    start,
+    end,
+    starting_equity: float,
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Pure function suitable for multiprocessing.
+    Returns dict with metrics and elapsed seconds.
+    """
+    t1 = time.time()
+    res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
+    metrics = res.get("aggregate", {}).get("metrics", {}) or {}
+    return {
+        "metrics": metrics,
+        "elapsed_sec": time.time() - t1,
+        "params": params,
+    }
+
+
+# ----------------------------- Main EA loop ------------------------------
 
 def evolutionary_search(
     strategy_dotted: str,
@@ -131,8 +193,11 @@ def evolutionary_search(
     mutation_rate: float = 0.3,
     elite_frac: float = 0.5,            # keep top 50%
     random_inject_frac: float = 0.2,    # inject 20% fresh randoms each gen
+    # Parallelism
+    n_jobs: int = 1,                    # 1 = single process; >1 uses ProcessPoolExecutor
     # Fitness gates & clamps
     min_trades: int = 5,
+    min_avg_holding_days_gate: float = 1.0,
     require_hold_days: bool = False,
     eps_mdd: float = 1e-4,
     eps_sharpe: float = 1e-4,
@@ -143,23 +208,45 @@ def evolutionary_search(
     # Holding window preference (avoid day-trading & buy/hold)
     min_holding_days: float = 3.0,
     max_holding_days: float = 30.0,
-    holding_penalty_weight: float = 0.1,
+    holding_penalty_weight: float = 1.0,
+    # Trade-rate preference (per symbol per year)
+    trade_rate_min: float = 5.0,
+    trade_rate_max: float = 50.0,
+    trade_rate_penalty_weight: float = 0.5,
     # Progress & logging
     progress_cb: ProgressCallback = console_progress,
     log_file: str = "training.log",
+    # Reproducibility
+    seed: Optional[int] = None,
 ) -> List[Tuple[Dict[str, Any], float]]:
     """
     Run EA and return top parameter sets [(params, score)].
 
     Notes:
-    - Survivor selection indirectly enforces `min_trades` via fitness gating.
-    - Diversity is maintained via `random_inject_frac`.
-    - Mutation uses `mutation_rate`.
+    - Survivor selection indirectly enforces `min_trades` and min_avg_holding_days_gate via fitness gating.
+    - Diversity maintained via `random_inject_frac`.
+    - Multiprocessing evaluates individuals in parallel per generation.
     """
+    if seed is not None:
+        random.seed(seed)
+
     logger = TrainingLogger(log_file)
     population = [random_param(param_space) for _ in range(pop_size)]
     scored: List[Tuple[Dict[str, Any], float]] = []
     t0 = time.time()
+
+    # years used for trade-rate normalization
+    def _years(a, b) -> float:
+        # support date/datetime/str
+        def _to_dt(x):
+            if isinstance(x, (date, datetime)):
+                return datetime(x.year, x.month, x.day)
+            return datetime.fromisoformat(str(x))
+        days = (_to_dt(end) - _to_dt(start)).days
+        return max(1e-9, days / 365.25)
+
+    years = _years(start, end)
+    num_symbols = max(1, len(tickers))
 
     for gen in range(generations):
         progress_cb("generation_start", {"gen": gen, "pop_size": len(population)})
@@ -169,60 +256,97 @@ def evolutionary_search(
         gen_trades: List[int] = []
         no_trade_count = 0
 
+        # ---- Evaluate population (parallel or single) ----
+        results: List[Dict[str, Any]] = []
+
+        if n_jobs and n_jobs > 1:
+            with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+                futures = [
+                    ex.submit(_eval_one, strategy_dotted, tickers, start, end, starting_equity, params)
+                    for params in population
+                ]
+                for i, fut in enumerate(as_completed(futures)):
+                    try:
+                        out = fut.result()
+                    except Exception as e:
+                        # record as an error entry; continue
+                        ctx = {"gen": gen, "idx": i, "params": population[i] if i < len(population) else {}}
+                        logger.log_error(ctx, e)
+                        out = {"metrics": {}, "elapsed_sec": 0.0, "params": ctx.get("params", {})}
+                    results.append(out)
+        else:
+            for params in population:
+                try:
+                    out = _eval_one(strategy_dotted, tickers, start, end, starting_equity, params)
+                except Exception as e:
+                    logger.log_error({"gen": gen, "params": params}, e)
+                    out = {"metrics": {}, "elapsed_sec": 0.0, "params": params}
+                results.append(out)
+
+        # Emit per-individual logs/telemetry in deterministic order of the current population
+        # (for nice, predictable UI), matching index by params identity.
         for i, params in enumerate(population):
-            t1 = time.time()
-            try:
-                res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
-                metrics = res.get("aggregate", {}).get("metrics", {}) or {}
+            # find first matching result for these params (simple linear scan; pop to avoid duplicates)
+            hit_idx = None
+            for j, r in enumerate(results):
+                if r is not None and r.get("params") == params:
+                    hit_idx = j
+                    break
+            if hit_idx is None:
+                metrics = {}
+                elapsed = 0.0
+            else:
+                rec = results.pop(hit_idx)
+                metrics = rec.get("metrics", {}) or {}
+                elapsed = rec.get("elapsed_sec", 0.0)
 
-                # robust, swing-friendly fitness
-                score = _clamped_fitness(
-                    metrics,
-                    min_trades=min_trades,
-                    require_hold_days=require_hold_days,
-                    eps_mdd=eps_mdd,
-                    eps_sharpe=eps_sharpe,
-                    alpha_cagr=alpha_cagr,
-                    beta_calmar=beta_calmar,
-                    gamma_sharpe=gamma_sharpe,
-                    min_holding_days=min_holding_days,
-                    max_holding_days=max_holding_days,
-                    holding_penalty_weight=holding_penalty_weight,
-                )
-                elapsed = time.time() - t1
+            # compute fitness
+            score = _clamped_fitness(
+                metrics,
+                min_trades=min_trades,
+                min_avg_holding_days_gate=min_avg_holding_days_gate,
+                require_hold_days=require_hold_days,
+                eps_mdd=eps_mdd,
+                eps_sharpe=eps_sharpe,
+                alpha_cagr=alpha_cagr,
+                beta_calmar=beta_calmar,
+                gamma_sharpe=gamma_sharpe,
+                min_holding_days=min_holding_days,
+                max_holding_days=max_holding_days,
+                holding_penalty_weight=holding_penalty_weight,
+                trade_rate_min=trade_rate_min,
+                trade_rate_max=trade_rate_max,
+                trade_rate_penalty_weight=trade_rate_penalty_weight,
+                num_symbols=num_symbols,
+                years=years,
+            )
 
-                trades = int(metrics.get("trades", 0) or 0)
-                gen_trades.append(trades)
+            trades = int(metrics.get("trades", 0) or 0)
+            gen_trades.append(trades)
 
-                payload = {
-                    "gen": gen,
-                    "idx": i,
-                    "params": params,
-                    "score": score,
-                    "metrics": metrics,
-                    "elapsed_sec": elapsed,
-                }
-                progress_cb("individual_evaluated", payload)
-                logger.log("individual_evaluated", payload)
+            payload = {
+                "gen": gen,
+                "idx": i,
+                "params": params,
+                "score": score,
+                "metrics": metrics,
+                "elapsed_sec": elapsed,
+            }
+            progress_cb("individual_evaluated", payload)
+            logger.log("individual_evaluated", payload)
 
-                if trades < min_trades:
-                    logger.log("under_min_trades", payload)
-                    if trades == 0 and (metrics.get("calmar", 0) or 0) != 0:
-                        logger.log("degenerate_fitness", payload)
-                    no_trade_count += (1 if trades == 0 else 0)
+            if trades < min_trades:
+                logger.log("under_min_trades", payload)
+                if trades == 0 and (metrics.get("calmar", 0) or 0) != 0:
+                    logger.log("degenerate_fitness", payload)
+                no_trade_count += (1 if trades == 0 else 0)
 
-                gen_scores.append((params, score))
+            gen_scores.append((params, score))
 
-            except Exception as e:
-                # hard error path
-                ctx = {"gen": gen, "idx": i, "params": params}
-                logger.log_error(ctx, e)
-
-        # sort by score desc
+        # ---- Selection & breeding ----
         gen_scores.sort(key=lambda x: x[1], reverse=True)
         scored.extend(gen_scores)
 
-        # determine counts
         elite_n = max(1, int(pop_size * elite_frac))
         inject_n = max(0, int(pop_size * random_inject_frac))
         breed_n = pop_size - elite_n - inject_n
@@ -230,13 +354,14 @@ def evolutionary_search(
             inject_n = max(0, pop_size - elite_n)
             breed_n = pop_size - elite_n - inject_n
 
-        # survivors (positive fitness → passed gates); pad if needed
         survivors: List[Dict[str, Any]] = []
         for p, s in gen_scores:
             if s > 0:
                 survivors.append(p)
             if len(survivors) == elite_n:
                 break
+
+        # pad if too few survivors (keep population viable)
         idx = 0
         while len(survivors) < elite_n and idx < len(gen_scores):
             survivors.append(gen_scores[idx][0])
@@ -251,10 +376,8 @@ def evolutionary_search(
             child = mutate(crossover(p1, p2), param_space, rate=mutation_rate)
             children.append(child)
 
-        # random injections
         injections = [random_param(param_space) for _ in range(max(0, inject_n))]
 
-        # new population
         population = survivors + children + injections
         while len(population) < pop_size:
             population.append(random_param(param_space))

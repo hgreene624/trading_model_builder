@@ -1,15 +1,23 @@
 # pages/2_Strategy_Adapter.py
 # ---------------------------------------------------------------------
-# Strategy Adapter — Evolutionary Trainer (with tooltips)
-# - Runs evolutionary search over strategy params across a portfolio
+# Strategy Adapter — Evolutionary Trainer (parallel tuned for Apple Silicon)
+# - Top-of-page Performance section with n_jobs slider (default 16 on M2 Ultra)
+# - Env vars set to avoid thread oversubscription inside each worker process
 # - Live progress UI + JSONL log download
-# - Every control has a help tooltip explaining impact
 # ---------------------------------------------------------------------
 
 from __future__ import annotations
 from pathlib import Path
 import sys
 from datetime import date, timedelta, datetime
+import os
+
+# --- Prevent BLAS/vecLib/OMP thread oversubscription inside each process ---
+# Do this BEFORE importing numpy/pandas anywhere in the app.
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_MAX_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import pandas as pd
 import streamlit as st
@@ -33,7 +41,6 @@ def _default_dates(years: int = 3) -> tuple[date, date]:
 
 
 def _top_table(scored):
-    """scored = List[(params: dict, score: float)] -> DataFrame"""
     rows = []
     for params, score in scored:
         row = {"score": float(score)}
@@ -46,7 +53,6 @@ def _top_table(scored):
 
 
 def _make_progress_cb(status_box, indiv_box, gen_box):
-    """Return a progress callback that updates Streamlit placeholders."""
     history = []
 
     def cb(event: str, payload: dict):
@@ -73,7 +79,7 @@ def _make_progress_cb(status_box, indiv_box, gen_box):
                 "trades": trades, "avg_hold_days": hold,
                 "cagr": cagr, "calmar": calmar, "sharpe": sharpe
             })
-            history = history[-100:]  # keep last 100 to avoid huge UI
+            history = history[-100:]
             indiv_box.dataframe(pd.DataFrame(history), use_container_width=True, height=260)
 
         elif event == "generation_end":
@@ -116,12 +122,31 @@ def _ensure_dir(p: Path):
 
 st.title("Strategy Adapter — Evolutionary Trainer")
 
+# ---------- Performance (always at top) ----------
+st.subheader("Performance", help="Control CPU parallelism for faster runs.")
+cpu_cnt = os.cpu_count() or 1
+
+# Default workers: 16 on M2 Ultra (24 cores), else a safe default near perf cores
+default_workers = 16 if cpu_cnt >= 24 else max(1, min(8, cpu_cnt - 1))
+n_jobs = st.slider(
+    "n_jobs (parallel workers)",
+    min_value=1,
+    max_value=max(2, cpu_cnt),
+    value=min(default_workers, cpu_cnt),
+    help=(
+        "Number of worker processes to evaluate candidates in parallel. "
+        "On Apple Silicon, 12–16 is a good starting point. "
+        "Each worker is restricted to 1 BLAS/OMP thread to avoid oversubscription."
+    ),
+)
+
+st.caption(f"Detected CPU cores: {cpu_cnt} • Defaulted workers: {min(default_workers, cpu_cnt)}")
+
 cfg, out = st.columns([1, 2], gap="large")
 
 with cfg:
     st.subheader("Portfolio & Data")
 
-    # Portfolios
     try:
         portfolios = list_portfolios()
     except Exception as e:
@@ -136,8 +161,7 @@ with cfg:
         "Portfolio",
         options=portfolios,
         index=0,
-        help="Select which saved portfolio (list of tickers) to optimize across. "
-             "The EA evaluates parameter sets on this entire ticker set."
+        help="Choose which saved portfolio (list of tickers) to optimize across."
     )
     try:
         port = load_portfolio(port_name)
@@ -152,35 +176,28 @@ with cfg:
         st.warning("Selected portfolio has no tickers.")
         st.stop()
 
-    # Strategy (add more dotted paths as you build them)
     strategy_dotted = st.selectbox(
         "Strategy module",
         options=["src.models.atr_breakout"],
         index=0,
-        help="The Python module implementing your strategy. It must expose "
-             "`run_strategy(symbol, start, end, starting_equity, params)` and return "
-             "an equity curve, daily returns, and trades."
+        help="Module must expose run_strategy(symbol, start, end, starting_equity, params)."
     )
 
-    # Dates & equity
     d_start, d_end = _default_dates(3)
     c1, c2 = st.columns(2)
     start = c1.date_input(
-        "Start",
-        value=d_start,
+        "Start", value=d_start,
         help="Backtest start date. Ensure it’s long enough for your lookback windows to warm up."
     )
     end = c2.date_input(
-        "End",
-        value=d_end,
+        "End", value=d_end,
         help="Backtest end date. The EA evaluates each candidate over this full period."
     )
     starting_equity = st.number_input(
         "Starting equity per symbol",
         min_value=100.0, max_value=10_000_000.0,
         value=10_000.0, step=100.0,
-        help="Capital allocated to each symbol at the start of the test. "
-             "Aggregate portfolio metrics are computed across equal-weighted symbol curves."
+        help="Capital allocated to each symbol at the start of the test."
     )
 
     st.divider()
@@ -189,32 +206,28 @@ with cfg:
 
     breakout_n = c1.slider(
         "breakout_n (low, high)", 5, 100, (10, 30),
-        help="Lookback window (days) for the rolling high breakout. "
-             "Higher → fewer signals, potentially longer holds. Lower → more signals, more whipsaws."
+        help="Lookback for breakout high. Higher → fewer signals, longer holds; lower → more signals."
     )
     exit_n = c1.slider(
         "exit_n (low, high)", 4, 60, (5, 15),
-        help="Exit lookback (days), often a trailing low or opposite channel. "
-             "Higher → exits later (longer holds). Lower → exits quicker (shorter holds)."
+        help="Exit lookback window. Higher → exits later; lower → exits quicker."
     )
     atr_n = c1.slider(
         "atr_n (low, high)", 5, 60, (10, 20),
-        help="ATR window (days). Larger smooths ATR (fewer trades). Smaller reacts faster (more trades)."
+        help="ATR smoothing window. Larger → smoother ATR, fewer signals; smaller → more reactive."
     )
 
     atr_multiple = c2.slider(
         "atr_multiple (low, high)", 0.5, 5.0, (1.2, 2.5),
-        help="How many ATRs below the breakout high to allow as a cushion. "
-             "Higher → stricter entries (fewer trades). Lower → looser entries (more trades)."
+        help="Entry cushion in ATRs. Higher → stricter entries (fewer trades)."
     )
     tp_multiple = c2.slider(
         "tp_multiple (low, high)", 0.0, 5.0, (0.0, 1.5),
-        help="Optional profit target in multiples of ATR. 0 disables the TP. "
-             "Higher → earlier profit-taking. Lower → let winners run."
+        help="Profit target in ATRs. 0 disables TP. Higher → take profits earlier."
     )
     holding_limit = c2.slider(
         "holding_period_limit (low, high)", 0, 252, (0, 60),
-        help="Max days to hold a position. 0 disables. Useful to prevent capital being locked for too long."
+        help="Max days to hold a position. 0 disables."
     )
 
     param_space = {
@@ -231,79 +244,86 @@ with cfg:
     c1, c2, c3 = st.columns(3)
 
     generations = c1.number_input(
-        "generations", 1, 200, 10, 1,
-        help="How many evolutionary steps to run. More generations → more exploration and refinement."
+        "generations", 1, 500, 10, 1,
+        help="How many evolutionary steps to run."
     )
     pop_size = c1.number_input(
-        "population size", 2, 200, 30, 1,
-        help="Number of parameter sets evaluated per generation. Larger pops explore more in parallel."
+        "population size", 2, 500, 30, 1,
+        help="Number of parameter sets evaluated per generation."
     )
+    # Hint: n_jobs should not exceed pop_size; we clamp at run time below.
+    st.caption("Tip: set population ≥ n_jobs for full CPU utilization.")
 
     mutation_rate = c2.slider(
         "mutation_rate", 0.0, 1.0, 0.4, 0.05,
-        help="Chance a given parameter is randomly perturbed in a child. "
-             "Higher → more exploration (risk of noise). Lower → more exploitation (risk of stagnation)."
+        help="Chance a given parameter is randomly perturbed in a child."
     )
     elite_frac = c2.slider(
         "elite_frac", 0.0, 0.95, 0.5, 0.05,
-        help="Fraction of top performers kept each generation (elitism). "
-             "Higher preserves best solutions. Too high can reduce diversity."
+        help="Fraction of top performers kept each generation (elitism)."
     )
     random_inject_frac = c2.slider(
         "random_inject_frac", 0.0, 0.95, 0.2, 0.05,
-        help="Fraction of fresh random individuals injected each gen. "
-             "Maintains diversity and helps escape local optima."
+        help="Fraction of fresh random individuals injected each generation."
     )
 
     min_trades = c3.number_input(
-        "min_trades (gate)", 0, 1000, 10, 1,
-        help="Hard gate: individuals with fewer trades than this score 0 and can’t survive selection. "
-             "Prevents degenerate, no-trade ‘winners’."
+        "min_trades (gate)", 0, 10000, 10, 1,
+        help="Hard gate: individuals with fewer trades than this score 0."
+    )
+    min_hold_gate = c3.number_input(
+        "min_avg_holding_days_gate", 0.0, 30.0, 1.0, 0.5,
+        help="Hard gate: score=0 if avg holding days is below this (avoid day-trading)."
     )
     require_hold_days = c3.checkbox(
         "require avg_holding_days > 0", value=False,
-        help="If on, any individual with non-positive average holding days is discarded (score=0)."
-    )
-    eps_mdd = c3.number_input(
-        "eps_mdd", 0.0, 0.01, 1e-4, step=1e-4, format="%.4f",
-        help="Minimum |Max Drawdown| used to avoid Calmar blow-ups. "
-             "If |MDD| < eps, Calmar is treated as 0."
-    )
-    eps_sharpe = c3.number_input(
-        "eps_sharpe", 0.0, 0.01, 1e-4, step=1e-4, format="%.4f",
-        help="Minimum |Sharpe| used to avoid tiny-std explosions. "
-             "If |Sharpe| < eps, Sharpe is treated as 0."
+        help="If on, any individual with non-positive avg holding days is discarded."
     )
 
     st.divider()
-    st.subheader("Fitness Weights & Holding Window (Swing-friendly)")
+    st.subheader("Fitness Weights & Preferences")
     c1, c2 = st.columns(2)
 
     alpha_cagr = c1.number_input(
         "α (CAGR weight)", 0.0, 5.0, 1.0, 0.1,
-        help="Weight on CAGR (growth). Increasing α chases higher terminal equity."
+        help="Weight on CAGR (growth)."
     )
     beta_calmar = c1.number_input(
         "β (Calmar weight)", 0.0, 5.0, 1.0, 0.1,
-        help="Weight on Calmar (CAGR / MaxDD). Increasing β favors better risk-adjusted growth."
+        help="Weight on Calmar (growth vs drawdown)."
     )
     gamma_sharpe = c1.number_input(
         "γ (Sharpe weight)", 0.0, 5.0, 0.25, 0.05,
-        help="Weight on Sharpe (mean/vol). Increasing γ favors smoother equity curves."
+        help="Weight on Sharpe (smoothness)."
     )
 
     min_holding_days = c2.number_input(
         "min_holding_days", 0.0, 100.0, 3.0, 0.5,
-        help="Preferred lower bound for average holding period. Helps avoid day-trading behavior."
+        help="Preferred lower bound for average holding period."
     )
     max_holding_days = c2.number_input(
         "max_holding_days", 0.0, 365.0, 30.0, 1.0,
-        help="Preferred upper bound for average holding period. Helps avoid tying up capital for too long."
+        help="Preferred upper bound for average holding period."
     )
     holding_penalty_weight = c2.number_input(
-        "holding_penalty_weight (λ)", 0.0, 5.0, 0.1, 0.05,
-        help="Strength of the penalty when average holding days falls outside the preferred band. "
-             "Higher λ enforces swing-trade behavior more strictly."
+        "holding_penalty_weight (λ)", 0.0, 5.0, 1.0, 0.05,
+        help="Penalty weight for falling outside the holding period band."
+    )
+
+    st.divider()
+    st.subheader("Trade-Rate Preference (per symbol per year)")
+    c1, c2, c3 = st.columns(3)
+    trade_rate_min = c1.number_input(
+        "trade_rate_min", 0.0, 365.0, 5.0, 1.0,
+        help="Preferred lower bound for trades per symbol per year."
+    )
+    trade_rate_max = c2.number_input(
+        "trade_rate_max", 0.0, 365.0, 50.0, 1.0,
+        help="Preferred upper bound for trades per symbol per year."
+    )
+    trade_rate_penalty_weight = c3.number_input(
+        "trade_rate_penalty_weight (λ)", 0.0, 5.0, 0.5, 0.05,
+        help="Penalty weight for being outside the trade-rate band."
     )
 
     # Run setup
@@ -330,6 +350,9 @@ with out:
     if go:
         progress_cb = _make_progress_cb(status_box, indiv_box, gen_box)
 
+        # Clamp n_jobs to not exceed population size for efficiency
+        n_jobs_eff = int(min(max(1, n_jobs), int(pop_size)))
+
         with st.spinner("Running EA…"):
             scored = evolutionary_search(
                 strategy_dotted=strategy_dotted,
@@ -343,16 +366,21 @@ with out:
                 mutation_rate=float(mutation_rate),
                 elite_frac=float(elite_frac),
                 random_inject_frac=float(random_inject_frac),
+                n_jobs=n_jobs_eff,
                 min_trades=int(min_trades),
+                min_avg_holding_days_gate=float(min_hold_gate),
                 require_hold_days=bool(require_hold_days),
-                eps_mdd=float(eps_mdd),
-                eps_sharpe=float(eps_sharpe),
+                eps_mdd=1e-4,
+                eps_sharpe=1e-4,
                 alpha_cagr=float(alpha_cagr),
                 beta_calmar=float(beta_calmar),
                 gamma_sharpe=float(gamma_sharpe),
                 min_holding_days=float(min_holding_days),
                 max_holding_days=float(max_holding_days),
                 holding_penalty_weight=float(holding_penalty_weight),
+                trade_rate_min=float(trade_rate_min),
+                trade_rate_max=float(trade_rate_max),
+                trade_rate_penalty_weight=float(trade_rate_penalty_weight),
                 progress_cb=progress_cb,
                 log_file=log_file,
             )
@@ -380,4 +408,4 @@ with out:
             download_box.error(f"Could not read log file: {e}")
 
     else:
-        st.info("Fill in the configuration on the left, then press **Run Evolutionary Search**.")
+        st.info("Set **n_jobs** at the top, fill in the configuration on the left, then press **Run Evolutionary Search**.")
