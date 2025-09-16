@@ -4,17 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="Started logging system for base model, UI Woring, json export working.">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working 80/20 model param refactor. No base model training happening yet">
+      <change afterPath="$PROJECT_DIR$/src/optimization/walkforward.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/utils/progress.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/utils/training_logger.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_ea_logger.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/Pages_UNUSED/2_Base_Model_Lab.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/__init__.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/backtest/engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/backtest/engine.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/backtest/metrics.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/backtest/metrics.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/atr_breakout.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/atr_breakout.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/base_model_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/base_model_utils.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/general_trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/general_trainer.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/models/strategy_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/strategy_adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/utils/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -113,7 +109,7 @@
       <workItem from="1757949490554" duration="2758000" />
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
-      <workItem from="1758033823981" duration="1000000" />
+      <workItem from="1758033823981" duration="4239000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -291,7 +287,15 @@
       <option name="project" value="LOCAL" />
       <updated>1757949097657</updated>
     </task>
-    <option name="localTasksCounter" value="23" />
+    <task id="LOCAL-00023" summary="working 80/20 model param refactor. No base model training happening yet">
+      <option name="closed" value="true" />
+      <created>1758034928074</created>
+      <option name="number" value="00023" />
+      <option name="presentableId" value="LOCAL-00023" />
+      <option name="project" value="LOCAL" />
+      <updated>1758034928074</updated>
+    </task>
+    <option name="localTasksCounter" value="24" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -328,6 +332,7 @@
     <MESSAGE value="reverted to single core. base model trainer not working and no log button" />
     <MESSAGE value="fixed storage error on home page" />
     <MESSAGE value="Started logging system for base model, UI Woring, json export working." />
-    <option name="LAST_COMMIT_MESSAGE" value="Started logging system for base model, UI Woring, json export working." />
+    <MESSAGE value="working 80/20 model param refactor. No base model training happening yet" />
+    <option name="LAST_COMMIT_MESSAGE" value="working 80/20 model param refactor. No base model training happening yet" />
   </component>
 </project>
