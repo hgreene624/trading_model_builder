@@ -4,11 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="sucessfull strategy adapter test V2">
-      <change afterPath="$PROJECT_DIR$/tests/test_walkforward.py" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="walkforward with artifact detection">
+      <change afterPath="$PROJECT_DIR$/src/utils/artifacts.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/optimization/walkforward.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/walkforward.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_alpaca_connection.py" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -107,7 +106,8 @@
       <workItem from="1757949490554" duration="2758000" />
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
-      <workItem from="1758033823981" duration="21678000" />
+      <workItem from="1758033823981" duration="22111000" />
+      <workItem from="1758056469773" duration="355000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -349,7 +349,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758055176640</updated>
     </task>
-    <option name="localTasksCounter" value="31" />
+    <task id="LOCAL-00031" summary="successfull walkforward test">
+      <option name="closed" value="true" />
+      <created>1758056020288</created>
+      <option name="number" value="00031" />
+      <option name="presentableId" value="LOCAL-00031" />
+      <option name="project" value="LOCAL" />
+      <updated>1758056020288</updated>
+    </task>
+    <option name="localTasksCounter" value="32" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -367,7 +375,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="V1 evolutionary tuning" />
     <MESSAGE value="working param and model profiles" />
     <MESSAGE value="updated with addtional model params and working profile selectors" />
     <MESSAGE value="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy" />
@@ -392,6 +399,7 @@
     <MESSAGE value="data pipeline validated, with test. requirements updated. starting test for strategy adapter" />
     <MESSAGE value="sucessfull strategy adapter test" />
     <MESSAGE value="sucessfull strategy adapter test V2" />
-    <option name="LAST_COMMIT_MESSAGE" value="sucessfull strategy adapter test V2" />
+    <MESSAGE value="successfull walkforward test" />
+    <option name="LAST_COMMIT_MESSAGE" value="successfull walkforward test" />
   </component>
 </project>
