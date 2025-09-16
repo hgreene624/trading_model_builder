@@ -4,11 +4,17 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="fixed storage error on home page">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="Started logging system for base model, UI Woring, json export working.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_Base_Model_Lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/Pages_UNUSED/2_Base_Model_Lab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/backtest/engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/backtest/engine.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/backtest/metrics.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/backtest/metrics.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/atr_breakout.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/atr_breakout.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/base_model_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/base_model_utils.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/models/general_trainer.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/general_trainer.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/storage.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/storage.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/strategy_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/strategy_adapter.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -53,23 +59,23 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "ChatGPT-Rebase",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "preferences.general",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;ChatGPT-Rebase&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.general&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
       <recent name="$PROJECT_DIR$/Pages_UNUSED" />
@@ -103,7 +109,11 @@
       <workItem from="1757785819263" duration="1841000" />
       <workItem from="1757787673277" duration="312000" />
       <workItem from="1757787993860" duration="1735000" />
-      <workItem from="1757943396146" duration="5505000" />
+      <workItem from="1757943396146" duration="5914000" />
+      <workItem from="1757949490554" duration="2758000" />
+      <workItem from="1757952520940" duration="1721000" />
+      <workItem from="1757954257238" duration="4647000" />
+      <workItem from="1758033823981" duration="1000000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -273,7 +283,15 @@
       <option name="project" value="LOCAL" />
       <updated>1757945336916</updated>
     </task>
-    <option name="localTasksCounter" value="22" />
+    <task id="LOCAL-00022" summary="Started logging system for base model, UI Woring, json export working.">
+      <option name="closed" value="true" />
+      <created>1757949097657</created>
+      <option name="number" value="00022" />
+      <option name="presentableId" value="LOCAL-00022" />
+      <option name="project" value="LOCAL" />
+      <updated>1757949097657</updated>
+    </task>
+    <option name="localTasksCounter" value="23" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -309,6 +327,7 @@
     <MESSAGE value="updated data model to have savable portfolio level general model" />
     <MESSAGE value="reverted to single core. base model trainer not working and no log button" />
     <MESSAGE value="fixed storage error on home page" />
-    <option name="LAST_COMMIT_MESSAGE" value="fixed storage error on home page" />
+    <MESSAGE value="Started logging system for base model, UI Woring, json export working." />
+    <option name="LAST_COMMIT_MESSAGE" value="Started logging system for base model, UI Woring, json export working." />
   </component>
 </project>
