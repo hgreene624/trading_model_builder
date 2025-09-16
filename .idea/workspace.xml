@@ -4,11 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="sucessfull strategy adapter test">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="sucessfull strategy adapter test V2">
+      <change afterPath="$PROJECT_DIR$/tests/test_walkforward.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/data/loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/loader.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/data/yf.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/yf.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_strategy_adapter_pipeline.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_strategy_adapter_pipeline.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/optimization/walkforward.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/walkforward.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_alpaca_connection.py" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -107,7 +107,7 @@
       <workItem from="1757949490554" duration="2758000" />
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
-      <workItem from="1758033823981" duration="20699000" />
+      <workItem from="1758033823981" duration="21678000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -341,7 +341,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758053264564</updated>
     </task>
-    <option name="localTasksCounter" value="30" />
+    <task id="LOCAL-00030" summary="sucessfull strategy adapter test V2">
+      <option name="closed" value="true" />
+      <created>1758055176640</created>
+      <option name="number" value="00030" />
+      <option name="presentableId" value="LOCAL-00030" />
+      <option name="project" value="LOCAL" />
+      <updated>1758055176640</updated>
+    </task>
+    <option name="localTasksCounter" value="31" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -359,7 +367,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="engine updates. pre tker page update" />
     <MESSAGE value="V1 evolutionary tuning" />
     <MESSAGE value="working param and model profiles" />
     <MESSAGE value="updated with addtional model params and working profile selectors" />
@@ -384,6 +391,7 @@
     <MESSAGE value="multi core training and expsed trade rate preferance vars" />
     <MESSAGE value="data pipeline validated, with test. requirements updated. starting test for strategy adapter" />
     <MESSAGE value="sucessfull strategy adapter test" />
-    <option name="LAST_COMMIT_MESSAGE" value="sucessfull strategy adapter test" />
+    <MESSAGE value="sucessfull strategy adapter test V2" />
+    <option name="LAST_COMMIT_MESSAGE" value="sucessfull strategy adapter test V2" />
   </component>
 </project>
