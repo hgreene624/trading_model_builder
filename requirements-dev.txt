@@ -1,0 +1,8 @@
+# Testing / linting / formatting
+pytest>=8,<9
+pytest-xdist>=3,<4
+ruff>=0.5
+black>=24.0
+
+# Notebooks / REPL niceties
+ipykernel>=6.29

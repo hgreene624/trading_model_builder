@@ -4,10 +4,23 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working Strategy Adapter page. with help tips">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="multi core training and expsed trade rate preferance vars">
+      <change afterPath="$PROJECT_DIR$/requirements-dev.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/utils/st_safe.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_alpaca_connection.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_data_pipeline.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tests/test_strategy_adapter_pipeline.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Pages_UNUSED/2_Base_Model_Lab.py" beforeDir="false" afterPath="$PROJECT_DIR$/Pages_UNUSED/2_Base_Model_Lab.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/alpaca_data.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/alpaca_data.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/loader.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/yf.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/yf.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/models/strategy_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/models/strategy_adapter.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/tuning/auto_bounds.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/tuning/auto_bounds.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/utils/progress.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/utils/progress.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/utils/training_logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/utils/training_logger.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -106,7 +119,7 @@
       <workItem from="1757949490554" duration="2758000" />
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
-      <workItem from="1758033823981" duration="7617000" />
+      <workItem from="1758033823981" duration="16207000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -316,7 +329,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758039999562</updated>
     </task>
-    <option name="localTasksCounter" value="27" />
+    <task id="LOCAL-00027" summary="multi core training and expsed trade rate preferance vars">
+      <option name="closed" value="true" />
+      <created>1758041838879</created>
+      <option name="number" value="00027" />
+      <option name="presentableId" value="LOCAL-00027" />
+      <option name="project" value="LOCAL" />
+      <updated>1758041838879</updated>
+    </task>
+    <option name="localTasksCounter" value="28" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -357,6 +378,7 @@
     <MESSAGE value="working 80/20 model param refactor. evolution started and testing with trades" />
     <MESSAGE value="added day trading guards with holding limits" />
     <MESSAGE value="working Strategy Adapter page. with help tips" />
-    <option name="LAST_COMMIT_MESSAGE" value="working Strategy Adapter page. with help tips" />
+    <MESSAGE value="multi core training and expsed trade rate preferance vars" />
+    <option name="LAST_COMMIT_MESSAGE" value="multi core training and expsed trade rate preferance vars" />
   </component>
 </project>

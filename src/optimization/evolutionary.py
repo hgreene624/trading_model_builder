@@ -19,6 +19,7 @@ New in this revision:
 from __future__ import annotations
 import random
 import time
+import importlib
 from typing import Any, Dict, List, Tuple, Optional
 from datetime import date, datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -27,6 +28,17 @@ from src.models.general_trainer import train_general_model
 from src.utils.training_logger import TrainingLogger
 from src.utils.progress import ProgressCallback, console_progress
 
+import sys
+from pathlib import Path
+ROOT = str(Path(__file__).resolve().parents[2])  # project root
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import multiprocessing as mp
+try:
+    mp.set_start_method("spawn")
+except RuntimeError:
+    pass
 
 # ----------------------------- Sampling ops ------------------------------
 
@@ -168,12 +180,16 @@ def _eval_one(
     Returns dict with metrics and elapsed seconds.
     """
     t1 = time.time()
+    # prove which loader module is actually imported inside the worker process
+    L = importlib.import_module("src.data.loader")
+    _loader_file = getattr(L, "__file__", "<??>")
     res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
     metrics = res.get("aggregate", {}).get("metrics", {}) or {}
     return {
         "metrics": metrics,
         "elapsed_sec": time.time() - t1,
         "params": params,
+        "loader_file": _loader_file,
     }
 
 
@@ -295,10 +311,12 @@ def evolutionary_search(
             if hit_idx is None:
                 metrics = {}
                 elapsed = 0.0
+                loader_file = None
             else:
                 rec = results.pop(hit_idx)
                 metrics = rec.get("metrics", {}) or {}
                 elapsed = rec.get("elapsed_sec", 0.0)
+                loader_file = rec.get("loader_file")
 
             # compute fitness
             score = _clamped_fitness(
@@ -331,6 +349,7 @@ def evolutionary_search(
                 "score": score,
                 "metrics": metrics,
                 "elapsed_sec": elapsed,
+                "loader_file": loader_file,
             }
             progress_cb("individual_evaluated", payload)
             logger.log("individual_evaluated", payload)

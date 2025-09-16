@@ -1,294 +1,391 @@
-# pages/2_Base_Model_Lab.py
+# pages/2_Strategy_Adapter.py
 from __future__ import annotations
-
-import io
-import json
+from pathlib import Path
+import sys
+from datetime import date, timedelta, datetime
 import os
-from datetime import datetime
-import inspect
+
+# Avoid BLAS/OMP oversubscription per worker
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_MAX_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import pandas as pd
 import streamlit as st
 
-from src.storage import (
-    list_portfolios,
-    load_portfolio,
-    list_portfolio_models,
-    save_portfolio_model,
-    save_training_log,
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.storage import list_portfolios, load_portfolio
+from src.optimization.evolutionary import evolutionary_search
+
+
+def _default_dates(years: int = 3) -> tuple[date, date]:
+    end = date.today()
+    start = end - timedelta(days=int(365.25 * years))
+    return start, end
+
+
+def _top_table(scored):
+    rows = []
+    for params, score in scored:
+        row = {"score": float(score)}
+        row.update({k: params.get(k) for k in params.keys()})
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("score", ascending=False)
+    return df
+
+
+def _make_progress_cb(status_box, indiv_box, gen_box):
+    history = []
+
+    def cb(event: str, payload: dict):
+        nonlocal history
+
+        if event == "generation_start":
+            gen = payload["gen"]
+            pop = payload["pop_size"]
+            status_box.info(f"Generation {gen} starting … (population={pop})")
+
+        elif event == "individual_evaluated":
+            gen = payload["gen"]
+            idx = payload["idx"]
+            score = payload.get("score", 0.0)
+            m = payload.get("metrics", {}) or {}
+            trades = int(m.get("trades", 0) or 0)
+            hold = float(m.get("avg_holding_days", 0.0) or 0.0)
+            cagr = float(m.get("cagr", 0.0) or 0.0)
+            calmar = float(m.get("calmar", 0.0) or 0.0)
+            sharpe = float(m.get("sharpe", 0.0) or 0.0)
+
+            history.append({
+                "gen": gen, "idx": idx, "score": score,
+                "trades": trades, "avg_hold_days": hold,
+                "cagr": cagr, "calmar": calmar, "sharpe": sharpe
+            })
+            history = history[-100:]
+            # CHANGED: width="stretch" replaces deprecated use_container_width
+            indiv_box.dataframe(pd.DataFrame(history), width="stretch", height=260)
+
+        elif event == "generation_end":
+            gen = payload["gen"]
+            best = payload.get("best_score", 0.0)
+            avg = payload.get("avg_score", 0.0)
+            avg_tr = payload.get("avg_trades", 0.0)
+            no_tr_pct = 100.0 * payload.get("pct_no_trades", 0.0)
+            elite_n = payload.get("elite_n")
+            breed_n = payload.get("breed_n")
+            inject_n = payload.get("inject_n")
+
+            df = pd.DataFrame([{
+                "generation": gen,
+                "best_score": best,
+                "avg_score": avg,
+                "avg_trades": avg_tr,
+                "no_trades_%": no_tr_pct,
+                "elite_n": elite_n,
+                "breed_n": breed_n,
+                "inject_n": inject_n,
+            }])
+            # CHANGED: width="stretch"
+            gen_box.dataframe(df, width="stretch", height=88)
+
+        elif event == "done":
+            secs = payload.get("elapsed_sec", 0.0)
+            status_box.success(f"EA completed in {secs:.1f}s")
+        else:
+            status_box.write({"event": event, "payload": payload})
+
+    return cb
+
+
+def _ensure_dir(p: Path):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+st.title("Strategy Adapter — Evolutionary Trainer")
+
+# Performance at top
+st.subheader("Performance", help="Control CPU parallelism for faster runs.")
+cpu_cnt = os.cpu_count() or 1
+default_workers = 16 if cpu_cnt >= 24 else max(1, min(8, cpu_cnt - 1))
+n_jobs = st.slider(
+    "n_jobs (parallel workers)",
+    min_value=1,
+    max_value=max(2, cpu_cnt),
+    value=min(default_workers, cpu_cnt),
+    help=(
+        "Number of worker processes to evaluate candidates in parallel. "
+        "On Apple Silicon, 12–16 is a good starting point. "
+        "Each worker is restricted to 1 BLAS/OMP thread to avoid oversubscription."
+    ),
 )
-from src.models.general_trainer import train_general_model
+st.caption(f"Detected CPU cores: {cpu_cnt} • Defaulted workers: {min(default_workers, cpu_cnt)}")
 
+cfg, out = st.columns([1, 2], gap="large")
 
-st.set_page_config(page_title="Base Model Lab", layout="wide")
-st.title("📦 Base Model Lab (Portfolio-level)")
+with cfg:
+    st.subheader("Portfolio & Data")
 
+    try:
+        portfolios = list_portfolios()
+    except Exception as e:
+        portfolios = []
+        st.error(f"storage.list_portfolios() failed: {e}")
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ────────────────────────────────────────────────────────────────────────────────
-def _default_params() -> dict:
-    """
-    Sane defaults for the ATR breakout-style strategy. These are the *base model*
-    params used for CV evaluation. You can tweak them here or in the UI.
-    """
-    return {
-        "breakout_n": 55,
-        "exit_n": 35,
-        "atr_n": 14,
-        "atr_multiple": 2.5,
-        "tp_multiple": 2.2,
-        "holding_period_limit": 120,
-        "risk_per_trade": 0.008,  # 0.8%
-        "use_trend_filter": True,
-        "sma_fast": 20,
-        "sma_slow": 60,
-        "sma_long": 200,
-        "long_slope_len": 20,
-        "cost_bps": 2.0,
-        # optional gates if supported by your engine:
-        "chop_max": 55,
-        "atr_ratio_max": 1.8,
-        # execution policy (engine reads this); default = "close"
-        "execution": "close",
-    }
-
-
-def _strategy_choices() -> list[str]:
-    # Add more dotted strategy modules as you add adapters.
-    return ["src.models.atr_breakout"]
-
-
-# ────────────────────────────────────────────────────────────────────────────────
-# Layout
-# ────────────────────────────────────────────────────────────────────────────────
-left, right = st.columns([1.0, 1.4], gap="large")
-
-with left:
-    st.subheader("Portfolio & Training")
-
-    ports = list_portfolios()
-    if not ports:
-        st.warning("No portfolios found. Create one on the **Portfolios** page first.")
+    if not portfolios:
+        st.warning("No portfolios found. Add one via your storage module.")
         st.stop()
 
-    port_name = st.selectbox("Portfolio", options=ports, index=0, key="bm_port")
-    port_obj = load_portfolio(port_name) or {}
-    tickers = list(port_obj.get("tickers", []))
-    st.info(f"Selected portfolio **{port_name}** with **{len(tickers)}** tickers.")
+    port_name = st.selectbox(
+        "Portfolio",
+        options=portfolios,
+        index=0,
+        help="Choose which saved portfolio (list of tickers) to optimize across."
+    )
+    try:
+        port = load_portfolio(port_name)
+        tickers = list(port.get("tickers", []))
+    except Exception as e:
+        tickers = []
+        st.error(f"storage.load_portfolio({port_name!r}) failed: {e}")
+        st.stop()
 
-    # Strategy + base params
-    strategy_dotted = st.selectbox("Strategy", _strategy_choices(), index=0, key="bm_strategy")
+    st.caption(f"{port_name}: {len(tickers)} tickers")
+    if not tickers:
+        st.warning("Selected portfolio has no tickers.")
+        st.stop()
 
-    st.markdown("**Base Model Parameters**")
-    with st.expander("Edit base params (used for CV evaluation)", expanded=False):
-        p = _default_params()
-        # Integers
-        p["breakout_n"] = st.number_input("breakout_n (entry lookback)", 5, 300, p["breakout_n"], 1)
-        p["exit_n"] = st.number_input("exit_n (exit lookback)", 4, 300, p["exit_n"], 1)
-        p["atr_n"] = st.number_input("atr_n", 5, 60, p["atr_n"], 1)
-        p["sma_fast"] = st.number_input("sma_fast", 5, 100, p["sma_fast"], 1)
-        p["sma_slow"] = st.number_input("sma_slow", 10, 200, p["sma_slow"], 1)
-        p["sma_long"] = st.number_input("sma_long", 100, 400, p["sma_long"], 1)
-        p["long_slope_len"] = st.number_input("long_slope_len", 5, 60, p["long_slope_len"], 1)
-        p["holding_period_limit"] = st.number_input("holding_period_limit (days)", 5, 400, p["holding_period_limit"], 1)
+    strategy_dotted = st.selectbox(
+        "Strategy module",
+        options=["src.models.atr_breakout"],
+        index=0,
+        help="Module must expose run_strategy(symbol, start, end, starting_equity, params)."
+    )
 
-        # Floats
-        p["atr_multiple"] = st.number_input("atr_multiple", 0.5, 10.0, float(p["atr_multiple"]), 0.1)
-        p["tp_multiple"] = st.number_input("tp_multiple", 0.5, 10.0, float(p["tp_multiple"]), 0.1)
-        p["risk_per_trade"] = st.number_input(
-            "risk_per_trade (fraction of equity)",
-            0.0005, 0.05, float(p["risk_per_trade"]), 0.0005, format="%.4f"
-        )
-        p["cost_bps"] = st.number_input("cost_bps (one-way)", 0.0, 20.0, float(p["cost_bps"]), 0.1)
+    d_start, d_end = _default_dates(3)
+    c1, c2 = st.columns(2)
+    start = c1.date_input(
+        "Start", value=d_start,
+        help="Backtest start date. Ensure it’s long enough for your lookback windows to warm up."
+    )
+    end = c2.date_input(
+        "End", value=d_end,
+        help="Backtest end date. The EA evaluates each candidate over this full period."
+    )
+    starting_equity = st.number_input(
+        "Starting equity per symbol",
+        min_value=100.0, max_value=10_000_000.0,
+        value=10_000.0, step=100.0,
+        help="Capital allocated to each symbol at the start of the test."
+    )
 
-        # Booleans
-        p["use_trend_filter"] = st.checkbox("use_trend_filter", value=bool(p["use_trend_filter"]))
+    st.divider()
+    st.subheader("Parameter Space (bounds for EA sampling)")
+    c1, c2 = st.columns(2)
 
-        # Optional gates if supported
-        p["chop_max"] = st.number_input("chop_max (optional)", 0, 100, int(p.get("chop_max", 55)), 1)
-        p["atr_ratio_max"] = st.number_input("atr_ratio_max (optional)", 0.1, 5.0, float(p.get("atr_ratio_max", 1.8)), 0.1)
+    breakout_n = c1.slider(
+        "breakout_n (low, high)", 5, 100, (10, 30),
+        help="Lookback for breakout high. Higher → fewer signals, longer holds; lower → more signals."
+    )
+    exit_n = c1.slider(
+        "exit_n (low, high)", 4, 60, (5, 15),
+        help="Exit lookback window. Higher → exits later; lower → exits quicker."
+    )
+    atr_n = c1.slider(
+        "atr_n (low, high)", 5, 60, (10, 20),
+        help="ATR smoothing window. Larger → smoother ATR, fewer signals; smaller → more reactive."
+    )
 
-        # Execution policy (close is default per your decision)
-        p["execution"] = st.selectbox("Execution policy", ["close"], index=0)
+    atr_multiple = c2.slider(
+        "atr_multiple (low, high)", 0.5, 5.0, (1.2, 2.5),
+        help="Entry cushion in ATRs. Higher → stricter entries (fewer trades)."
+    )
+    tp_multiple = c2.slider(
+        "tp_multiple (low, high)", 0.0, 5.0, (0.0, 1.5),
+        help="Profit target in ATRs. 0 disables TP. Higher → take profits earlier."
+    )
+    holding_limit = c2.slider(
+        "holding_period_limit (low, high)", 0, 252, (0, 60),
+        help="Max days to hold a position. 0 disables."
+    )
 
-    # CV / runtime knobs
-    st.markdown("**Cross-Validation & Runtime**")
-    folds = st.number_input("CV folds", 2, 10, 4, 1, key="bm_folds")
-    equity = st.number_input("Starting equity ($)", 1000.0, 1_000_000.0, 10_000.0, 100.0, key="bm_equity")
-    min_trades = st.number_input("Min trades (valid) to keep a symbol", 0, 200, 4, 1, key="bm_min_trades")
+    param_space = {
+        "breakout_n": (int(breakout_n[0]), int(breakout_n[1])),
+        "exit_n": (int(exit_n[0]), int(exit_n[1])),
+        "atr_n": (int(atr_n[0]), int(atr_n[1])),
+        "atr_multiple": (float(atr_multiple[0]), float(atr_multiple[1])),
+        "tp_multiple": (float(tp_multiple[0]), float(tp_multiple[1])),
+        "holding_period_limit": (int(holding_limit[0]), int(holding_limit[1])),
+    }
 
-    # Workers is kept for API compatibility but we’ll run single-thread in trainer for now.
-    max_w = os.cpu_count() or 4
-    workers = st.number_input("CPU workers (trainer may ignore for now)", 1, max_w, min(4, max_w), 1, key="bm_workers")
+    st.divider()
+    st.subheader("EA Controls")
+    c1, c2, c3 = st.columns(3)
 
-    run_btn = st.button("🚀 Train base (portfolio) model", type="primary", use_container_width=True)
+    generations = c1.number_input(
+        "generations", 1, 500, 10, 1,
+        help="How many evolutionary steps to run."
+    )
+    pop_size = c1.number_input(
+        "population size", 2, 500, 30, 1,
+        help="Number of parameter sets evaluated per generation."
+    )
+    st.caption("Tip: set population ≥ n_jobs for full CPU utilization.")
 
-with right:
-    st.subheader("Results")
+    mutation_rate = c2.slider(
+        "mutation_rate", 0.0, 1.0, 0.4, 0.05,
+        help="Chance a given parameter is randomly perturbed in a child."
+    )
+    elite_frac = c2.slider(
+        "elite_frac", 0.0, 0.95, 0.5, 0.05,
+        help="Fraction of top performers kept each generation (elitism)."
+    )
+    random_inject_frac = c2.slider(
+        "random_inject_frac", 0.0, 0.95, 0.2, 0.05,
+        help="Fraction of fresh random individuals injected each generation."
+    )
 
-    if run_btn:
-        if not tickers:
-            st.error("This portfolio has no tickers.")
-            st.stop()
+    min_trades = c3.number_input(
+        "min_trades (gate)", 0, 10000, 10, 1,
+        help="Hard gate: individuals with fewer trades than this score 0."
+    )
+    min_hold_gate = c3.number_input(
+        "min_avg_holding_days_gate", 0.0, 30.0, 1.0, 0.5,
+        help="Hard gate: score=0 if avg holding days is below this (avoid day-trading)."
+    )
+    require_hold_days = c3.checkbox(
+        "require avg_holding_days > 0", value=False,
+        help="If on, any individual with non-positive avg holding days is discarded."
+    )
 
-        # Live progress placeholders (no nonlocal; we keep state in a dict)
-        progress = st.progress(0, text="Starting…")
-        status_box = st.empty()
-        lines_box = st.empty()
-        prog_state = {"n": len(tickers), "i": 0}
+    st.divider()
+    st.subheader("Fitness Weights & Preferences")
+    c1, c2 = st.columns(2)
 
-        def _on_progress(evt: dict):
-            """Optional callback if general_trainer supports `on_progress`."""
-            try:
-                # Update counters if present
-                i = int(evt.get("i", prog_state["i"]))
-                n = int(evt.get("n", prog_state["n"]))
-                prog_state["i"], prog_state["n"] = i, n
+    alpha_cagr = c1.number_input(
+        "α (CAGR weight)", 0.0, 5.0, 1.0, 0.1,
+        help="Weight on CAGR (growth)."
+    )
+    beta_calmar = c1.number_input(
+        "β (Calmar weight)", 0.0, 5.0, 1.0, 0.1,
+        help="Weight on Calmar (growth vs drawdown)."
+    )
+    gamma_sharpe = c1.number_input(
+        "γ (Sharpe weight)", 0.0, 5.0, 0.25, 0.05,
+        help="Weight on Sharpe (smoothness)."
+    )
 
-                # Compose message
-                sym = evt.get("symbol")
-                phase = evt.get("phase", "")
-                msg = evt.get("msg", "")
-                txt = " ".join(x for x in [phase, sym, msg] if x)
+    min_holding_days = c2.number_input(
+        "min_holding_days", 0.0, 100.0, 3.0, 0.5,
+        help="Preferred lower bound for average holding period."
+    )
+    max_holding_days = c2.number_input(
+        "max_holding_days", 0.0, 365.0, 30.0, 1.0,
+        help="Preferred upper bound for average holding period."
+    )
+    holding_penalty_weight = c2.number_input(
+        "holding_penalty_weight (λ)", 0.0, 5.0, 1.0, 0.05,
+        help="Penalty weight for falling outside the holding period band."
+    )
 
-                # Progress bar
-                ratio = 0.0 if n <= 0 else min(1.0, max(0.0, i / n))
-                progress.progress(int(ratio * 100), text=txt or "Working…")
+    st.divider()
+    st.subheader("Trade-Rate Preference (per symbol per year)")
+    c1, c2, c3 = st.columns(3)
+    trade_rate_min = c1.number_input(
+        "trade_rate_min", 0.0, 365.0, 5.0, 1.0,
+        help="Preferred lower bound for trades per symbol per year."
+    )
+    trade_rate_max = c2.number_input(
+        "trade_rate_max", 0.0, 365.0, 50.0, 1.0,
+        help="Preferred upper bound for trades per symbol per year."
+    )
+    trade_rate_penalty_weight = c3.number_input(
+        "trade_rate_penalty_weight (λ)", 0.0, 5.0, 0.5, 0.05,
+        help="Penalty weight for being outside the trade-rate band."
+    )
 
-                # Status lines
-                now_row = evt.get("row")
-                if now_row:
-                    lines_box.write(pd.DataFrame([now_row]))
-                if txt:
-                    status_box.info(txt)
-            except Exception:
-                # Fail-safe: never break training due to UI updates
-                pass
+    log_dir = ROOT / "logs"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = _ensure_dir(log_dir / f"ea_{port_name}_{ts}.jsonl").as_posix()
 
-        # Build kwargs dynamically so we don't pass unknown args
-        sig = inspect.signature(train_general_model)
-        kwargs = dict(
-            portfolio=port_name,
-            strategy_dotted=strategy_dotted,
-            params=p,
-            folds=int(folds),
-            starting_equity=float(equity),
-            min_trades=int(min_trades),
-            workers=int(workers),
-        )
-        if "on_progress" in sig.parameters:
-            kwargs["on_progress"] = _on_progress
+    go = st.button(
+        "Run Evolutionary Search",
+        type="primary",
+        help="Start optimizing parameters across the selected portfolio with the settings above."
+    )
 
-        with st.spinner("Training…"):
-            res = train_general_model(**kwargs)
 
-        # Clear progress UI
-        progress.progress(100, text="Done")
-        status_box.empty()
-        lines_box.empty()
+with out:
+    st.subheader("Run Status & Results")
+    status_box = st.empty()
+    indiv_box = st.empty()
+    gen_box = st.empty()
+    results_box = st.container()
+    download_box = st.container()
 
-        # Persist immediately to avoid None on first render
-        st.session_state["base_train_res"] = res or {}
+    if go:
+        progress_cb = _make_progress_cb(status_box, indiv_box, gen_box)
+        n_jobs_eff = int(min(max(1, n_jobs), int(pop_size)))
 
-        # Build leaderboard DF and compute how many unique symbols were evaluated
-        lb = pd.DataFrame((res or {}).get("leaderboard", []))
-        n_eval = int(lb["symbol"].nunique()) if ("symbol" in lb.columns and not lb.empty) else 0
-
-        # Prefer top-level errors; fallback to log.errors
-        errs_top = (res or {}).get("errors", [])
-        if not errs_top:
-            errs_top = ((res or {}).get("log", {}) or {}).get("errors", []) or []
-
-        st.success(f"Done: {n_eval} symbols evaluated. Errors: {len(errs_top)}")
-
-        # Leaderboard table
-        if lb.empty:
-            st.warning("No leaderboard rows (maybe min_trades too high or CV returned no trades).")
-        else:
-            # Try to sort if metrics exist
-            sort_cols = [c for c in ["cv_sharpe", "cv_cagr", "cv_trades"] if c in lb.columns]
-            if sort_cols:
-                lb = lb.sort_values(sort_cols, ascending=[False] * len(sort_cols)).reset_index(drop=True)
-
-            # Pretty display: format numeric columns
-            numeric_cols = [c for c, dt in zip(lb.columns, lb.dtypes) if pd.api.types.is_numeric_dtype(dt)]
-            fmt_map = {c: "{:.4f}" for c in numeric_cols if c not in ("cv_trades",)}
-            if "cv_trades" in lb.columns:
-                fmt_map["cv_trades"] = "{:.0f}"
-
-            st.dataframe(
-                lb.style.format(fmt_map),
-                use_container_width=True,
-                height=420,
+        with st.spinner("Running EA…"):
+            scored = evolutionary_search(
+                strategy_dotted=strategy_dotted,
+                tickers=tickers,
+                start=start,
+                end=end,
+                starting_equity=starting_equity,
+                param_space=param_space,
+                generations=int(generations),
+                pop_size=int(pop_size),
+                mutation_rate=float(mutation_rate),
+                elite_frac=float(elite_frac),
+                random_inject_frac=float(random_inject_frac),
+                n_jobs=n_jobs_eff,
+                min_trades=int(min_trades),
+                min_avg_holding_days_gate=float(min_hold_gate),
+                require_hold_days=bool(require_hold_days),
+                eps_mdd=1e-4,
+                eps_sharpe=1e-4,
+                alpha_cagr=float(alpha_cagr),
+                beta_calmar=float(beta_calmar),
+                gamma_sharpe=float(gamma_sharpe),
+                min_holding_days=float(min_holding_days),
+                max_holding_days=float(max_holding_days),
+                holding_penalty_weight=float(holding_penalty_weight),
+                trade_rate_min=float(trade_rate_min),
+                trade_rate_max=float(trade_rate_max),
+                trade_rate_penalty_weight=float(trade_rate_penalty_weight),
+                progress_cb=progress_cb,
+                log_file=log_file,
             )
 
-        # Export Log
-        log_res = st.session_state.get("base_train_res", res or {})
-        if log_res:
-            colA, colB = st.columns([1, 3])
-            with colA:
-                if st.button("Export training log", use_container_width=True):
-                    path = save_training_log(port_name, (log_res.get("log", {}) or {}))
-                    st.success(f"Saved log to: {path}")
-            with colB:
-                buf = io.StringIO()
-                json.dump((log_res.get("log", {}) or {}), buf, indent=2)
-                st.download_button(
-                    label="Download log JSON",
-                    data=buf.getvalue(),
-                    file_name="base_model_training_log.json",
-                    mime="application/json",
-                )
+        # Top results table (CHANGED: width="stretch")
+        df = _top_table(scored)
+        if df.empty:
+            results_box.warning("No results returned. Check data, dates, or parameter space.")
+        else:
+            results_box.dataframe(df, width="stretch", height=360)
 
-        # Errors (if any)
-        errs = errs_top
-        if errs:
-            with st.expander("Errors", expanded=False):
-                st.write(pd.DataFrame(errs))
-
-        # Save trained portfolio model
-        st.markdown("---")
-        st.markdown("**Save this portfolio model**")
-        default_name = f"{port_name}__{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        model_name = st.text_input("Model name", value=default_name, key="bm_model_name")
-        if st.button("💾 Save model", use_container_width=True):
-            payload = {
-                "meta": {
-                    "portfolio": port_name,
-                    "strategy": strategy_dotted,
-                    "timestamp": datetime.now().isoformat(timespec="seconds"),
-                    "workers": int(workers),
-                    "folds": int(folds),
-                    "starting_equity": float(equity),
-                    "min_trades": int(min_trades),
-                    "n_symbols": n_eval,
-                },
-                "base_params": p,
-                "leaderboard": (res or {}).get("leaderboard", []),
-                "errors": errs_top,
-            }
-            path = save_portfolio_model(port_name, model_name, payload)
-            st.success(f"Saved portfolio model → `{path}`")
-
-        # Existing models list
-        models = list_portfolio_models(port_name)
-        if models:
-            with st.expander("Existing saved models for this portfolio", expanded=False):
-                st.write(pd.DataFrame({"model": models}))
+        # Log download (CHANGED: width="stretch")
+        try:
+            txt = Path(log_file).read_text(encoding="utf-8")
+            download_box.download_button(
+                "Download EA log (JSONL)",
+                data=txt,
+                file_name=Path(log_file).name,
+                mime="application/json",
+                width="stretch",
+                help="Download the full run log as JSON Lines for troubleshooting or audit."
+            )
+            st.caption(f"Log file: {log_file}")
+        except Exception as e:
+            download_box.error(f"Could not read log file: {e}")
 
     else:
-        # If page just opened (or after previous run), show last result if present
-        last = st.session_state.get("base_train_res")
-        if last:
-            lb = pd.DataFrame(last.get("leaderboard", []))
-            n_eval = int(lb["symbol"].nunique()) if ("symbol" in lb.columns and not lb.empty) else 0
-            st.info(f"Loaded last run: {n_eval} symbols evaluated. Click **Train** to run again.")
-            if not lb.empty:
-                numeric_cols = [c for c, dt in zip(lb.columns, lb.dtypes) if pd.api.types.is_numeric_dtype(dt)]
-                fmt_map = {c: "{:.4f}" for c in numeric_cols if c not in ("cv_trades",)}
-                if "cv_trades" in lb.columns:
-                    fmt_map["cv_trades"] = "{:.0f}"
-                st.dataframe(lb.style.format(fmt_map), use_container_width=True, height=360)
-        else:
-            st.info("Configure settings on the left, then click **Train base (portfolio) model**.")
+        st.info("Set **n_jobs** at the top, fill in the configuration on the left, then press **Run Evolutionary Search**.")
