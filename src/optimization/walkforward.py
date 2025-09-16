@@ -1,4 +1,4 @@
-# src/validation/walkforward.py
+# src/optimization/walkforward.py
 from __future__ import annotations
 
 from dataclasses import dataclass

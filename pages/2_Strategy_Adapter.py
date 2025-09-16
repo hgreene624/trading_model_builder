@@ -1,411 +1,360 @@
 # pages/2_Strategy_Adapter.py
-# ---------------------------------------------------------------------
-# Strategy Adapter — Evolutionary Trainer (parallel tuned for Apple Silicon)
-# - Top-of-page Performance section with n_jobs slider (default 16 on M2 Ultra)
-# - Env vars set to avoid thread oversubscription inside each worker process
-# - Live progress UI + JSONL log download
-# ---------------------------------------------------------------------
-
 from __future__ import annotations
-from pathlib import Path
-import sys
-from datetime import date, timedelta, datetime
-import os
 
-# --- Prevent BLAS/vecLib/OMP thread oversubscription inside each process ---
-# Do this BEFORE importing numpy/pandas anywhere in the app.
-os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_MAX_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
+import os
+from datetime import datetime, timedelta, timezone
+from importlib import import_module
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import streamlit as st
 
-# --- sys.path bootstrap so `import src.*` works when running from /pages ---
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-# --------------------------------------------------------------------------
+# --- Page chrome ---
+st.set_page_config(page_title="Strategy Adapter", layout="wide")
+st.title("🧪 Strategy Adapter")
 
-from src.storage import list_portfolios, load_portfolio
-from src.optimization.evolutionary import evolutionary_search
+# --- Helpers ---
+def _utc_now():
+    return datetime.now(timezone.utc)
 
+def _safe_import(dotted: str):
+    return import_module(dotted)
 
-# ------------------------------- UI HELPERS -------------------------------
+def _ss_get_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
+    if key not in st.session_state or not isinstance(st.session_state[key], dict):
+        st.session_state[key] = dict(default)
+    return st.session_state[key]
 
-def _default_dates(years: int = 3) -> tuple[date, date]:
-    end = date.today()
-    start = end - timedelta(days=int(365.25 * years))
-    return start, end
+def _write_kv_table(d: Dict[str, Any], title: str = ""):
+    if title:
+        st.markdown(f"**{title}**")
+    df = pd.DataFrame({"key": list(d.keys()), "value": [d[k] for k in d.keys()]})
+    st.dataframe(df, width="stretch", height=min(360, 40 + 28 * len(df)))
 
-
-def _top_table(scored):
-    rows = []
-    for params, score in scored:
-        row = {"score": float(score)}
-        row.update({k: params.get(k) for k in params.keys()})
-        rows.append(row)
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.sort_values("score", ascending=False)
-    return df
-
-
-def _make_progress_cb(status_box, indiv_box, gen_box):
-    history = []
-
-    def cb(event: str, payload: dict):
-        nonlocal history
-
-        if event == "generation_start":
-            gen = payload["gen"]
-            pop = payload["pop_size"]
-            status_box.info(f"Generation {gen} starting … (population={pop})")
-
-        elif event == "individual_evaluated":
-            gen = payload["gen"]
-            idx = payload["idx"]
-            score = payload.get("score", 0.0)
-            m = payload.get("metrics", {}) or {}
-            trades = int(m.get("trades", 0) or 0)
-            hold = float(m.get("avg_holding_days", 0.0) or 0.0)
-            cagr = float(m.get("cagr", 0.0) or 0.0)
-            calmar = float(m.get("calmar", 0.0) or 0.0)
-            sharpe = float(m.get("sharpe", 0.0) or 0.0)
-
-            history.append({
-                "gen": gen, "idx": idx, "score": score,
-                "trades": trades, "avg_hold_days": hold,
-                "cagr": cagr, "calmar": calmar, "sharpe": sharpe
-            })
-            history = history[-100:]
-            indiv_box.dataframe(pd.DataFrame(history), use_container_width=True, height=260)
-
-        elif event == "generation_end":
-            gen = payload["gen"]
-            best = payload.get("best_score", 0.0)
-            avg = payload.get("avg_score", 0.0)
-            avg_tr = payload.get("avg_trades", 0.0)
-            no_tr_pct = 100.0 * payload.get("pct_no_trades", 0.0)
-            elite_n = payload.get("elite_n")
-            breed_n = payload.get("breed_n")
-            inject_n = payload.get("inject_n")
-
-            df = pd.DataFrame([{
-                "generation": gen,
-                "best_score": best,
-                "avg_score": avg,
-                "avg_trades": avg_tr,
-                "no_trades_%": no_tr_pct,
-                "elite_n": elite_n,
-                "breed_n": breed_n,
-                "inject_n": inject_n,
-            }])
-            gen_box.dataframe(df, use_container_width=True, height=88)
-
-        elif event == "done":
-            secs = payload.get("elapsed_sec", 0.0)
-            status_box.success(f"EA completed in {secs:.1f}s")
-        else:
-            status_box.write({"event": event, "payload": payload})
-
-    return cb
-
-
-def _ensure_dir(p: Path):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# --------------------------------- PAGE ----------------------------------
-
-st.title("Strategy Adapter — Evolutionary Trainer")
-
-# ---------- Performance (always at top) ----------
-st.subheader("Performance", help="Control CPU parallelism for faster runs.")
-cpu_cnt = os.cpu_count() or 1
-
-# Default workers: 16 on M2 Ultra (24 cores), else a safe default near perf cores
-default_workers = 16 if cpu_cnt >= 24 else max(1, min(8, cpu_cnt - 1))
-n_jobs = st.slider(
-    "n_jobs (parallel workers)",
-    min_value=1,
-    max_value=max(2, cpu_cnt),
-    value=min(default_workers, cpu_cnt),
-    help=(
-        "Number of worker processes to evaluate candidates in parallel. "
-        "On Apple Silicon, 12–16 is a good starting point. "
-        "Each worker is restricted to 1 BLAS/OMP thread to avoid oversubscription."
-    ),
-)
-
-st.caption(f"Detected CPU cores: {cpu_cnt} • Defaulted workers: {min(default_workers, cpu_cnt)}")
-
-cfg, out = st.columns([1, 2], gap="large")
-
-with cfg:
-    st.subheader("Portfolio & Data")
-
+# --- Helper to filter params for strategy ---
+def _filter_params_for_strategy(strategy_dotted: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only keys the current strategy accepts (e.g., ATRParams fields)."""
     try:
-        portfolios = list_portfolios()
-    except Exception as e:
+        mod = _safe_import(strategy_dotted)
+        keys = []
+        if hasattr(mod, "ATRParams"):
+            try:
+                keys = list(getattr(mod, "ATRParams").__annotations__.keys())
+            except Exception:
+                keys = []
+        if not keys and hasattr(mod, "PARAMS_ALLOWED"):
+            try:
+                keys = list(getattr(mod, "PARAMS_ALLOWED"))
+            except Exception:
+                keys = []
+        if not keys:
+            # sensible fallback for current ATR breakout
+            keys = ["breakout_n", "exit_n", "atr_n", "atr_multiple", "tp_multiple", "holding_period_limit", "allow_short"]
+        return {k: params[k] for k in keys if k in params}
+    except Exception:
+        # final fallback: safest minimal subset
+        safe = ["breakout_n", "exit_n", "atr_n", "atr_multiple", "tp_multiple", "holding_period_limit"]
+        return {k: params[k] for k in safe if k in params}
+
+# ---------- LEFT SIDEBAR-LIKE COLUMN: configuration ----------
+left, right = st.columns([1.05, 1.55], gap="large")
+
+with left:
+    st.subheader("Portfolio & Strategy")
+
+    # Portfolio selection
+    # Expecting a loader that can tell us portfolios & tickers. Fallback to text box if none.
+    tickers: List[str] = []
+    try:
+        P = _safe_import("src.portfolios.store")
+        portfolios = sorted(P.list_portfolios())  # implement in your store (already used earlier)
+    except Exception:
         portfolios = []
-        st.error(f"storage.list_portfolios() failed: {e}")
 
-    if not portfolios:
-        st.warning("No portfolios found. Add one via your storage module.")
-        st.stop()
+    port_name = st.selectbox("Portfolio", options=(["<custom>"] + portfolios) if portfolios else ["<custom>"], index=0)
+    if port_name == "<custom>":
+        tickers_csv = st.text_input("Tickers (CSV)", "AAPL,MSFT")
+        tickers = [t.strip().upper() for t in tickers_csv.split(",") if t.strip()]
+    else:
+        try:
+            tickers = list(_safe_import("src.portfolios.store").load_portfolio(port_name))
+        except Exception as e:
+            st.error(f"Failed to load portfolio '{port_name}': {e}")
+            st.stop()
 
-    port_name = st.selectbox(
-        "Portfolio",
-        options=portfolios,
-        index=0,
-        help="Choose which saved portfolio (list of tickers) to optimize across."
-    )
-    try:
-        port = load_portfolio(port_name)
-        tickers = list(port.get("tickers", []))
-    except Exception as e:
-        tickers = []
-        st.error(f"storage.load_portfolio({port_name!r}) failed: {e}")
-        st.stop()
-
-    st.caption(f"{port_name}: {len(tickers)} tickers")
     if not tickers:
-        st.warning("Selected portfolio has no tickers.")
+        st.warning("No tickers selected. Add tickers or choose a portfolio.")
         st.stop()
 
-    strategy_dotted = st.selectbox(
-        "Strategy module",
-        options=["src.models.atr_breakout"],
-        index=0,
-        help="Module must expose run_strategy(symbol, start, end, starting_equity, params)."
+    st.info(f"Selected **{len(tickers)}** symbols.")
+
+    # Strategy module (kept as before)
+    strategy_dotted = st.selectbox("Strategy", ["src.models.atr_breakout"], index=0)
+
+    # Base params (kept as before)
+    st.caption("Base parameters passed to the strategy’s run_strategy().")
+    base = _ss_get_dict(
+        "adapter_base_params",
+        {
+            "breakout_n": 14,
+            "exit_n": 6,
+            "atr_n": 14,
+            "atr_multiple": 2.0,
+            "tp_multiple": 0.5,
+            "holding_period_limit": 5,
+            # extras (the strategy ignores unknowns; we keep them for future work)
+            "risk_per_trade": 0.005,
+            "use_trend_filter": False,
+            "sma_fast": 20,
+            "sma_slow": 50,
+            "sma_long": 200,
+            "long_slope_len": 20,
+            "cost_bps": 1.0,
+            "execution": "close",
+        },
     )
 
-    d_start, d_end = _default_dates(3)
-    c1, c2 = st.columns(2)
-    start = c1.date_input(
-        "Start", value=d_start,
-        help="Backtest start date. Ensure it’s long enough for your lookback windows to warm up."
-    )
-    end = c2.date_input(
-        "End", value=d_end,
-        help="Backtest end date. The EA evaluates each candidate over this full period."
-    )
-    starting_equity = st.number_input(
-        "Starting equity per symbol",
-        min_value=100.0, max_value=10_000_000.0,
-        value=10_000.0, step=100.0,
-        help="Capital allocated to each symbol at the start of the test."
-    )
+    with st.expander("Base params", expanded=False):
+        base["breakout_n"] = st.number_input("breakout_n", 5, 300, base["breakout_n"], 1, help="Lookback used for breakout entry signal.")
+        base["exit_n"] = st.number_input("exit_n", 4, 300, base["exit_n"], 1, help="Lookback used for breakout exit/stop logic.")
+        base["atr_n"] = st.number_input("atr_n", 5, 60, base["atr_n"], 1, help="ATR window length.")
+        base["atr_multiple"] = st.number_input("atr_multiple", 0.5, 10.0, float(base["atr_multiple"]), 0.1, help="ATR multiple for stop distance.")
+        base["tp_multiple"] = st.number_input("tp_multiple", 0.2, 10.0, float(base["tp_multiple"]), 0.1, help="Take-profit multiple (vs ATR or entry logic).")
+        base["holding_period_limit"] = st.number_input("holding_period_limit", 1, 400, base["holding_period_limit"], 1, help="Max bars to hold a position.")
+        # Keep the extras so future strategies/UI can reuse
+        base["risk_per_trade"] = st.number_input("risk_per_trade", 0.0005, 0.05, float(base["risk_per_trade"]), 0.0005, format="%.4f", help="Fraction of equity risked per trade.")
+        base["use_trend_filter"] = st.checkbox("use_trend_filter", value=bool(base["use_trend_filter"]), help="Optional trend filter gate.")
+        base["sma_fast"] = st.number_input("sma_fast", 5, 100, base["sma_fast"], 1, help="Fast MA length (if trend filter used).")
+        base["sma_slow"] = st.number_input("sma_slow", 10, 200, base["sma_slow"], 1, help="Slow MA length (if trend filter used).")
+        base["sma_long"] = st.number_input("sma_long", 100, 400, base["sma_long"], 1, help="Long MA length (if trend filter used).")
+        base["long_slope_len"] = st.number_input("long_slope_len", 5, 60, base["long_slope_len"], 1, help="Slope window for long MA trend check.")
+        base["cost_bps"] = st.number_input("cost_bps", 0.0, 20.0, float(base["cost_bps"]), 0.1, help="Per-trade cost (basis points).")
+        base["execution"] = st.selectbox("Execution", ["close"], index=0, help="Execution price proxy used in backtest.")
 
-    st.divider()
-    st.subheader("Parameter Space (bounds for EA sampling)")
-    c1, c2 = st.columns(2)
+    # General training knobs
+    folds = st.number_input("CV folds", 2, 10, 4, 1, help="Cross-validation splits for the base model trainer.")
+    equity = st.number_input("Starting equity ($)", 1000.0, 1_000_000.0, 10_000.0, 100.0, help="Starting equity for per-symbol runs.")
+    min_trades = st.number_input("Min trades (valid)", 0, 200, 2, 1, help="Minimum total trades needed for a run to be considered valid.")
 
-    breakout_n = c1.slider(
-        "breakout_n (low, high)", 5, 100, (10, 30),
-        help="Lookback for breakout high. Higher → fewer signals, longer holds; lower → more signals."
-    )
-    exit_n = c1.slider(
-        "exit_n (low, high)", 4, 60, (5, 15),
-        help="Exit lookback window. Higher → exits later; lower → exits quicker."
-    )
-    atr_n = c1.slider(
-        "atr_n (low, high)", 5, 60, (10, 20),
-        help="ATR smoothing window. Larger → smoother ATR, fewer signals; smaller → more reactive."
-    )
+    # Parallelism controls (kept visible near the top)
+    max_procs = os.cpu_count() or 8
+    n_jobs = st.slider("Jobs (processes)", 1, max(1, max_procs - 1), min(8, max(1, max_procs - 1))),  # noqa
+    n_jobs = int(n_jobs[0])
 
-    atr_multiple = c2.slider(
-        "atr_multiple (low, high)", 0.5, 5.0, (1.2, 2.5),
-        help="Entry cushion in ATRs. Higher → stricter entries (fewer trades)."
-    )
-    tp_multiple = c2.slider(
-        "tp_multiple (low, high)", 0.0, 5.0, (0.0, 1.5),
-        help="Profit target in ATRs. 0 disables TP. Higher → take profits earlier."
-    )
-    holding_limit = c2.slider(
-        "holding_period_limit (low, high)", 0, 252, (0, 60),
-        help="Max days to hold a position. 0 disables."
-    )
+    st.caption("Tip: If Alpaca SIP limits or YF rate limits bite, reduce Jobs to 1–4.")
 
-    param_space = {
-        "breakout_n": (int(breakout_n[0]), int(breakout_n[1])),
-        "exit_n": (int(exit_n[0]), int(exit_n[1])),
-        "atr_n": (int(atr_n[0]), int(atr_n[1])),
-        "atr_multiple": (float(atr_multiple[0]), float(atr_multiple[1])),
-        "tp_multiple": (float(tp_multiple[0]), float(tp_multiple[1])),
-        "holding_period_limit": (int(holding_limit[0]), int(holding_limit[1])),
-    }
-
-    st.divider()
-    st.subheader("EA Controls")
-    c1, c2, c3 = st.columns(3)
-
-    generations = c1.number_input(
-        "generations", 1, 500, 10, 1,
-        help="How many evolutionary steps to run."
-    )
-    pop_size = c1.number_input(
-        "population size", 2, 500, 30, 1,
-        help="Number of parameter sets evaluated per generation."
-    )
-    # Hint: n_jobs should not exceed pop_size; we clamp at run time below.
-    st.caption("Tip: set population ≥ n_jobs for full CPU utilization.")
-
-    mutation_rate = c2.slider(
-        "mutation_rate", 0.0, 1.0, 0.4, 0.05,
-        help="Chance a given parameter is randomly perturbed in a child."
-    )
-    elite_frac = c2.slider(
-        "elite_frac", 0.0, 0.95, 0.5, 0.05,
-        help="Fraction of top performers kept each generation (elitism)."
-    )
-    random_inject_frac = c2.slider(
-        "random_inject_frac", 0.0, 0.95, 0.2, 0.05,
-        help="Fraction of fresh random individuals injected each generation."
-    )
-
-    min_trades = c3.number_input(
-        "min_trades (gate)", 0, 10000, 10, 1,
-        help="Hard gate: individuals with fewer trades than this score 0."
-    )
-    min_hold_gate = c3.number_input(
-        "min_avg_holding_days_gate", 0.0, 30.0, 1.0, 0.5,
-        help="Hard gate: score=0 if avg holding days is below this (avoid day-trading)."
-    )
-    require_hold_days = c3.checkbox(
-        "require avg_holding_days > 0", value=False,
-        help="If on, any individual with non-positive avg holding days is discarded."
-    )
+# ---------- RIGHT COLUMN: actions + results ----------
+with right:
+    # ------------------------ BASE TRAINING ------------------------
+    st.subheader("Train Base Model")
+    run_btn = st.button("🚀 Train (portfolio)", type="primary", help="Runs the portfolio-level base trainer with the config on the left.", use_container_width=False)
 
     st.divider()
-    st.subheader("Fitness Weights & Preferences")
-    c1, c2 = st.columns(2)
+    st.subheader("Results")
 
-    alpha_cagr = c1.number_input(
-        "α (CAGR weight)", 0.0, 5.0, 1.0, 0.1,
-        help="Weight on CAGR (growth)."
-    )
-    beta_calmar = c1.number_input(
-        "β (Calmar weight)", 0.0, 5.0, 1.0, 0.1,
-        help="Weight on Calmar (growth vs drawdown)."
-    )
-    gamma_sharpe = c1.number_input(
-        "γ (Sharpe weight)", 0.0, 5.0, 0.25, 0.05,
-        help="Weight on Sharpe (smoothness)."
-    )
+    if run_btn:
+        if not tickers:
+            st.error("This portfolio has no tickers.")
+            st.stop()
 
-    min_holding_days = c2.number_input(
-        "min_holding_days", 0.0, 100.0, 3.0, 0.5,
-        help="Preferred lower bound for average holding period."
-    )
-    max_holding_days = c2.number_input(
-        "max_holding_days", 0.0, 365.0, 30.0, 1.0,
-        help="Preferred upper bound for average holding period."
-    )
-    holding_penalty_weight = c2.number_input(
-        "holding_penalty_weight (λ)", 0.0, 5.0, 1.0, 0.05,
-        help="Penalty weight for falling outside the holding period band."
-    )
+        # resolve modules
+        try:
+            loader = _safe_import("src.data.loader")
+            trainer = _safe_import("src.models.general_trainer")
+            metrics = _safe_import("src.backtest.metrics")
+        except Exception as e:
+            st.error(f"Import error: {e}")
+            st.stop()
 
-    st.divider()
-    st.subheader("Trade-Rate Preference (per symbol per year)")
-    c1, c2, c3 = st.columns(3)
-    trade_rate_min = c1.number_input(
-        "trade_rate_min", 0.0, 365.0, 5.0, 1.0,
-        help="Preferred lower bound for trades per symbol per year."
-    )
-    trade_rate_max = c2.number_input(
-        "trade_rate_max", 0.0, 365.0, 50.0, 1.0,
-        help="Preferred upper bound for trades per symbol per year."
-    )
-    trade_rate_penalty_weight = c3.number_input(
-        "trade_rate_penalty_weight (λ)", 0.0, 5.0, 0.5, 0.05,
-        help="Penalty weight for being outside the trade-rate band."
-    )
+        prog = st.progress(0.0, text="Starting training…")
+        status = st.empty()
 
-    # Run setup
-    log_dir = ROOT / "logs"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = _ensure_dir(log_dir / f"ea_{port_name}_{ts}.jsonl").as_posix()
+        try:
+            # For the base trainer we’ll do a simple portfolio CV using your existing general_trainer
+            # Over the past N years (controlled below), but keep minimal knobs here — your prior flow.
+            end = _utc_now()
+            start = end - timedelta(days=365)  # keep same horizon as your earlier page; tweak if you prefer
 
-    go = st.button(
-        "Run Evolutionary Search",
-        type="primary",
-        use_container_width=True,
-        help="Start optimizing parameters across the selected portfolio with the settings above."
-    )
+            status.write("Loading data…")
+            prog.progress(0.1)
 
+            # The general trainer consumes tickers, period, base params; it aggregates per-symbol metrics.
+            status.write("Running trainer…")
+            prog.progress(0.4)
 
-with out:
-    st.subheader("Run Status & Results")
-    status_box = st.empty()
-    indiv_box = st.empty()
-    gen_box = st.empty()
-    results_box = st.container()
-    download_box = st.container()
-
-    if go:
-        progress_cb = _make_progress_cb(status_box, indiv_box, gen_box)
-
-        # Clamp n_jobs to not exceed population size for efficiency
-        n_jobs_eff = int(min(max(1, n_jobs), int(pop_size)))
-
-        with st.spinner("Running EA…"):
-            scored = evolutionary_search(
+            clean_base = _filter_params_for_strategy(strategy_dotted, base)
+            res = trainer.train_general_model(
                 strategy_dotted=strategy_dotted,
                 tickers=tickers,
                 start=start,
                 end=end,
-                starting_equity=starting_equity,
-                param_space=param_space,
-                generations=int(generations),
-                pop_size=int(pop_size),
-                mutation_rate=float(mutation_rate),
-                elite_frac=float(elite_frac),
-                random_inject_frac=float(random_inject_frac),
-                n_jobs=n_jobs_eff,
-                min_trades=int(min_trades),
-                min_avg_holding_days_gate=float(min_hold_gate),
-                require_hold_days=bool(require_hold_days),
-                eps_mdd=1e-4,
-                eps_sharpe=1e-4,
-                alpha_cagr=float(alpha_cagr),
-                beta_calmar=float(beta_calmar),
-                gamma_sharpe=float(gamma_sharpe),
-                min_holding_days=float(min_holding_days),
-                max_holding_days=float(max_holding_days),
-                holding_penalty_weight=float(holding_penalty_weight),
-                trade_rate_min=float(trade_rate_min),
-                trade_rate_max=float(trade_rate_max),
-                trade_rate_penalty_weight=float(trade_rate_penalty_weight),
-                progress_cb=progress_cb,
-                log_file=log_file,
+                starting_equity=float(equity),
+                base_params=clean_base,
             )
 
-        # Render top results table
-        df = _top_table(scored)
-        if df.empty:
-            results_box.warning("No results returned. Check data, dates, or parameter space.")
-        else:
-            results_box.dataframe(df, use_container_width=True, height=360)
+            prog.progress(0.8)
+            st.session_state["base_train_res"] = res
 
-        # Download log
-        try:
-            txt = Path(log_file).read_text(encoding="utf-8")
-            download_box.download_button(
-                "Download EA log (JSONL)",
-                data=txt,
-                file_name=Path(log_file).name,
-                mime="application/json",
-                use_container_width=True,
-                help="Download the full run log as JSON Lines for troubleshooting or audit."
-            )
-            st.caption(f"Log file: {log_file}")
+            # Leaderboard-like view
+            agg = (res or {}).get("aggregate", {}) or {}
+            agg_metrics = agg.get("metrics", {}) or {}
+            per = (res or {}).get("results", []) or []
+
+            status.write("Rendering results…")
+            if per:
+                rows = []
+                for r in per:
+                    sym = r.get("symbol")
+                    m = (r.get("metrics") or {})
+                    rows.append({
+                        "symbol": sym,
+                        "trades": m.get("trades", 0),
+                        "total_return": round(float(m.get("total_return", 0.0)), 4),
+                        "cagr": round(float(m.get("cagr", 0.0)), 4),
+                        "sharpe": round(float(m.get("sharpe", 0.0)), 3),
+                        "calmar": round(float(m.get("calmar", 0.0)), 3),
+                        "max_dd": round(float(m.get("max_drawdown", 0.0)), 4),
+                        "expectancy": round(float(m.get("expectancy", 0.0)), 4),
+                    })
+                lb = pd.DataFrame(rows).sort_values(["total_return", "sharpe"], ascending=[False, False])
+                st.dataframe(lb, width="stretch", height=360)
+            else:
+                st.warning("No per-symbol result rows generated.")
+
+            # Aggregate metrics summary
+            if agg_metrics:
+                _write_kv_table(agg_metrics, title="Aggregate metrics (equal-weight portfolio curve)")
+            else:
+                st.info("No aggregate metrics computed.")
+
+            status.write("Done.")
+            prog.progress(1.0)
+
         except Exception as e:
-            download_box.error(f"Could not read log file: {e}")
+            st.error(f"Training failed: {e}")
+            st.stop()
 
-    else:
-        st.info("Set **n_jobs** at the top, fill in the configuration on the left, then press **Run Evolutionary Search**.")
+    # ------------------------ WALK-FORWARD ------------------------
+    st.markdown("---")
+    st.subheader("Walk-Forward Validation")
+
+    wf_cfg = _ss_get_dict(
+        "wf_cfg",
+        {
+            "days_back": 365 * 3,  # 3y default
+            "splits": 3,
+            "train_days": 252,
+            "test_days": 63,
+            "step_days": 0,       # 0 => use test_days
+            "use_ea": False,
+            "ea_generations": 4,
+            "ea_pop": 12,
+            "ea_min_trades": 3,
+        },
+    )
+    with st.expander("Walk-Forward params", expanded=False):
+        wf_cfg["days_back"] = st.number_input("History window (days)", 252, 365 * 10, wf_cfg["days_back"], 1,
+                                              help="Total lookback used to build WF splits (train+test across splits).")
+        wf_cfg["splits"] = st.number_input("Splits", 1, 12, wf_cfg["splits"], 1,
+                                           help="Number of walk-forward segments.")
+        wf_cfg["train_days"] = st.number_input("Train window (days)", 60, 600, wf_cfg["train_days"], 1,
+                                               help="In-sample training window per split.")
+        wf_cfg["test_days"] = st.number_input("Test window (days)", 21, 252, wf_cfg["test_days"], 1,
+                                              help="Out-of-sample evaluation window per split.")
+        wf_cfg["step_days"] = st.number_input("Step size (days)", 0, 600, wf_cfg["step_days"], 1,
+                                              help="Advance between splits. 0 = same as Test window.")
+        wf_cfg["use_ea"] = st.checkbox("Use EA inside each split (opt params on IS)", value=bool(wf_cfg["use_ea"]))
+        col_ea1, col_ea2, col_ea3 = st.columns(3)
+        with col_ea1:
+            wf_cfg["ea_generations"] = st.number_input("EA generations", 1, 50, wf_cfg["ea_generations"], 1)
+        with col_ea2:
+            wf_cfg["ea_pop"] = st.number_input("EA population", 2, 200, wf_cfg["ea_pop"], 1)
+        with col_ea3:
+            wf_cfg["ea_min_trades"] = st.number_input("EA min trades", 0, 200, wf_cfg["ea_min_trades"], 1)
+
+    run_wf = st.button("🧭 Run Walk-Forward", type="secondary", help="Runs walk-forward validation on the selected tickers.", use_container_width=False)
+
+    if run_wf:
+        try:
+            from src.optimization.walkforward import walk_forward
+            end = _utc_now()
+            start = end - timedelta(days=int(wf_cfg["days_back"] or 365))
+            step_days = int(wf_cfg["step_days"] or 0) or int(wf_cfg["test_days"])
+
+            # Use best available params:
+            # 1) if you just trained in this session, pull that
+            # 2) otherwise fall back to current base params
+            use_params = _filter_params_for_strategy(strategy_dotted, base)
+            res = st.session_state.get("base_train_res")
+            if isinstance(res, dict):
+                # If your trainer later includes a suggested best param-set, plug it here.
+                # For now we keep the base as the walk-forward starting point.
+                pass
+
+            st.info("Starting walk-forward…")
+            prog_wf = st.progress(0.05, text="Loading splits & data…")
+
+            out = walk_forward(
+                strategy_dotted=strategy_dotted,
+                tickers=tickers,
+                start=start,
+                end=end,
+                starting_equity=float(equity),
+                base_params=use_params,
+                splits=int(wf_cfg["splits"]),
+                train_days=int(wf_cfg["train_days"]),
+                test_days=int(wf_cfg["test_days"]),
+                step_days=int(step_days),
+                use_ea=bool(wf_cfg["use_ea"]),
+                ea_kwargs=dict(
+                    generations=int(wf_cfg["ea_generations"]),
+                    pop_size=int(wf_cfg["ea_pop"]),
+                    min_trades=int(wf_cfg["ea_min_trades"]),
+                    n_jobs=int(n_jobs),
+                ),
+                n_jobs=int(n_jobs),
+                progress_cb=lambda evt, ctx: None,  # keep console quiet; UI below
+            )
+
+            prog_wf.progress(0.7, text="Rendering results…")
+
+            # Expecting the structure returned by your tested walkforward.py
+            # { "splits": [...], "summary": {...}, "artifacts": {... optional ...} }
+            summary = (out or {}).get("summary", {}) or {}
+            splits = (out or {}).get("splits", []) or []
+            artifacts = (out or {}).get("artifacts", {}) or {}
+
+            # Summary block
+            if summary:
+                st.markdown("**Walk-Forward (OOS mean) summary**")
+                st.dataframe(
+                    pd.DataFrame({"metric": list(summary.keys()), "value": [summary[k] for k in summary.keys()]}),
+                    width="stretch",
+                    height=320,
+                )
+            else:
+                st.warning("No summary metrics were returned.")
+
+            # First split preview (mirrors your test output)
+            if splits:
+                first = splits[0]
+                st.markdown("**First split preview**")
+                meta = first.get("meta", {})
+                st.code(
+                    f"dates: {meta.get('train_start')} → {meta.get('train_end')} | "
+                    f"OOS: {meta.get('test_start')} → {meta.get('test_end')}\n"
+                    f"params: {first.get('params')}\n"
+                    f"oos trades: {first.get('metrics', {}).get('trades', 'N/A')}",
+                    language="text",
+                )
+
+            # Artifacts / anomalies (if your walkforward attaches them)
+            if artifacts:
+                st.markdown("**WF Artifacts / Anomalies**")
+                _write_kv_table(artifacts)
+
+            prog_wf.progress(1.0, text="Walk-Forward complete.")
+
+        except Exception as e:
+            st.error(f"Walk-forward failed: {e}")
+            st.stop()
