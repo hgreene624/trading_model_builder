@@ -2,11 +2,16 @@
 """
 Evolutionary parameter search with progress reporting + logging.
 
-Enhancements:
-- Exposed EA knobs (mutation_rate, elite_frac, random_inject_frac)
-- Fitness safety gates (min_trades, avg_holding_days > 0)
-- Ratio clamping to avoid degenerate scores (eps for max_drawdown & sharpe)
-- Survivor selection enforces min_trades gate
+Enhancements in this revision:
+- Fitness = α*CAGR + β*Calmar + γ*Sharpe  -  λ * holding_penalty(avg_holding_days)
+    • holding_penalty = 0 if avg_holding_days in [min_holding_days, max_holding_days]
+      else linear distance outside the band
+- Exposed knobs (UI-ready later):
+    • mutation_rate, elite_frac, random_inject_frac
+    • min_trades, require_hold_days, eps_mdd, eps_sharpe
+    • alpha_cagr, beta_calmar, gamma_sharpe
+    • min_holding_days, max_holding_days, holding_penalty_weight
+- Survivor selection still enforces min_trades gate via fitness
 - Gen telemetry: best/avg score, avg trades, % no-trades, elite/breed/inject counts
 - Anomaly logging: under_min_trades, degenerate_fitness
 """
@@ -51,40 +56,65 @@ def crossover(p1: Dict[str, Any], p2: Dict[str, Any]) -> Dict[str, Any]:
     return {k: (p1[k] if random.random() < 0.5 else p2[k]) for k in p1}
 
 
+def _holding_penalty(avg_hold_days: float, lo: float, hi: float) -> float:
+    """Linear penalty outside [lo, hi]. Zero inside the band."""
+    if lo <= avg_hold_days <= hi:
+        return 0.0
+    if avg_hold_days < lo:
+        return float(lo - avg_hold_days)
+    return float(avg_hold_days - hi)
+
+
 def _clamped_fitness(
     metrics: Dict[str, Any],
     *,
+    # gates & clamps
     min_trades: int,
     require_hold_days: bool,
     eps_mdd: float,
     eps_sharpe: float,
+    # weights for core terms
+    alpha_cagr: float,
+    beta_calmar: float,
+    gamma_sharpe: float,
+    # holding window preference
+    min_holding_days: float,
+    max_holding_days: float,
+    holding_penalty_weight: float,
 ) -> float:
     """
-    Robust fitness to avoid degenerate explosions when there are no trades
-    or near-zero denominators.
-
-    Score = calmar + 0.5 * sharpe, with gates:
-      - if trades < min_trades: score = 0
-      - if require_hold_days and avg_holding_days <= 0: score = 0
-      - if |max_drawdown| < eps_mdd: calmar = 0
-      - if |sharpe| < eps_sharpe:   sharpe = 0
+    Robust fitness:
+        base = α*CAGR + β*Calmar + γ*Sharpe
+        penalty = λ * holding_penalty(avg_holding_days, [min_holding_days, max_holding_days])
+        score = base - penalty
+    With safety:
+        - if trades < min_trades: score = 0
+        - if require_hold_days and avg_holding_days <= 0: score = 0
+        - if |max_drawdown| < eps_mdd: Calmar := 0
+        - if |Sharpe| < eps_sharpe:    Sharpe := 0
     """
     trades = int(metrics.get("trades", 0) or 0)
     if trades < min_trades:
         return 0.0
-    if require_hold_days and float(metrics.get("avg_holding_days", 0.0) or 0.0) <= 0.0:
+
+    avg_hold = float(metrics.get("avg_holding_days", 0.0) or 0.0)
+    if require_hold_days and avg_hold <= 0.0:
         return 0.0
 
-    calmar = float(metrics.get("calmar", 0.0) or 0.0)
-    sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
-    mdd = float(abs(metrics.get("max_drawdown", 0.0) or 0.0))
+    cagr = float(metrics.get("cagr", 0.0) or 0.0)
 
+    calmar = float(metrics.get("calmar", 0.0) or 0.0)
+    mdd = float(abs(metrics.get("max_drawdown", 0.0) or 0.0))
     if mdd < eps_mdd:
         calmar = 0.0
+
+    sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
     if abs(sharpe) < eps_sharpe:
         sharpe = 0.0
 
-    return calmar + 0.5 * sharpe
+    base = (alpha_cagr * cagr) + (beta_calmar * calmar) + (gamma_sharpe * sharpe)
+    penalty = holding_penalty_weight * _holding_penalty(avg_hold, min_holding_days, max_holding_days)
+    return float(base - penalty)
 
 
 def evolutionary_search(
@@ -97,7 +127,7 @@ def evolutionary_search(
     *,
     generations: int = 10,
     pop_size: int = 20,
-    # Exposed EA knobs
+    # EA knobs
     mutation_rate: float = 0.3,
     elite_frac: float = 0.5,            # keep top 50%
     random_inject_frac: float = 0.2,    # inject 20% fresh randoms each gen
@@ -106,6 +136,14 @@ def evolutionary_search(
     require_hold_days: bool = False,
     eps_mdd: float = 1e-4,
     eps_sharpe: float = 1e-4,
+    # Fitness weights (growth vs risk)
+    alpha_cagr: float = 1.0,
+    beta_calmar: float = 1.0,
+    gamma_sharpe: float = 0.25,
+    # Holding window preference (avoid day-trading & buy/hold)
+    min_holding_days: float = 3.0,
+    max_holding_days: float = 30.0,
+    holding_penalty_weight: float = 0.1,
     # Progress & logging
     progress_cb: ProgressCallback = console_progress,
     log_file: str = "training.log",
@@ -114,7 +152,7 @@ def evolutionary_search(
     Run EA and return top parameter sets [(params, score)].
 
     Notes:
-    - Survivor selection enforces `min_trades` (via the fitness gate).
+    - Survivor selection indirectly enforces `min_trades` via fitness gating.
     - Diversity is maintained via `random_inject_frac`.
     - Mutation uses `mutation_rate`.
     """
@@ -137,13 +175,19 @@ def evolutionary_search(
                 res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
                 metrics = res.get("aggregate", {}).get("metrics", {}) or {}
 
-                # robust fitness with gates/clamps
+                # robust, swing-friendly fitness
                 score = _clamped_fitness(
                     metrics,
                     min_trades=min_trades,
                     require_hold_days=require_hold_days,
                     eps_mdd=eps_mdd,
                     eps_sharpe=eps_sharpe,
+                    alpha_cagr=alpha_cagr,
+                    beta_calmar=beta_calmar,
+                    gamma_sharpe=gamma_sharpe,
+                    min_holding_days=min_holding_days,
+                    max_holding_days=max_holding_days,
+                    holding_penalty_weight=holding_penalty_weight,
                 )
                 elapsed = time.time() - t1
 
@@ -183,25 +227,22 @@ def evolutionary_search(
         inject_n = max(0, int(pop_size * random_inject_frac))
         breed_n = pop_size - elite_n - inject_n
         if breed_n < 0:
-            # if fractions over-allocate, reduce random inject
             inject_n = max(0, pop_size - elite_n)
             breed_n = pop_size - elite_n - inject_n
 
-        # survivors must pass min_trades gate (fitness gate already forces s>0)
+        # survivors (positive fitness → passed gates); pad if needed
         survivors: List[Dict[str, Any]] = []
         for p, s in gen_scores:
             if s > 0:
                 survivors.append(p)
             if len(survivors) == elite_n:
                 break
-
-        # if too few survivors due to gate, pad with top-scoring anyway (keep population viable)
         idx = 0
         while len(survivors) < elite_n and idx < len(gen_scores):
             survivors.append(gen_scores[idx][0])
             idx += 1
 
-        # breed children from survivors (if at least 2 exist; else use random parents)
+        # breed children
         children: List[Dict[str, Any]] = []
         parents = survivors if len(survivors) >= 2 else [random_param(param_space) for _ in range(2)]
         for _ in range(max(0, breed_n)):
@@ -215,7 +256,6 @@ def evolutionary_search(
 
         # new population
         population = survivors + children + injections
-        # if population drifted, re-pad randomly
         while len(population) < pop_size:
             population.append(random_param(param_space))
         if len(population) > pop_size:

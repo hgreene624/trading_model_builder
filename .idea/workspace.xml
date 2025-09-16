@@ -4,14 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working 80/20 model param refactor. No base model training happening yet">
-      <change afterPath="$PROJECT_DIR$/src/optimization/walkforward.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/utils/progress.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/utils/training_logger.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/test_ea_logger.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/utils/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
-    </list>
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working 80/20 model param refactor. evolution started and testing with trades" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -109,7 +102,7 @@
       <workItem from="1757949490554" duration="2758000" />
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
-      <workItem from="1758033823981" duration="4239000" />
+      <workItem from="1758033823981" duration="5059000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -295,7 +288,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758034928074</updated>
     </task>
-    <option name="localTasksCounter" value="24" />
+    <task id="LOCAL-00024" summary="working 80/20 model param refactor. evolution started and testing with trades">
+      <option name="closed" value="true" />
+      <created>1758039023007</created>
+      <option name="number" value="00024" />
+      <option name="presentableId" value="LOCAL-00024" />
+      <option name="project" value="LOCAL" />
+      <updated>1758039023007</updated>
+    </task>
+    <option name="localTasksCounter" value="25" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -333,6 +334,7 @@
     <MESSAGE value="fixed storage error on home page" />
     <MESSAGE value="Started logging system for base model, UI Woring, json export working." />
     <MESSAGE value="working 80/20 model param refactor. No base model training happening yet" />
-    <option name="LAST_COMMIT_MESSAGE" value="working 80/20 model param refactor. No base model training happening yet" />
+    <MESSAGE value="working 80/20 model param refactor. evolution started and testing with trades" />
+    <option name="LAST_COMMIT_MESSAGE" value="working 80/20 model param refactor. evolution started and testing with trades" />
   </component>
 </project>
