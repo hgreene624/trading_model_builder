@@ -4,7 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="fixed portfolio loading in strategy adapter. problem loading historical when training">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="fixed loading problem, now not training">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -105,7 +106,7 @@
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
       <workItem from="1758033823981" duration="22111000" />
-      <workItem from="1758056469773" duration="11093000" />
+      <workItem from="1758056469773" duration="13190000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -395,7 +396,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758124626889</updated>
     </task>
-    <option name="localTasksCounter" value="37" />
+    <task id="LOCAL-00037" summary="fixed loading problem, now not training">
+      <option name="closed" value="true" />
+      <created>1758125132788</created>
+      <option name="number" value="00037" />
+      <option name="presentableId" value="LOCAL-00037" />
+      <option name="project" value="LOCAL" />
+      <updated>1758125132788</updated>
+    </task>
+    <option name="localTasksCounter" value="38" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -413,7 +422,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Auto bounds for initial model params BETA" />
     <MESSAGE value="started new base model + tuning architechture" />
     <MESSAGE value="setup for storing and fetching historical data from wiki and alpaca. need to confirm local storage and seperate metadata and historical data fetching" />
     <MESSAGE value="working metadata filter for portfolio data fetching" />
@@ -438,6 +446,7 @@
     <MESSAGE value="refactor storage and fix portfolio page error" />
     <MESSAGE value="fixed portfolio storage and loading in portfolios page" />
     <MESSAGE value="fixed portfolio loading in strategy adapter. problem loading historical when training" />
-    <option name="LAST_COMMIT_MESSAGE" value="fixed portfolio loading in strategy adapter. problem loading historical when training" />
+    <MESSAGE value="fixed loading problem, now not training" />
+    <option name="LAST_COMMIT_MESSAGE" value="fixed loading problem, now not training" />
   </component>
 </project>

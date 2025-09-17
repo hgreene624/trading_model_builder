@@ -162,6 +162,90 @@ with left:
         },
     )
 
+    # === EA (Base model) knobs & param bounds ===
+    ea_cfg = _ss_get_dict(
+        "ea_cfg",
+        {
+            # search controls
+            "generations": 8,
+            "pop_size": 24,
+            "min_trades": 5,
+            "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
+            # param bounds (inclusive ints; floats as (min, max))
+            "breakout_n_min": 8,   "breakout_n_max": 60,
+            "exit_n_min": 4,       "exit_n_max": 30,
+            "atr_n_min": 5,        "atr_n_max": 30,
+            "atr_multiple_min": 0.5, "atr_multiple_max": 3.0,
+            "tp_multiple_min": 0.2,  "tp_multiple_max": 2.0,
+            "hold_min": 3,         "hold_max": 30,
+        },
+    )
+
+    with st.expander("EA (Base model) — search knobs & bounds", expanded=False):
+        col0, col1, col2, col3 = st.columns(4)
+        with col0:
+            ea_cfg["generations"] = st.number_input("Generations", 1, 200, int(ea_cfg["generations"]), 1)
+        with col1:
+            ea_cfg["pop_size"] = st.number_input("Population", 2, 400, int(ea_cfg["pop_size"]), 1)
+        with col2:
+            ea_cfg["min_trades"] = st.number_input("Min trades (gate)", 0, 200, int(ea_cfg["min_trades"]), 1)
+        with col3:
+            ea_cfg["n_jobs"] = st.number_input("Jobs (EA)", 1, max(1, (os.cpu_count() or 2)), int(ea_cfg["n_jobs"]), 1)
+
+        st.caption("Parameter search bounds")
+
+        # ---- INT ranges via sliders ----
+        c1, c2 = st.columns(2)
+        with c1:
+            br_lo, br_hi = st.slider(
+                "breakout_n range",
+                min_value=2, max_value=600,
+                value=(int(ea_cfg["breakout_n_min"]), int(ea_cfg["breakout_n_max"])),
+                step=1,
+                help="Bars for the entry breakout lookback.")
+            ex_lo, ex_hi = st.slider(
+                "exit_n range",
+                min_value=2, max_value=600,
+                value=(int(ea_cfg["exit_n_min"]), int(ea_cfg["exit_n_max"])),
+                step=1,
+                help="Bars for exit/stop lookback.")
+            atrn_lo, atrn_hi = st.slider(
+                "atr_n range",
+                min_value=2, max_value=600,
+                value=(int(ea_cfg["atr_n_min"]), int(ea_cfg["atr_n_max"])),
+                step=1,
+                help="ATR window length.")
+            hold_lo, hold_hi = st.slider(
+                "holding_period_limit range",
+                min_value=1, max_value=600,
+                value=(int(ea_cfg["hold_min"]), int(ea_cfg["hold_max"])),
+                step=1,
+                help="Max bars a trade may be held.")
+
+        # ---- FLOAT ranges via sliders ----
+        with c2:
+            atrm_lo, atrm_hi = st.slider(
+                "atr_multiple range",
+                min_value=0.05, max_value=50.0,
+                value=(float(ea_cfg["atr_multiple_min"]), float(ea_cfg["atr_multiple_max"])),
+                step=0.05,
+                help="Stop distance as multiple of ATR.")
+            tpm_lo, tpm_hi = st.slider(
+                "tp_multiple range",
+                min_value=0.05, max_value=50.0,
+                value=(float(ea_cfg["tp_multiple_min"]), float(ea_cfg["tp_multiple_max"])),
+                step=0.05,
+                help="Take-profit multiple.")
+
+        # Persist back to session config
+        ea_cfg["breakout_n_min"], ea_cfg["breakout_n_max"] = int(br_lo), int(br_hi)
+        ea_cfg["exit_n_min"],     ea_cfg["exit_n_max"]     = int(ex_lo), int(ex_hi)
+        ea_cfg["atr_n_min"],      ea_cfg["atr_n_max"]      = int(atrn_lo), int(atrn_hi)
+        ea_cfg["hold_min"],       ea_cfg["hold_max"]       = int(hold_lo), int(hold_hi)
+
+        ea_cfg["atr_multiple_min"], ea_cfg["atr_multiple_max"] = float(atrm_lo), float(atrm_hi)
+        ea_cfg["tp_multiple_min"],  ea_cfg["tp_multiple_max"]  = float(tpm_lo), float(tpm_hi)
+
     with st.expander("Base params", expanded=False):
         base["breakout_n"] = st.number_input("breakout_n", 5, 300, base["breakout_n"], 1, help="Lookback used for breakout entry signal.")
         base["exit_n"] = st.number_input("exit_n", 4, 300, base["exit_n"], 1, help="Lookback used for breakout exit/stop logic.")
@@ -208,74 +292,88 @@ with right:
         # resolve modules
         try:
             loader = _safe_import("src.data.loader")
-            trainer = _safe_import("src.models.general_trainer")
+            evo = _safe_import("src.optimization.evolutionary")
             metrics = _safe_import("src.backtest.metrics")
         except Exception as e:
             st.error(f"Import error: {e}")
             st.stop()
 
-        prog = st.progress(0.0, text="Starting training…")
+        prog = st.progress(0.0, text="Preparing EA search…")
         status = st.empty()
 
         try:
-            # For the base trainer we’ll do a simple portfolio CV using your existing general_trainer
-            # Over the past N years (controlled below), but keep minimal knobs here — your prior flow.
             end = _utc_now()
-            start = end - timedelta(days=365)  # keep same horizon as your earlier page; tweak if you prefer
+            start = end - timedelta(days=365)
 
-            status.write("Loading data…")
-            prog.progress(0.1)
+            # Build param space from UI bounds
+            cfg = ea_cfg
+            def _clamp_int(lo, hi): return (int(lo), int(max(lo, hi)))
+            def _clamp_float(lo, hi): return (float(lo), float(max(float(lo), float(hi))))
 
-            # The general trainer consumes tickers, period, base params; it aggregates per-symbol metrics.
-            status.write("Running trainer…")
-            prog.progress(0.4)
+            param_space = {
+                "breakout_n": _clamp_int(cfg["breakout_n_min"], cfg["breakout_n_max"]),
+                "exit_n": _clamp_int(cfg["exit_n_min"], cfg["exit_n_max"]),
+                "atr_n": _clamp_int(cfg["atr_n_min"], cfg["atr_n_max"]),
+                "atr_multiple": _clamp_float(cfg["atr_multiple_min"], cfg["atr_multiple_max"]),
+                "tp_multiple": _clamp_float(cfg["tp_multiple_min"], cfg["tp_multiple_max"]),
+                "holding_period_limit": _clamp_int(cfg["hold_min"], cfg["hold_max"]),
+            }
 
             clean_base = _filter_params_for_strategy(strategy_dotted, base)
-            res = trainer.train_general_model(
+
+            status.write("Running EA (base model training)…")
+            prog.progress(0.1)
+
+            # Streamlit progress callback
+            def _cb(evt, ctx):
+                # evt: e.g., "generation_start", "evaluation", "generation_end"
+                # ctx: dict with gen/pop etc. (best-effort)
+                try:
+                    if evt == "generation_start":
+                        gen = ctx.get("gen")
+                        prog.progress(min(0.9, 0.1 + (gen / max(1, cfg['generations'])) * 0.8),
+                                      text=f"EA generation {gen+1}/{cfg['generations']}…")
+                    elif evt == "generation_end":
+                        best = ctx.get("best_score")
+                        prog.progress(None, text=f"EA gen {ctx.get('gen')} done; best={best:.3f}" if best is not None else "EA evolving…")
+                except Exception:
+                    pass
+
+            top = evo.evolutionary_search(
                 strategy_dotted=strategy_dotted,
                 tickers=tickers,
                 start=start,
                 end=end,
                 starting_equity=float(equity),
-                base_params=clean_base,
+                param_space=param_space,
+                generations=int(cfg["generations"]),
+                pop_size=int(cfg["pop_size"]),
+                min_trades=int(cfg["min_trades"]),
+                n_jobs=int(cfg["n_jobs"]),
+                progress_cb=_cb,
+                # keep other kwargs at defaults (risk weights etc.) unless you decide to expose them
             )
 
-            prog.progress(0.8)
-            st.session_state["base_train_res"] = res
+            if not top:
+                raise RuntimeError("EA returned no candidates.")
 
-            # Leaderboard-like view
-            agg = (res or {}).get("aggregate", {}) or {}
-            agg_metrics = agg.get("metrics", {}) or {}
-            per = (res or {}).get("results", []) or []
+            # Save best and show leaderboard
+            best_params, best_score = top[0]
+            st.session_state["ea_best_params"] = dict(best_params)
+            st.session_state["ea_top_results"] = list(top)
 
-            status.write("Rendering results…")
-            if per:
-                rows = []
-                for r in per:
-                    sym = r.get("symbol")
-                    m = (r.get("metrics") or {})
-                    rows.append({
-                        "symbol": sym,
-                        "trades": m.get("trades", 0),
-                        "total_return": round(float(m.get("total_return", 0.0)), 4),
-                        "cagr": round(float(m.get("cagr", 0.0)), 4),
-                        "sharpe": round(float(m.get("sharpe", 0.0)), 3),
-                        "calmar": round(float(m.get("calmar", 0.0)), 3),
-                        "max_dd": round(float(m.get("max_drawdown", 0.0)), 4),
-                        "expectancy": round(float(m.get("expectancy", 0.0)), 4),
-                    })
-                lb = pd.DataFrame(rows).sort_values(["total_return", "sharpe"], ascending=[False, False])
-                st.dataframe(lb, width="stretch", height=360)
-            else:
-                st.warning("No per-symbol result rows generated.")
+            prog.progress(0.95, text="Rendering EA leaderboard…")
 
-            # Aggregate metrics summary
-            if agg_metrics:
-                _write_kv_table(agg_metrics, title="Aggregate metrics (equal-weight portfolio curve)")
-            else:
-                st.info("No aggregate metrics computed.")
+            rows = []
+            for params, score in top[: min(50, len(top))]:
+                r = {"score": float(score)}
+                r.update({k: params.get(k) for k in ("breakout_n","exit_n","atr_n","atr_multiple","tp_multiple","holding_period_limit")})
+                rows.append(r)
+            lb = pd.DataFrame(rows).sort_values("score", ascending=False)
+            st.markdown("**EA leaderboard (top candidates)**")
+            st.dataframe(lb, width="stretch", height=360)
 
-            status.write("Done.")
+            st.success(f"EA complete. Best score={best_score:.3f}. A Walk-Forward button is now available below.")
             prog.progress(1.0)
 
         except Exception as e:
@@ -320,7 +418,16 @@ with right:
         with col_ea3:
             wf_cfg["ea_min_trades"] = st.number_input("EA min trades", 0, 200, wf_cfg["ea_min_trades"], 1)
 
-    run_wf = st.button("🧭 Run Walk-Forward", type="secondary", help="Runs walk-forward validation on the selected tickers.", use_container_width=False)
+    # Gate WF behind EA completion (best params discovered)
+    ea_best = st.session_state.get("ea_best_params")
+    if not ea_best:
+        st.info("Run **Train (EA)** first. The Walk-Forward button will appear here after EA finishes.")
+        run_wf = False
+    else:
+        st.markdown(f"Using EA-best params for WF: `{ea_best}`")
+        run_wf = st.button("🧭 Run Walk-Forward", type="secondary",
+                           help="Runs walk-forward validation using EA-best params.",
+                           use_container_width=False)
 
     if run_wf:
         try:
@@ -329,15 +436,8 @@ with right:
             start = end - timedelta(days=int(wf_cfg["days_back"] or 365))
             step_days = int(wf_cfg["step_days"] or 0) or int(wf_cfg["test_days"])
 
-            # Use best available params:
-            # 1) if you just trained in this session, pull that
-            # 2) otherwise fall back to current base params
-            use_params = _filter_params_for_strategy(strategy_dotted, base)
-            res = st.session_state.get("base_train_res")
-            if isinstance(res, dict):
-                # If your trainer later includes a suggested best param-set, plug it here.
-                # For now we keep the base as the walk-forward starting point.
-                pass
+            # Prefer EA-best params; otherwise fall back to current base params
+            use_params = _filter_params_for_strategy(strategy_dotted, st.session_state.get("ea_best_params") or base)
 
             st.info("Starting walk-forward…")
             prog_wf = st.progress(0.05, text="Loading splits & data…")
