@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 
+from src.storage import list_portfolios, load_portfolio
+
 # --- Page chrome ---
 st.set_page_config(page_title="Strategy Adapter", layout="wide")
 st.title("🧪 Strategy Adapter")
@@ -63,12 +65,12 @@ with left:
     st.subheader("Portfolio & Strategy")
 
     # Portfolio selection
-    # Expecting a loader that can tell us portfolios & tickers. Fallback to text box if none.
+    # Use src.storage to list/load saved portfolios; fall back to manual CSV entry.
     tickers: List[str] = []
     try:
-        P = _safe_import("src.portfolios.store")
-        portfolios = sorted(P.list_portfolios())  # implement in your store (already used earlier)
-    except Exception:
+        portfolios = sorted(list_portfolios())
+    except Exception as e:
+        st.warning(f"Could not list portfolios: {e}")
         portfolios = []
 
     port_name = st.selectbox("Portfolio", options=(["<custom>"] + portfolios) if portfolios else ["<custom>"], index=0)
@@ -78,7 +80,8 @@ with left:
         tickers = [t.strip().upper() for t in tickers_csv.split(",") if t.strip()]
     else:
         try:
-            tickers = list(_safe_import("src.portfolios.store").load_portfolio(port_name))
+            # storage.load_portfolio returns an iterable of symbols
+            tickers = list(load_portfolio(port_name))
         except Exception as e:
             st.error(f"Failed to load portfolio '{port_name}': {e}")
             st.stop()
