@@ -72,6 +72,7 @@ with left:
         portfolios = []
 
     port_name = st.selectbox("Portfolio", options=(["<custom>"] + portfolios) if portfolios else ["<custom>"], index=0)
+
     if port_name == "<custom>":
         tickers_csv = st.text_input("Tickers (CSV)", "AAPL,MSFT")
         tickers = [t.strip().upper() for t in tickers_csv.split(",") if t.strip()]
