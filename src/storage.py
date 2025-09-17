@@ -65,16 +65,22 @@ def _canonical_portfolio_path(name: str) -> Path:
     name = _clean_filename(name)
     return _portfolios_dir() / f"{name}.json"
 
-def list_portfolios() -> List[str]:
+def list_portfolios() -> list[str]:
     """
-    Returns portfolio names (without .json). Merges new+legacy locations.
+    Return portfolio names discovered under storage/portfolios, A→Z.
+    Supports legacy .parquet files for discovery only.
     """
-    new = {p.stem for p in _portfolios_dir().glob("*.json")}
-    legacy = set()
-    if _LEGACY_PORT_ROOT.exists():
-        legacy |= {p.stem for p in _LEGACY_PORT_ROOT.glob("*.json")}
-        legacy |= {p.stem for p in _LEGACY_PORT_ROOT.glob("*.txt")}
-    return sorted(new | legacy)
+    from pathlib import Path
+    PORT_DIR = Path("storage") / "portfolios"
+    PORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    names = set()
+    for p in PORT_DIR.glob("*.json"):
+        names.add(p.stem)
+    for p in PORT_DIR.glob("*.parquet"):
+        names.add(p.stem)  # legacy discovery
+
+    return sorted(names)
 
 def _upgrade_legacy_if_needed(name: str) -> Optional[Dict[str, Any]]:
     """
@@ -108,60 +114,108 @@ def _upgrade_legacy_if_needed(name: str) -> Optional[Dict[str, Any]]:
 
     return None
 
-def load_portfolio(name: str) -> Optional[Dict[str, Any]]:
+def load_portfolio(name: str) -> dict | None:
     """
-    Loads a portfolio payload:
-      {"name": str, "tickers": [..], "meta": {...}}
-    Supports legacy sources and upgrades into canonical location if needed.
+    Load a portfolio by name from storage/portfolios/<name>.json
+    If a legacy .parquet exists, load it read-only (symbols from 'symbol' col or first col).
+    Returns:
+      {"name": str, "tickers": [str], "meta": dict, "saved_at": iso} or None
     """
-    # Try canonical first
-    path = _canonical_portfolio_path(name)
-    data = _read_json(path)
-    if data is not None:
-        return data
-    # Try legacy and upgrade
-    return _upgrade_legacy_if_needed(name)
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+    PORT_DIR = Path("storage") / "portfolios"
+    PORT_DIR.mkdir(parents=True, exist_ok=True)
 
-def save_portfolio(name: str, tickers_or_payload: Union[List[str], Dict[str, Any]], meta: Optional[Dict[str, Any]] = None) -> str:
+    def _norm_syms(xs):
+        seen, out = set(), []
+        for x in xs or []:
+            s = str(x).strip().upper()
+            if s and s not in seen:
+                seen.add(s); out.append(s)
+        return out
+
+    json_path = PORT_DIR / f"{name}.json"
+    if json_path.exists():
+        with json_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {
+            "name": data.get("name") or name,
+            "tickers": _norm_syms(data.get("tickers", [])),
+            "meta": data.get("meta") or {},
+            "saved_at": data.get("saved_at") or datetime.now(timezone.utc).isoformat(),
+        }
+
+    # Legacy parquet (read-only)
+    pq_path = PORT_DIR / f"{name}.parquet"
+    if pq_path.exists():
+        try:
+            import pandas as pd
+            df = pd.read_parquet(pq_path)
+            if "symbol" in df.columns:
+                syms = df["symbol"].astype(str).tolist()
+            else:
+                syms = df.iloc[:, 0].astype(str).tolist()
+            return {
+                "name": name,
+                "tickers": _norm_syms(syms),
+                "meta": {"source": "legacy_parquet"},
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception:
+            return None
+
+    return None
+
+def save_portfolio(name: str, tickers: list[str], meta: dict | None = None) -> dict:
     """
-    Back-compat save:
-      - If second arg is a list -> treat as (tickers, meta)
-      - If second arg is a dict  -> treat as payload with keys {tickers, meta, ...}
-    Always writes to canonical data/portfolios.
+    Create/overwrite storage/portfolios/<name>.json with {name,tickers,meta,saved_at}.
     """
-    name = _clean_filename(name)
-    path = _canonical_portfolio_path(name)
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+    PORT_DIR = Path("storage") / "portfolios"
+    PORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    if isinstance(tickers_or_payload, dict) and meta is None:
-        # payload form
-        payload = dict(tickers_or_payload)
-        payload["name"] = name
-        # dedupe tickers preserving order if present
-        if "tickers" in payload and isinstance(payload["tickers"], list):
-            payload["tickers"] = list(dict.fromkeys(str(t).upper() for t in payload["tickers"]))
-        meta_in = dict(payload.get("meta", {}))
-    else:
-        # legacy (tickers, meta) form
-        tickers = [str(t).upper() for t in (tickers_or_payload or [])]
-        tickers = list(dict.fromkeys(tickers))
-        meta_in = dict(meta or {})
-        payload = {"name": name, "tickers": tickers, "meta": meta_in}
+    seen, syms = set(), []
+    for t in tickers or []:
+        s = str(t).strip().upper()
+        if s and s not in seen:
+            seen.add(s); syms.append(s)
 
-    meta_in["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    payload["meta"] = meta_in
+    payload = {
+        "name": name,
+        "tickers": syms,
+        "meta": meta or {},
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = PORT_DIR / f"{name}.json"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    tmp.replace(path)
+    return payload
 
-    return _write_json_atomic(path, payload)
-
-def append_to_portfolio(name: str, tickers: List[str], meta_update: Optional[Dict[str, Any]] = None) -> str:
+def append_to_portfolio(name: str, tickers: list[str], meta_update: dict | None = None) -> dict:
     """
-    Append tickers to existing/new portfolio (canonical location), shallow-merge meta.
+    Append tickers & merge meta into storage/portfolios/<name>.json (create if missing).
+    De-duplicates tickers, uppercases symbols, preserves existing meta keys unless overridden.
     """
     current = load_portfolio(name) or {"name": name, "tickers": [], "meta": {}}
-    merged_tickers = list(dict.fromkeys([*(str(t).upper() for t in (current.get("tickers") or [])),
-                                         *(str(t).upper() for t in (tickers or []))]))
-    merged_meta = {**(current.get("meta") or {}), **(meta_update or {})}
-    payload = {"name": name, "tickers": merged_tickers, "meta": merged_meta}
-    return save_portfolio(name, payload)  # reuses canonical writer
+    base_syms = current.get("tickers", [])
+    new_syms = tickers or []
+
+    seen, merged = set(), []
+    for t in list(base_syms) + list(new_syms):
+        s = str(t).strip().upper()
+        if s and s not in seen:
+            seen.add(s); merged.append(s)
+
+    meta = dict(current.get("meta") or {})
+    if meta_update:
+        meta.update(meta_update)
+
+    return save_portfolio(name, merged, meta=meta)
 
 # -----------------------------------------------------------------------------
 # Portfolio models (per-portfolio saved models)

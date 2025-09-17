@@ -4,9 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="refactor storage and fix portfolio page error">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/1_Portfolios.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/1_Portfolios.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/storage.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/storage.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -107,7 +107,7 @@
       <workItem from="1757952520940" duration="1721000" />
       <workItem from="1757954257238" duration="4647000" />
       <workItem from="1758033823981" duration="22111000" />
-      <workItem from="1758056469773" duration="7661000" />
+      <workItem from="1758056469773" duration="10010000" />
     </task>
     <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -373,7 +373,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758062378258</updated>
     </task>
-    <option name="localTasksCounter" value="34" />
+    <task id="LOCAL-00034" summary="refactor storage and fix portfolio page error">
+      <option name="closed" value="true" />
+      <created>1758121554087</created>
+      <option name="number" value="00034" />
+      <option name="presentableId" value="LOCAL-00034" />
+      <option name="project" value="LOCAL" />
+      <updated>1758121554087</updated>
+    </task>
+    <option name="localTasksCounter" value="35" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -391,7 +399,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy" />
     <MESSAGE value="&#10;- Checkbox to toggle risk-parity vs equal weights.&#10;- Compute weights from daily stddev of returns over sim range.&#10;- Keep per-ticker strategy selection + portfolio params fallback." />
     <MESSAGE value="individual ticker graphs in simulation results with buy and sell markers" />
     <MESSAGE value="Auto bounds for initial model params BETA" />
@@ -416,6 +423,7 @@
     <MESSAGE value="successfull walkforward test" />
     <MESSAGE value="walkforward with artifact detection, test sucess" />
     <MESSAGE value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
-    <option name="LAST_COMMIT_MESSAGE" value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
+    <MESSAGE value="refactor storage and fix portfolio page error" />
+    <option name="LAST_COMMIT_MESSAGE" value="refactor storage and fix portfolio page error" />
   </component>
 </project>
