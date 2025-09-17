@@ -27,11 +27,49 @@ def _ss_get_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
         st.session_state[key] = dict(default)
     return st.session_state[key]
 
+
 def _write_kv_table(d: Dict[str, Any], title: str = ""):
     if title:
         st.markdown(f"**{title}**")
     df = pd.DataFrame({"key": list(d.keys()), "value": [d[k] for k in d.keys()]})
     st.dataframe(df, width="stretch", height=min(360, 40 + 28 * len(df)))
+
+# --- Symbol normalization (defensive against headers/objects) ---
+import re
+
+def _normalize_symbols(seq) -> list[str]:
+    out: list[str] = []
+    for x in (seq or []):
+        s = None
+        if isinstance(x, str):
+            s = x
+        elif isinstance(x, dict):
+            s = x.get("symbol") or x.get("ticker") or x.get("Symbol") or x.get("Ticker")
+        elif hasattr(x, "get"):
+            try:
+                s = x.get("symbol") or x.get("ticker")
+            except Exception:
+                s = None
+        else:
+            s = str(x)
+        if not s:
+            continue
+        s = s.strip().upper()
+        # Drop obvious headers/placeholders
+        if s in {"SYMBOL", "SYMBOLS", "TICKER", "TICKERS", "NAME", "SECURITY", "COMPANY", "N/A", ""}:
+            continue
+        # Basic ticker sanity: letters/digits/.- up to 10 chars
+        if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", s):
+            continue
+        out.append(s)
+    # de-dup while preserving rough order
+    seen = set()
+    dedup = []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            dedup.append(s)
+    return dedup
 
 # --- Helper to filter params for strategy ---
 def _filter_params_for_strategy(strategy_dotted: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -77,11 +115,17 @@ with left:
 
     if port_name == "<custom>":
         tickers_csv = st.text_input("Tickers (CSV)", "AAPL,MSFT")
-        tickers = [t.strip().upper() for t in tickers_csv.split(",") if t.strip()]
+        raw = [t for t in tickers_csv.split(",")]
+        tickers = _normalize_symbols(raw)
     else:
         try:
-            # storage.load_portfolio returns an iterable of symbols
-            tickers = list(load_portfolio(port_name))
+            obj = load_portfolio(port_name)
+            # Accept either a plain list of symbols or a dict that contains them
+            if isinstance(obj, dict):
+                raw = obj.get("tickers") or obj.get("symbols") or obj.get("items") or obj.get("data") or []
+            else:
+                raw = obj
+            tickers = _normalize_symbols(raw)
         except Exception as e:
             st.error(f"Failed to load portfolio '{port_name}': {e}")
             st.stop()
@@ -90,7 +134,7 @@ with left:
         st.warning("No tickers selected. Add tickers or choose a portfolio.")
         st.stop()
 
-    st.info(f"Selected **{len(tickers)}** symbols.")
+    st.info(f"Selected **{len(tickers)}** symbols: {', '.join(tickers[:12])}{'…' if len(tickers) > 12 else ''}")
 
     # Strategy module (kept as before)
     strategy_dotted = st.selectbox("Strategy", ["src.models.atr_breakout"], index=0)
