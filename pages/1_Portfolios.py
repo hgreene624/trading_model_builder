@@ -1,7 +1,7 @@
 # pages/1_Portfolios.py
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -20,11 +20,8 @@ from src.storage import (
     append_to_portfolio,   # append_to_portfolio(name, tickers, meta_update=None)
 )
 
-# Prefer cached bars if available, fallback to direct Alpaca loader
-try:
-    from src.data.cache import get_ohlcv_cached as load_ohlcv_window
-except Exception:
-    from src.data.alpaca_data import load_ohlcv as load_ohlcv_window
+# Unified, normalized OHLCV loader (auto provider selection handled inside)
+from src.data.loader import get_ohlcv as load_ohlcv_window
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -32,6 +29,31 @@ except Exception:
 # ────────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Portfolios", layout="wide")
 load_dotenv()
+
+import os
+
+def _hydrate_env_from_secrets():
+    """Populate expected Alpaca env vars from Streamlit secrets if present."""
+    try:
+        s = st.secrets  # type: ignore[attr-defined]
+    except Exception:
+        s = None
+    if not s:
+        return
+    os.environ.setdefault("APCA_API_KEY_ID", s.get("ALPACA_API_KEY", ""))
+    os.environ.setdefault("APCA_API_SECRET_KEY", s.get("ALPACA_SECRET_KEY", ""))
+    if s.get("ALPACA_BASE_URL"):
+        os.environ.setdefault("APCA_API_BASE_URL", s["ALPACA_BASE_URL"])
+    if s.get("ALPACA_DATA_URL"):
+        os.environ.setdefault("APCA_DATA_URL", s["ALPACA_DATA_URL"])
+    os.environ.setdefault("APCA_FEED", s.get("ALPACA_FEED", "iex"))
+
+_hydrate_env_from_secrets()
+
+def _to_dt(d: date) -> datetime:
+    # use UTC midnight for stable window bounds
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+
 st.title("🗂️ Portfolios — Universe → Filter → Fetch → Save")
 
 st.caption(
@@ -164,8 +186,8 @@ if not ss.pf_idx_meta.empty:
             for i, sym in enumerate(tickers):
                 ok = False
                 try:
-                    df_p = load_ohlcv_window(sym, priors_start.isoformat(), priors_end.isoformat())
-                    df_s = load_ohlcv_window(sym, select_start.isoformat(), select_end.isoformat())
+                    df_p = load_ohlcv_window(sym, _to_dt(priors_start), _to_dt(priors_end))
+                    df_s = load_ohlcv_window(sym, _to_dt(select_start), _to_dt(select_end))
                     ok = (df_p is not None and not df_p.empty) and (df_s is not None and not df_s.empty)
                 except Exception:
                     ok = False
@@ -188,6 +210,8 @@ if not ss.pf_idx_meta.empty:
                     prog.progress((i + 1) / max(1, len(tickers)))
 
             liq = pd.DataFrame(rows)
+            if "symbol" not in liq.columns:
+                liq = pd.DataFrame(columns=["symbol", "median_close_priors", "median_dollar_vol_priors"])  # ensure merge key exists
             enriched = meta.merge(liq, on="symbol", how="left")
             ss.pf_idx_members = enriched
 

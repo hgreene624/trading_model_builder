@@ -149,44 +149,14 @@ def _alpaca_connection_status():
 
 # ---- Storage imports (with fallback shims)
 try:
-    from src.storage import list_portfolios, list_simulations
-except Exception as e:
-    st.warning(f"storage import issue: {e}")
-
+    from src.storage import list_portfolios  # use storage if available
+except Exception:
+    # silent fallback – avoid noisy toasts on Home
     def list_portfolios(root: str | Path = "storage/portfolios"):
         p = Path(root)
         if not p.exists():
             return []
         return [f.stem for f in p.glob("*.json")]
-
-    def list_simulations(limit: int = 50,
-                         roots=("storage/simulations", "storage/reports")):
-        items = []
-        for root in roots:
-            p = Path(root)
-            if not p.exists():
-                continue
-            for f in p.rglob("*.json"):
-                try:
-                    data = json.loads(f.read_text(encoding="utf-8"))
-                except Exception:
-                    data = {}
-                ts = f.stat().st_mtime
-                created = data.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
-                items.append({
-                    "name": f.name,
-                    "path": str(f),
-                    "created_at": created,
-                    "portfolio_name": data.get("portfolio_name") or data.get("portfolio") or data.get("meta", {}).get("portfolio", ""),
-                    "start": data.get("start") or data.get("start_date") or data.get("meta", {}).get("start", ""),
-                    "end": data.get("end") or data.get("end_date") or data.get("meta", {}).get("end", ""),
-                    "starting_equity": data.get("starting_equity", data.get("start_equity", None)),
-                    "final_equity": data.get("final_equity", data.get("equity_final", None)),
-                })
-        items.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        if limit and limit > 0:
-            items = items[:limit]
-        return items
 
 # ---- Title
 st.title("📊 Trading Research Dashboard")

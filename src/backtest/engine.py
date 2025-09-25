@@ -1,433 +1,261 @@
 # src/backtest/engine.py
+"""
+Backtest engine for ATR breakout (long-only by default).
+
+This file defines:
+- ATRParams: dataclass of strategy parameters
+- wilder_atr(): ATR indicator
+- backtest_atr_breakout(): run the backtest and produce BacktestResult
+- CONTRACT docstrings for trades/meta so other modules remain decoupled
+
+IMPORTANT: This engine **does not** do any UI. It relies on `src.data.loader.get_ohlcv`
+to fetch bars. Adjust that import to your real data source.
+"""
+
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from src.data.cache import get_ohlcv_cached
-from .metrics import summarize_equity, summarize_trades
+# ---- Data loader (swap to your real import) ----
+try:
+    from src.data.loader import get_ohlcv
+except Exception:
+    # Minimal placeholder so the file is importable; replace in your repo.
+    def get_ohlcv(symbol: str, start, end) -> pd.DataFrame:
+        raise RuntimeError("Implement src.data.loader.get_ohlcv(symbol, start, end)")
 
+# ---- Metrics helper (only type reference; do NOT compute here) ----
+# The trainer will call metrics.compute_core_metrics on the result.
+# from src.backtest.metrics import compute_core_metrics
+
+# ---------- CONTRACTS ----------
+
+"""
+BacktestResult = {
+    "equity": pd.Series,               # cumulative equity
+    "daily_returns": pd.Series,        # daily pct returns
+    "trades": list[dict],              # see Trade dict below
+    "meta": dict,                      # symbol, params, costs, date range, exec_mode, notes
+}
+
+Trade = {
+    "entry_time": pd.Timestamp,
+    "exit_time": pd.Timestamp,
+    "entry_price": float,
+    "exit_price": float,
+    "side": "long"|"short",
+    "return_pct": float,
+    "holding_days": int,
+    "mfe": float, "mae": float,               # return terms (e.g., +0.03, -0.02)
+    "day_low": float, "day_high": float,      # entry day range
+    "day_low_exit": float, "day_high_exit": float,  # exit day range
+    "decision_price": float, "fill_price": float    # optional execution diag (if you support live)
+}
+"""
+
+# ---------- Parameters ----------
 
 @dataclass
 class ATRParams:
-    # Core Donchian/ATR model
-    breakout_n: int = 55
-    exit_n: int = 20
+    breakout_n: int = 20             # recent high lookback to trigger long entry
+    exit_n: int = 10                  # recent low lookback for exit
     atr_n: int = 14
+    atr_multiple: float = 2.0         # volatility filter: price > rolling_high - k * ATR
+    tp_multiple: float = 0.0          # optional profit target (in ATRs). 0 disables.
+    holding_period_limit: int = 0     # optional max holding days. 0 disables.
+    allow_short: bool = False         # optional shorting; default off for simplicity
 
-    # Risk model
-    atr_multiple: float = 3.0        # stop distance (ATR multiples)
-    risk_per_trade: float = 0.01     # fraction of equity risked per position
-    allow_fractional: bool = True
+# ---------- Indicators ----------
 
-    # Costs model (per leg)
-    slippage_bp: float = 5.0         # slippage basis points per leg
-    cost_bps: float = 1.0            # commissions/fees (bps) per leg
-    fee_per_trade: float = 0.0       # flat fee per leg (absolute $)
-
-    # Optional extensions
-    tp_multiple: Optional[float] = None   # take-profit target in ATRs (e.g., 2.0). None = off
-    use_trend_filter: bool = False
-    sma_fast: int = 30
-    sma_slow: int = 50
-    sma_long: int = 150
-    long_slope_len: int = 15
-    holding_period_limit: Optional[int] = None  # bars; None = off
-
-
-def wilder_atr(df: pd.DataFrame, n: int) -> pd.Series:
-    high, low, close = df["high"], df["low"], df["close"]
+def wilder_atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
+    """Wilder's ATR (EMA of True Range)."""
     prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / n, adjust=False).mean()
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1.0 / n, adjust=False).mean()
 
-
-def _entry_exit_levels(df: pd.DataFrame, breakout_n: int, exit_n: int) -> pd.DataFrame:
-    out = df.copy()
-    # Use previous N-day windows (shifted) so signals on day t can execute at t+1 open
-    out["breakout_high"] = (
-        out["high"].rolling(window=breakout_n, min_periods=breakout_n).max().shift(1)
-    )
-    out["exit_low"] = (
-        out["low"].rolling(window=exit_n, min_periods=exit_n).min().shift(1)
-    )
-    return out
-
-
-def _compute_trend_cols(df: pd.DataFrame, p: ATRParams) -> pd.DataFrame:
-    out = df.copy()
-    out["sma_fast"] = out["close"].rolling(p.sma_fast, min_periods=p.sma_fast).mean()
-    out["sma_slow"] = out["close"].rolling(p.sma_slow, min_periods=p.sma_slow).mean()
-    out["sma_long"] = out["close"].rolling(p.sma_long, min_periods=p.sma_long).mean()
-    out["sma_long_prev"] = out["sma_long"].shift(p.long_slope_len)
-    out["long_slope_up"] = (out["sma_long"] - out["sma_long_prev"]) > 0
-    out["fast_above_slow"] = out["sma_fast"] > out["sma_slow"]
-    out["trend_ok"] = out["fast_above_slow"] & out["long_slope_up"]
-    return out
-
+# ---------- Core backtest ----------
 
 def backtest_atr_breakout(
     symbol: str,
-    start: str,
-    end: str,
+    start,
+    end,
     starting_equity: float,
-    params: ATRParams,
-    exec_mode: str = "next_open",   # {"next_open", "close"} — default is next_open
-) -> Dict[str, object]:
+    params: ATRParams | Dict,
+    execution: str = "close",   # "close" or "next_open" (if you have opens)
+    commission_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+) -> Dict:
     """
-    Donchian-style breakout with ATR sizing, stop-loss, optional take-profit,
-    optional trend filter, optional holding period limit, and a simple per-leg cost model.
+    Simple daily ATR breakout, long-only by default.
 
-    Execution model (controlled by exec_mode):
-      • "next_open" (default):
-          - Signals are computed on bar t (using prior windows) and executed at t+1 OPEN.
-      • "close":
-          - Signals are computed on bar t and executed at the SAME bar's CLOSE (MOC-like).
-          - Use with appropriate slippage to be realistic if you actually run MOC orders.
+    Entry:
+      - Long when close > rolling_high(breakout_n) - atr_multiple * ATR
+    Exit:
+      - Exit when close < rolling_low(exit_n)
+      - Or when tp_multiple ATR target hit (if tp_multiple>0)
+      - Or when holding_period_limit reached (if >0)
 
-    Risk while in a trade (both modes):
-      • If in a position, we check each bar:
-          - Gap below stop at OPEN → exit at OPEN (worse than stop).
-          - Intraday stop: if LOW <= stop, exit at stop.
-          - Gap above TP at OPEN → exit at OPEN (better than TP).
-          - Intraday TP: if HIGH >= TP, exit at TP.
-        (Stop checks run first to be conservative in ambiguous OHLC bars.)
-
-    Costs: unified per-leg bps = slippage_bp + cost_bps; buys use (1 + bps), sells use (1 - bps).
-
-    Returns dict with:
-      "equity": pd.Series of equity over time
-      "trades": List[Dict] (trade log)
-      "metrics": Dict[str, float]
+    This is intentionally simple and readable. All timing diagnostics (MFE/MAE, efficiencies)
+    are computed from available bars within each holding window.
     """
-    exec_mode = (exec_mode or "next_open").lower()
-    if exec_mode not in {"next_open", "close"}:
-        raise ValueError(f"exec_mode must be 'next_open' or 'close', got {exec_mode!r}")
+    if isinstance(params, dict):
+        params = ATRParams(**params)
 
-    df = get_ohlcv_cached(symbol, start, end).copy()
+    df = get_ohlcv(symbol, start, end).copy()
     if df.empty:
-        raise ValueError(f"No data for {symbol} between {start} and {end}")
+        return {
+            "equity": pd.Series(dtype=float),
+            "daily_returns": pd.Series(dtype=float),
+            "trades": [],
+            "meta": {"symbol": symbol, "start": start, "end": end, "params": params.__dict__},
+        }
 
-    # Indicators & levels
-    df["atr"] = wilder_atr(df, params.atr_n)
-    df = _entry_exit_levels(df, params.breakout_n, params.exit_n)
-    if params.use_trend_filter:
-        df = _compute_trend_cols(df, params)
-    else:
-        df["trend_ok"] = True
+    # Ensure basic columns
+    for col in ("open", "high", "low", "close"):
+        if col not in df.columns:
+            raise ValueError(f"Data for {symbol} missing required column '{col}'")
 
-    # Precompute next open for clarity (only used by next_open mode)
-    df["next_open"] = df["open"].shift(-1)
+    df = df.sort_index()
+    atr = wilder_atr(df["high"], df["low"], df["close"], n=params.atr_n)
+    roll_high = df["close"].rolling(params.breakout_n).max()
+    roll_low = df["close"].rolling(params.exit_n).min()
 
-    # State
-    cash = float(starting_equity)
-    shares = 0.0
-    stop_price: Optional[float] = None
-    tp_price: Optional[float] = None
-    entry_price: Optional[float] = None
-    entry_date: Optional[pd.Timestamp] = None
-    bars_in_trade: int = 0
+    # Entry trigger (volatility-adjusted)
+    entry_th = roll_high - params.atr_multiple * atr
+    long_signal = df["close"] > entry_th
 
-    # Order scheduling flags
-    pending_entry_next = False
-    pending_exit_next = False
-
-    eq_dates: List[pd.Timestamp] = []
-    eq_vals: List[float] = []
+    # State machine
+    in_pos = False
+    entry_px = np.nan
+    entry_idx = None
     trades: List[Dict] = []
 
-    # unified per-leg cost
-    bps = (params.slippage_bp + params.cost_bps) / 10000.0
-    buy_mult = 1.0 + bps
-    sell_mult = 1.0 - bps
+    equity = [starting_equity]
+    # (we’ll mark-to-market as either flat or 1x fully invested; position sizing deliberately omitted here)
+    position_qty = 0.0
 
-    idx = df.index
+    # Iterate daily
+    for i, (ts, row) in enumerate(df.iterrows()):
+        price = float(row["close"])
+        day_lo = float(row["low"])
+        day_hi = float(row["high"])
 
-    for i in range(len(df)):
-        dt = idx[i]
-        row = df.iloc[i]
+        # Entry
+        if not in_pos and bool(long_signal.iloc[i]):
+            in_pos = True
+            entry_px = price if execution == "close" else float(row.get("open", price))
+            # apply immediate costs on entry fill
+            fill_mult = 1.0 + (commission_bps + slippage_bps) / 10_000.0
+            entry_fill = entry_px * fill_mult
+            entry_idx = i
+            entry_time = ts
+            # buy 1 unit notionally (equity accounting here is synthetic; sizing logic is left to portfolio layer)
+            position_qty = equity[-1] / entry_fill  # all-in for didactic simplicity
+            decision_px = entry_px  # same as entry for backtest; separate in live
 
-        # --------- Intraday risk management (if in position) ----------
-        if shares > 0:
-            # 1) Gap below stop at open
-            if stop_price is not None and row["open"] <= stop_price:
-                exit_px = float(row["open"] * sell_mult)
-                cash += shares * exit_px - params.fee_per_trade
-                pnl = (exit_px - (entry_price or exit_px)) * shares
-                trades.append({
-                    "symbol": symbol,
-                    "entry_date": entry_date.date() if entry_date is not None else None,
-                    "entry_price": float(entry_price),
-                    "exit_date": pd.Timestamp(dt).date(),
-                    "exit_price": float(exit_px),
-                    "shares": float(shares),
-                    "pnl": float(pnl),
-                    "return_pct": float((exit_px / (entry_price or exit_px)) - 1.0),
-                    "holding_days": int((pd.Timestamp(dt) - (entry_date or pd.Timestamp(dt))).days),
-                    "reason": "stop_gap",
-                })
-                shares = 0.0
-                stop_price = None
-                tp_price = None
-                entry_price = None
-                entry_date = None
-                bars_in_trade = 0
-                pending_exit_next = False  # cleared since we exited
+        # Exit checks
+        exit_reason = None
+        do_exit = False
+        exit_px = None
 
-            # 2) Intraday stop (conservative: prefer stop if both TP and stop touched)
-            elif stop_price is not None and row["low"] <= stop_price:
-                exit_px_raw = float(stop_price)
-                exit_px = float(exit_px_raw * sell_mult)
-                cash += shares * exit_px - params.fee_per_trade
-                pnl = (exit_px - (entry_price or exit_px)) * shares
-                trades.append({
-                    "symbol": symbol,
-                    "entry_date": entry_date.date() if entry_date is not None else None,
-                    "entry_price": float(entry_price),
-                    "exit_date": pd.Timestamp(dt).date(),
-                    "exit_price": float(exit_px),
-                    "shares": float(shares),
-                    "pnl": float(pnl),
-                    "return_pct": float((exit_px / (entry_price or exit_px)) - 1.0),
-                    "holding_days": int((pd.Timestamp(dt) - (entry_date or pd.Timestamp(dt))).days),
-                    "reason": "stop_intraday",
-                })
-                shares = 0.0
-                stop_price = None
-                tp_price = None
-                entry_price = None
-                entry_date = None
-                bars_in_trade = 0
-                pending_exit_next = False
+        if in_pos:
+            # Exit on rolling low break
+            if price < roll_low.iloc[i]:
+                do_exit = True
+                exit_reason = "roll_low"
 
-            # 3) Gap above TP at open
-            elif tp_price is not None and row["open"] >= tp_price:
-                exit_px = float(row["open"] * sell_mult)
-                cash += shares * exit_px - params.fee_per_trade
-                pnl = (exit_px - (entry_price or exit_px)) * shares
-                trades.append({
-                    "symbol": symbol,
-                    "entry_date": entry_date.date() if entry_date is not None else None,
-                    "entry_price": float(entry_price),
-                    "exit_date": pd.Timestamp(dt).date(),
-                    "exit_price": float(exit_px),
-                    "shares": float(shares),
-                    "pnl": float(pnl),
-                    "return_pct": float((exit_px / (entry_price or exit_px)) - 1.0),
-                    "holding_days": int((pd.Timestamp(dt) - (entry_date or pd.Timestamp(dt))).days),
-                    "reason": "tp_gap",
-                })
-                shares = 0.0
-                stop_price = None
-                tp_price = None
-                entry_price = None
-                entry_date = None
-                bars_in_trade = 0
-                pending_exit_next = False
+            # Exit on TP in ATRs (check intraday range)
+            if not do_exit and params.tp_multiple > 0:
+                target = entry_px * (1.0 + params.tp_multiple * atr.iloc[entry_idx] / entry_px)
+                # if day's high reached target intraday
+                if day_hi >= target:
+                    do_exit = True
+                    exit_reason = "tp_hit_intraday"
+                    # assume exit at target (conservative could be near close)
+                    exit_px = target
 
-            # 4) Intraday TP
-            elif tp_price is not None and row["high"] >= tp_price:
-                exit_px_raw = float(tp_price)
-                exit_px = float(exit_px_raw * sell_mult)
-                cash += shares * exit_px - params.fee_per_trade
-                pnl = (exit_px - (entry_price or exit_px)) * shares
-                trades.append({
-                    "symbol": symbol,
-                    "entry_date": entry_date.date() if entry_date is not None else None,
-                    "entry_price": float(entry_price),
-                    "exit_date": pd.Timestamp(dt).date(),
-                    "exit_price": float(exit_px),
-                    "shares": float(shares),
-                    "pnl": float(pnl),
-                    "return_pct": float((exit_px / (entry_price or exit_px)) - 1.0),
-                    "holding_days": int((pd.Timestamp(dt) - (entry_date or pd.Timestamp(dt))).days),
-                    "reason": "tp_intraday",
-                })
-                shares = 0.0
-                stop_price = None
-                tp_price = None
-                entry_price = None
-                entry_date = None
-                bars_in_trade = 0
-                pending_exit_next = False
+            # Exit on holding period
+            if not do_exit and params.holding_period_limit > 0:
+                held = i - entry_idx
+                if held >= params.holding_period_limit:
+                    do_exit = True
+                    exit_reason = "holding_limit"
 
-        # --------- Execute scheduled orders (from previous day) at today's OPEN ----------
-        if i > 0 and exec_mode == "next_open":
-            # Execute entry
-            if pending_entry_next and shares == 0 and not np.isnan(row["open"]):
-                px = float(row["open"] * buy_mult)
-                prev = df.iloc[i - 1]
-                atr_val = float(prev["atr"]) if not np.isnan(prev["atr"]) else None
-                if atr_val and atr_val > 0:
-                    risk_per_share = max(params.atr_multiple * atr_val, 1e-12)
-                    target_risk_dollars = params.risk_per_trade * cash  # equity≈cash if flat
-                    raw_shares = target_risk_dollars / risk_per_share
-                    affordable = cash / max(px, 1e-12)
+        # Commit exit
+        if in_pos and do_exit:
+            # Exit price
+            if exit_px is None:
+                exit_px = price if execution == "close" else float(row.get("open", price))
+            # apply costs on exit
+            exit_fill = exit_px * (1.0 - (commission_bps + slippage_bps) / 10_000.0)
 
-                    if params.allow_fractional:
-                        use_shares = min(raw_shares, affordable)
-                    else:
-                        use_shares = float(np.floor(min(raw_shares, affordable)))
+            # Compute MFE/MAE over holding window
+            win_slice = df.iloc[entry_idx:i+1]
+            # returns relative to entry
+            rel = (win_slice["high"] / entry_px) - 1.0
+            mfe = float(rel.max()) if len(rel) else 0.0
+            rel2 = (win_slice["low"] / entry_px) - 1.0
+            mae = float(rel2.min()) if len(rel2) else 0.0
 
-                    if use_shares > (0.0 if params.allow_fractional else 0.5):
-                        cost = use_shares * px + params.fee_per_trade
-                        if cost <= cash + 1e-9:
-                            cash -= cost
-                            shares = use_shares
-                            entry_price = px
-                            entry_date = pd.Timestamp(dt)
-                            bars_in_trade = 0
-                            stop_price = px - params.atr_multiple * atr_val
-                            tp_price = (
-                                px + (params.tp_multiple * atr_val)
-                                if params.tp_multiple and params.tp_multiple > 0
-                                else None
-                            )
-                pending_entry_next = False
+            trade_ret = (exit_fill - entry_fill) / entry_fill
+            holding_days = (ts - entry_time).days or (i - entry_idx)
 
-            # Execute exit
-            if pending_exit_next and shares > 0 and not np.isnan(row["open"]):
-                px = float(row["open"] * sell_mult)
-                cash += shares * px - params.fee_per_trade
-                pnl = (px - (entry_price or px)) * shares
-                trades.append({
-                    "symbol": symbol,
-                    "entry_date": entry_date.date() if entry_date is not None else None,
-                    "entry_price": float(entry_price),
-                    "exit_date": pd.Timestamp(dt).date(),
-                    "exit_price": float(px),
-                    "shares": float(shares),
-                    "pnl": float(pnl),
-                    "return_pct": float((px / (entry_price or px)) - 1.0),
-                    "holding_days": int((pd.Timestamp(dt) - (entry_date or pd.Timestamp(dt))).days),
-                    "reason": "rule_exit",
-                })
-                shares = 0.0
-                stop_price = None
-                tp_price = None
-                entry_price = None
-                entry_date = None
-                bars_in_trade = 0
-                pending_exit_next = False
+            trades.append({
+                "entry_time": entry_time,
+                "exit_time": ts,
+                "entry_price": float(entry_fill),
+                "exit_price": float(exit_fill),
+                "side": "long",
+                "return_pct": float(trade_ret),
+                "holding_days": int(holding_days),
+                "mfe": float(mfe),
+                "mae": float(mae),
+                "day_low": float(df["low"].iloc[entry_idx]),
+                "day_high": float(df["high"].iloc[entry_idx]),
+                "day_low_exit": day_lo,
+                "day_high_exit": day_hi,
+                "decision_price": float(decision_px),
+                "fill_price": float(entry_fill),
+                "exit_reason": exit_reason,
+            })
 
-        # --------- Generate today's signals ----------
-        pending_entry_close = False
-        pending_exit_close = False
+            # Flat after exit; mark equity to cash
+            equity.append(position_qty * exit_fill)
+            position_qty = 0.0
+            in_pos = False
+            entry_px = np.nan
+            entry_idx = None
+            entry_time = None
 
-        if i < len(df) - 1 or exec_mode == "close":
-            if shares == 0:
-                # Entry signal: breakout + (optional) trend filter
-                if (
-                    not np.isnan(row["breakout_high"])
-                    and row["close"] > row["breakout_high"]
-                    and bool(row.get("trend_ok", True))
-                ):
-                    if exec_mode == "next_open":
-                        pending_entry_next = True
-                        pending_exit_next = False
-                    else:  # "close"
-                        pending_entry_close = True
-                        pending_exit_close = False
+        else:
+            # Mark-to-market
+            if in_pos and position_qty > 0:
+                equity.append(position_qty * price)
             else:
-                # Exit signal: price below exit channel
-                if not np.isnan(row["exit_low"]) and row["close"] < row["exit_low"]:
-                    if exec_mode == "next_open":
-                        pending_exit_next = True
-                    else:
-                        pending_exit_close = True
+                equity.append(equity[-1])
 
-                # Holding period limit schedules exit
-                if (
-                    params.holding_period_limit is not None
-                    and params.holding_period_limit > 0
-                    and bars_in_trade + 1 >= params.holding_period_limit
-                ):
-                    if exec_mode == "next_open":
-                        pending_exit_next = True
-                    else:
-                        pending_exit_close = True
-
-        # --------- Execute SAME-BAR (close) orders ----------
-        if exec_mode == "close":
-            # Exit first (conservative)
-            if pending_exit_close and shares > 0 and not np.isnan(row["close"]):
-                px = float(row["close"] * sell_mult)
-                cash += shares * px - params.fee_per_trade
-                pnl = (px - (entry_price or px)) * shares
-                trades.append({
-                    "symbol": symbol,
-                    "entry_date": entry_date.date() if entry_date is not None else None,
-                    "entry_price": float(entry_price),
-                    "exit_date": pd.Timestamp(dt).date(),
-                    "exit_price": float(px),
-                    "shares": float(shares),
-                    "pnl": float(pnl),
-                    "return_pct": float((px / (entry_price or px)) - 1.0),
-                    "holding_days": int((pd.Timestamp(dt) - (entry_date or pd.Timestamp(dt))).days),
-                    "reason": "rule_exit_close",
-                })
-                shares = 0.0
-                stop_price = None
-                tp_price = None
-                entry_price = None
-                entry_date = None
-                bars_in_trade = 0
-
-            # Then entry
-            if pending_entry_close and shares == 0 and not np.isnan(row["close"]):
-                px = float(row["close"] * buy_mult)
-                atr_val = float(row["atr"]) if not np.isnan(row["atr"]) else None
-                if atr_val and atr_val > 0:
-                    risk_per_share = max(params.atr_multiple * atr_val, 1e-12)
-                    target_risk_dollars = params.risk_per_trade * cash
-                    raw_shares = target_risk_dollars / risk_per_share
-                    affordable = cash / max(px, 1e-12)
-
-                    if params.allow_fractional:
-                        use_shares = min(raw_shares, affordable)
-                    else:
-                        use_shares = float(np.floor(min(raw_shares, affordable)))
-
-                    if use_shares > (0.0 if params.allow_fractional else 0.5):
-                        cost = use_shares * px + params.fee_per_trade
-                        if cost <= cash + 1e-9:
-                            cash -= cost
-                            shares = use_shares
-                            entry_price = px
-                            entry_date = pd.Timestamp(dt)
-                            bars_in_trade = 0
-                            stop_price = px - params.atr_multiple * atr_val
-                            tp_price = (
-                                px + (params.tp_multiple * atr_val)
-                                if params.tp_multiple and params.tp_multiple > 0
-                                else None
-                            )
-
-        # --------- Mark-to-market equity, update holding counter ----------
-        equity_val = cash + shares * float(row["close"])
-        eq_dates.append(pd.Timestamp(dt))
-        eq_vals.append(float(equity_val))
-
-        if shares > 0:
-            bars_in_trade += 1
-
-    # Build outputs
-    equity = (
-        pd.Series(eq_vals, index=pd.to_datetime(eq_dates), name="equity").astype(float)
-        if eq_vals else pd.Series(dtype=float, name="equity")
-    )
-
-    eq_summary = summarize_equity(equity, starting_equity)
-    tr_summary = summarize_trades(trades)
-    metrics = {**eq_summary, **tr_summary, "symbol": symbol}
+    eq = pd.Series(equity[1:], index=df.index)  # drop initial seed
+    daily_returns = eq.pct_change().fillna(0.0)
 
     return {
-        "equity": equity,
+        "equity": eq,
+        "daily_returns": daily_returns,
         "trades": trades,
-        "metrics": metrics,
+        "meta": {
+            "symbol": symbol,
+            "start": pd.Timestamp(start),
+            "end": pd.Timestamp(end),
+            "params": params.__dict__,
+            "execution": execution,
+            "commission_bps": commission_bps,
+            "slippage_bps": slippage_bps,
+            "notes": "ATR breakout long-only reference engine",
+        },
     }

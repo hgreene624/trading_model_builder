@@ -1,8 +1,24 @@
+# Core UI
 streamlit>=1.36,<2
-pandas>=2.2
-numpy>=1.26
-plotly>=5.22
-yfinance>=0.2.43
-python-dotenv>=1.0
+
+# Data wrangling
+pandas>=2.2,<3
+numpy>=1.26,<3
+
+# Plotting
+plotly>=5.22,<6
+
+# Market data backends
 alpaca-py>=0.21
-lxml>6.0.1
+yfinance>=0.2.43
+websockets>=13  # required by recent yfinance
+
+# Storage / serialization
+pyarrow>=15,<16
+
+# Utilities
+python-dotenv>=1.0
+requests>=2.31,<3
+
+# Optional HTML parsing for index scraping
+lxml>=5.2,<6
