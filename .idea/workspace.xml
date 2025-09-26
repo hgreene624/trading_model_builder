@@ -4,8 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="container width error resolved. loader spam removed">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="fixed thread calling error in Home.py">
       <change beforePath="$PROJECT_DIR$/Home.py" beforeDir="false" afterPath="$PROJECT_DIR$/Home.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -421,7 +420,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758912602461</updated>
     </task>
-    <option name="localTasksCounter" value="40" />
+    <task id="LOCAL-00040" summary="fixed thread calling error in Home.py">
+      <option name="closed" value="true" />
+      <created>1758913639675</created>
+      <option name="number" value="00040" />
+      <option name="presentableId" value="LOCAL-00040" />
+      <option name="project" value="LOCAL" />
+      <updated>1758913639675</updated>
+    </task>
+    <option name="localTasksCounter" value="41" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -439,7 +446,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="working metadata filter for portfolio data fetching" />
     <MESSAGE value="basemodel refactor. no error but not computing" />
     <MESSAGE value="basemodel refactor. computing but slow" />
     <MESSAGE value="with API Info" />
@@ -464,6 +470,7 @@
     <MESSAGE value="fixed loading problem, now not training" />
     <MESSAGE value="fixed memory_cache.py time error" />
     <MESSAGE value="container width error resolved. loader spam removed" />
-    <option name="LAST_COMMIT_MESSAGE" value="container width error resolved. loader spam removed" />
+    <MESSAGE value="fixed thread calling error in Home.py" />
+    <option name="LAST_COMMIT_MESSAGE" value="fixed thread calling error in Home.py" />
   </component>
 </project>
