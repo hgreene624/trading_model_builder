@@ -9,6 +9,8 @@ from typing import Optional
 
 import pandas as pd
 
+from ._tz_utils import to_utc_index
+
 # yfinance is only imported when called (so unit tests that don't need it won't fail on import)
 def _lazy_import_yf():
     import yfinance as yf  # noqa: WPS433
@@ -49,17 +51,16 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
         df = df.rename(columns=ren)
 
     # Ensure datetime index in UTC
+    idx_source = df.index
     if not isinstance(df.index, pd.DatetimeIndex):
         for ts_col in ("timestamp", "time", "date", "datetime"):
             if ts_col in df.columns:
-                df.index = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
-                # keep timestamp col only if it's specifically 'timestamp'
+                idx_source = df[ts_col]
                 if ts_col != "timestamp":
                     df = df.drop(columns=[ts_col])
                 break
 
-    if isinstance(df.index, pd.DatetimeIndex):
-        df.index = df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
+    df.index = to_utc_index(idx_source)
 
     df = df.sort_index()
     # Return only the canonical columns if present

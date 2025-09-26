@@ -12,6 +12,8 @@ import pandas as pd
 from . import alpaca_data as A
 from . import yf as Y
 
+from ._tz_utils import to_utc_index
+
 # Storage roots
 from src.storage import get_ohlcv_root
 
@@ -68,21 +70,18 @@ def _normalize_ohlcv(df: pd.DataFrame | None) -> pd.DataFrame:
             df[c] = pd.NA
 
     # Index → datetime (UTC)
+    idx_source = df.index
     if not isinstance(df.index, pd.DatetimeIndex):
         for c in ("datetime", "timestamp", "date", "time"):
             if c in df.columns:
-                df = df.set_index(c)
+                idx_source = df[c]
+                df = df.drop(columns=[c])
                 break
-    if not isinstance(df.index, pd.DatetimeIndex):
-        try:
-            df.index = pd.to_datetime(df.index, utc=True)
-        except Exception:
-            df.index = pd.to_datetime([], utc=True)
 
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    else:
-        df.index = df.index.tz_convert("UTC")
+    try:
+        df.index = to_utc_index(idx_source)
+    except Exception:
+        df.index = pd.DatetimeIndex([], tz="UTC")
 
     df = df.sort_index()
     df = df[["open", "high", "low", "close", "volume"]]
@@ -121,6 +120,13 @@ def _as_utc_naive(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _to_utc_timestamp(dt: datetime) -> pd.Timestamp:
+    ts = pd.Timestamp(dt)
+    if ts.tz is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
 # ---------------
 # Disk cache I/O (storage/data/ohlcv)
 # ---------------
@@ -130,8 +136,8 @@ def _cache_root() -> Path:
 
 
 def _cache_path(provider: str, symbol: str, timeframe: str, start: datetime, end: datetime) -> Path:
-    s = pd.Timestamp(start).tz_convert("UTC").date().isoformat()
-    e = pd.Timestamp(end).tz_convert("UTC").date().isoformat()
+    s = _to_utc_timestamp(start).date().isoformat()
+    e = _to_utc_timestamp(end).date().isoformat()
     sym = symbol.upper().replace("/", "_")
     tf = (timeframe or "1D").upper()
     return _cache_root() / provider / sym / tf / f"{s}__{e}.parquet"
@@ -205,8 +211,8 @@ def get_ohlcv(
         if cdf is not None and not cdf.empty:
             _print_one_line("cache", symbol, cdf)
             MEM.put(symbol, timeframe, cdf)  # promote
-            s_ts = pd.Timestamp(start, tz="UTC")
-            e_ts = pd.Timestamp(end_adj, tz="UTC")
+            s_ts = _to_utc_timestamp(start)
+            e_ts = _to_utc_timestamp(end_adj)
             return cdf.loc[s_ts:e_ts]
 
     last_err: Optional[Exception] = None

@@ -5,6 +5,8 @@ import os
 from datetime import datetime, timezone
 import pandas as pd
 
+from ._tz_utils import to_utc_index
+
 
 def _iso_utc(dt: datetime) -> datetime:
     """Return timezone-aware UTC datetime (alpaca-py accepts dt; no need for iso strings)."""
@@ -85,10 +87,7 @@ def load_ohlcv(symbol: str, start: datetime, end: datetime, timeframe: str = "1D
     keep = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
 
     # Ensure UTC tz-aware index and sorted
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index, utc=True, errors="coerce")
-    else:
-        df.index = df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
+    df.index = to_utc_index(df.index)
     df.sort_index(inplace=True)
 
     return df[keep]
