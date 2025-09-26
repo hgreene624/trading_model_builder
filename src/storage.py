@@ -334,3 +334,18 @@ def load_simulation(name_or_path: str) -> Optional[Dict[str, Any]]:
     if not name.endswith(".json"):
         name += ".json"
     return _read_json(_sims_dir() / name)
+
+# -----------------------------------------------------------------------------
+# OHLCV canonical root under ./storage/data/ohlcv
+# -----------------------------------------------------------------------------
+from pathlib import Path
+
+def get_ohlcv_root() -> Path:
+    """
+    Canonical on-disk location for OHLCV parquet shards.
+    Layout:
+      storage/data/ohlcv/<provider>/<SYMBOL>/<TF>/<START>__<END>.parquet
+    """
+    root = Path("storage") / "data" / "ohlcv"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
