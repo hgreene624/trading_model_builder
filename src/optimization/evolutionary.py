@@ -40,6 +40,14 @@ try:
 except RuntimeError:
     pass
 
+# Worker-safe progress alias and default noop sink
+ProgressCb = ProgressCallback
+
+
+def _noop_progress(event: str, payload: Dict[str, Any]) -> None:
+    return
+
+
 # ----------------------------- Sampling ops ------------------------------
 
 def random_param(param_space: Dict[str, Tuple]) -> Dict[str, Any]:
@@ -230,7 +238,7 @@ def evolutionary_search(
     trade_rate_max: float = 50.0,
     trade_rate_penalty_weight: float = 0.5,
     # Progress & logging
-    progress_cb: ProgressCallback = console_progress,
+    progress_cb: Optional[ProgressCb] = None,
     log_file: str = "training.log",
     # Reproducibility
     seed: Optional[int] = None,
@@ -243,6 +251,11 @@ def evolutionary_search(
     - Diversity maintained via `random_inject_frac`.
     - Multiprocessing evaluates individuals in parallel per generation.
     """
+    resolved_cb: Optional[ProgressCb] = progress_cb or console_progress
+    if resolved_cb is None:
+        resolved_cb = _noop_progress
+    progress_cb = resolved_cb
+
     if seed is not None:
         random.seed(seed)
 
