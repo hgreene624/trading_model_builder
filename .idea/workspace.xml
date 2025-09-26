@@ -4,8 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="ea jsonl log generation working">
-      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="changed defulat model values and slider ranges">
+      <change afterPath="$PROJECT_DIR$/scripts/ea_log_inspect.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/logs/runLog.txt" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -452,7 +454,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758917455877</updated>
     </task>
-    <option name="localTasksCounter" value="44" />
+    <task id="LOCAL-00044" summary="changed defulat model values and slider ranges">
+      <option name="closed" value="true" />
+      <created>1758917793321</created>
+      <option name="number" value="00044" />
+      <option name="presentableId" value="LOCAL-00044" />
+      <option name="project" value="LOCAL" />
+      <updated>1758917793321</updated>
+    </task>
+    <option name="localTasksCounter" value="45" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -470,7 +480,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="updated data model to have savable portfolio level general model" />
     <MESSAGE value="reverted to single core. base model trainer not working and no log button" />
     <MESSAGE value="fixed storage error on home page" />
     <MESSAGE value="Started logging system for base model, UI Woring, json export working." />
@@ -495,6 +504,7 @@
     <MESSAGE value="removed traps from home to keep neat" />
     <MESSAGE value="fixed walk forward error" />
     <MESSAGE value="ea jsonl log generation working" />
-    <option name="LAST_COMMIT_MESSAGE" value="ea jsonl log generation working" />
+    <MESSAGE value="changed defulat model values and slider ranges" />
+    <option name="LAST_COMMIT_MESSAGE" value="changed defulat model values and slider ranges" />
   </component>
 </project>
