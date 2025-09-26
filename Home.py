@@ -200,7 +200,7 @@ c1, c2 = st.columns(2)
 with c1:
     st.subheader("🗂️ Portfolios")
     if portfolios:
-        st.dataframe({"portfolio": portfolios}, use_container_width=True, height=300)
+        st.dataframe({"portfolio": portfolios},  width="stretch", height=300)
     else:
         st.info("No portfolios saved yet. Create one in the **Portfolios** page.")
 
@@ -213,7 +213,7 @@ with c2:
             df = pd.DataFrame(recent_sims)[cols]
         except Exception:
             df = pd.DataFrame(recent_sims)
-        st.dataframe(df, use_container_width=True, height=300)
+        st.dataframe(df,  width="stretch", height=300)
     else:
         st.info("No simulation artifacts found under storage/simulations or storage/reports.")
 

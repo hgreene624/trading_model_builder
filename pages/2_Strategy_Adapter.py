@@ -279,7 +279,7 @@ with left:
 with right:
     # ------------------------ BASE TRAINING ------------------------
     st.subheader("Train Base Model")
-    run_btn = st.button("🚀 Train (portfolio)", type="primary", help="Runs the portfolio-level base trainer with the config on the left.", use_container_width=False)
+    run_btn = st.button("🚀 Train (portfolio)", type="primary", help="Runs the portfolio-level base trainer with the config on the left.", width="stretch")
 
     st.divider()
     st.subheader("Results")
@@ -427,7 +427,7 @@ with right:
         st.markdown(f"Using EA-best params for WF: `{ea_best}`")
         run_wf = st.button("🧭 Run Walk-Forward", type="secondary",
                            help="Runs walk-forward validation using EA-best params.",
-                           use_container_width=False)
+                           width="stretch")
 
     if run_wf:
         try:

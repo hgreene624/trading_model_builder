@@ -98,7 +98,7 @@ def _print_one_line(provider: str, symbol: str, df: pd.DataFrame | None) -> None
         print(f"[loader] provider={provider} symbol={symbol} rows=0 cols=[]")
         return
     cols = list(df.columns)
-    print(f"[loader] provider={provider} symbol={symbol} rows={len(df)} cols={cols}")
+    #print(f"[loader] provider={provider} symbol={symbol} rows={len(df)} cols={cols}")
 
 
 def _widen_daily_end(end: datetime, timeframe: str) -> datetime:

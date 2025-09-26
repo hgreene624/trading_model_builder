@@ -4,9 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="added print tree helper script&#10;changes to dataloader to store info and cache correctly">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="fixed memory_cache.py time error">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/data/memory_cache.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/memory_cache.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/logs/runLog.txt" beforeDir="false" afterPath="$PROJECT_DIR$/logs/runLog.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/loader.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -405,7 +407,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758125132788</updated>
     </task>
-    <option name="localTasksCounter" value="38" />
+    <task id="LOCAL-00038" summary="fixed memory_cache.py time error">
+      <option name="closed" value="true" />
+      <created>1758911854860</created>
+      <option name="number" value="00038" />
+      <option name="presentableId" value="LOCAL-00038" />
+      <option name="project" value="LOCAL" />
+      <updated>1758911854860</updated>
+    </task>
+    <option name="localTasksCounter" value="39" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -423,7 +433,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="started new base model + tuning architechture" />
     <MESSAGE value="setup for storing and fetching historical data from wiki and alpaca. need to confirm local storage and seperate metadata and historical data fetching" />
     <MESSAGE value="working metadata filter for portfolio data fetching" />
     <MESSAGE value="basemodel refactor. no error but not computing" />
@@ -448,6 +457,7 @@
     <MESSAGE value="fixed portfolio storage and loading in portfolios page" />
     <MESSAGE value="fixed portfolio loading in strategy adapter. problem loading historical when training" />
     <MESSAGE value="fixed loading problem, now not training" />
-    <option name="LAST_COMMIT_MESSAGE" value="fixed loading problem, now not training" />
+    <MESSAGE value="fixed memory_cache.py time error" />
+    <option name="LAST_COMMIT_MESSAGE" value="fixed memory_cache.py time error" />
   </component>
 </project>

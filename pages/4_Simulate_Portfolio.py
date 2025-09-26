@@ -533,7 +533,7 @@ if st.button("Run Simulation", type="primary"):
 
             st.plotly_chart(
                 equity_chart(total_eq, title=f"Total Equity — {p['name']}"),
-                use_container_width=True,
+                width="stretch",
             )
 
             out = pd.DataFrame(per_ticker)
@@ -546,7 +546,7 @@ if st.button("Run Simulation", type="primary"):
                     out["total_return_%"] = (out["total_return"] * 100).round(2)
                     st.dataframe(
                         out[["symbol", "trades", "win_rate_%", "avg_return_%", "total_pnl", "invested", "total_return_%"]],
-                        use_container_width=True,
+                        width="stretch",
                     )
                 else:
                     st.write("No trades executed.")
@@ -556,7 +556,7 @@ if st.button("Run Simulation", type="primary"):
                     out["total_return_%"] = (out["total_return"] * 100).round(2)
                     st.dataframe(
                         out[["symbol", "total_return_%", "sharpe", "max_drawdown", "final_equity", "start", "end"]],
-                        use_container_width=True,
+                        width="stretch",
                     )
                 else:
                     st.write("No trades executed.")
@@ -596,7 +596,7 @@ if st.button("Run Simulation", type="primary"):
                                 trades_list = maybe.get("trades", []) or []
 
                     fig_sym = _symbol_price_equity_chart(symbol, price_series, total_eq, trades_list)
-                    st.plotly_chart(fig_sym, use_container_width=True)
+                    st.plotly_chart(fig_sym,  width="stretch")
             except Exception as _e:
                 st.warning(f"Per-ticker chart rendering skipped: {_e}")
 

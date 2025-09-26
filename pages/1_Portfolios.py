@@ -325,7 +325,7 @@ if not enriched.empty:
     filtered = work.loc[mask2].reset_index(drop=True)
 
     st.write(f"After liquidity filters: **{len(filtered)} / {len(work)}** tickers remain.")
-    st.dataframe(filtered, use_container_width=True)
+    st.dataframe(filtered,  width="stretch")
 else:
     st.info("No OHLCV/liquidity computed yet.")
 

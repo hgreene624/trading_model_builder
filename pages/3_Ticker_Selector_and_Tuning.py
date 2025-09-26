@@ -392,7 +392,7 @@ def _render_results():
     st.write(pd.DataFrame([st.session_state["ev_best_metrics"]]))
     st.plotly_chart(
         equity_chart(st.session_state["ev_best_equity"], title=f"Equity — {st.session_state.get('ev_symbol','TICKER')} (Best)"),
-        use_container_width=True,
+        width="stretch",
     )
 
     # Save Parameter Bounds Profile (FORM)
