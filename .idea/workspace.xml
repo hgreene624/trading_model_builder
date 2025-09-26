@@ -4,10 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="changed defulat model values and slider ranges">
-      <change afterPath="$PROJECT_DIR$/scripts/ea_log_inspect.py" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working ea_log_inspect.py">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/logs/runLog.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -462,7 +461,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758917793321</updated>
     </task>
-    <option name="localTasksCounter" value="45" />
+    <task id="LOCAL-00045" summary="working ea_log_inspect.py">
+      <option name="closed" value="true" />
+      <created>1758918582824</created>
+      <option name="number" value="00045" />
+      <option name="presentableId" value="LOCAL-00045" />
+      <option name="project" value="LOCAL" />
+      <updated>1758918582824</updated>
+    </task>
+    <option name="localTasksCounter" value="46" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -480,7 +487,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="reverted to single core. base model trainer not working and no log button" />
     <MESSAGE value="fixed storage error on home page" />
     <MESSAGE value="Started logging system for base model, UI Woring, json export working." />
     <MESSAGE value="working 80/20 model param refactor. No base model training happening yet" />
@@ -505,6 +511,7 @@
     <MESSAGE value="fixed walk forward error" />
     <MESSAGE value="ea jsonl log generation working" />
     <MESSAGE value="changed defulat model values and slider ranges" />
-    <option name="LAST_COMMIT_MESSAGE" value="changed defulat model values and slider ranges" />
+    <MESSAGE value="working ea_log_inspect.py" />
+    <option name="LAST_COMMIT_MESSAGE" value="working ea_log_inspect.py" />
   </component>
 </project>

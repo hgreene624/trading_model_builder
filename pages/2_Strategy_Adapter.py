@@ -144,11 +144,11 @@ with left:
     base = _ss_get_dict(
         "adapter_base_params",
         {
-            "breakout_n": 20,
-            "exit_n": 10,
-            "atr_n": 14,
-            "atr_multiple": 2.0,
-            "tp_multiple": 1.5,
+            "breakout_n": 70,
+            "exit_n": 16,
+            "atr_n": 8,
+            "atr_multiple": 2.20,
+            "tp_multiple": 1.78,
             "holding_period_limit": 20,
             # extras (the strategy ignores unknowns; we keep them for future work)
             "risk_per_trade": 0.005,
@@ -167,9 +167,9 @@ with left:
         "ea_cfg",
         {
             # search controls
-            "generations": 8,
-            "pop_size": 24,
-            "min_trades": 5,
+            "generations": 12,
+            "pop_size": 100,
+            "min_trades": 12,
             "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
             # param bounds (inclusive ints; floats as (min, max))
             "breakout_n_min": 8,   "breakout_n_max": 80,
