@@ -294,12 +294,22 @@ with right:
             loader = _safe_import("src.data.loader")
             evo = _safe_import("src.optimization.evolutionary")
             metrics = _safe_import("src.backtest.metrics")
+            progmod = _safe_import("src.utils.progress")  # EA UI progress sink
         except Exception as e:
             st.error(f"Import error: {e}")
             st.stop()
 
         prog = st.progress(0.0, text="Preparing EA search…")
         status = st.empty()
+
+        # EA logging: timestamped JSONL under storage/logs/ea
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = os.path.join("storage", "logs", "ea")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"{ts}_ea.jsonl")
+
+        # Rich EA progress sink for Streamlit UI (fallback to no-op if missing)
+        ui_cb = getattr(progmod, "ui_progress", lambda *_args, **_kw: (lambda *_a, **_k: None))(st)
 
         try:
             end = _utc_now()
@@ -324,13 +334,17 @@ with right:
             status.write("Running EA (base model training)…")
             prog.progress(0.1)
 
-            # Streamlit progress callback
+            # Streamlit progress callback (wrap rich UI sink + keep existing bar)
             def _cb(evt, ctx):
                 # evt: e.g., "generation_start", "evaluation", "generation_end"
                 # ctx: dict with gen/pop etc. (best-effort)
                 try:
+                    ui_cb(evt, ctx)  # forward to rich UI sink
+                except Exception:
+                    pass
+                try:
                     if evt == "generation_start":
-                        gen = ctx.get("gen")
+                        gen = ctx.get("gen", 0)
                         prog.progress(min(0.9, 0.1 + (gen / max(1, cfg['generations'])) * 0.8),
                                       text=f"EA generation {gen+1}/{cfg['generations']}…")
                     elif evt == "generation_end":
@@ -351,6 +365,7 @@ with right:
                 min_trades=int(cfg["min_trades"]),
                 n_jobs=int(cfg["n_jobs"]),
                 progress_cb=_cb,
+                log_file=log_file,
                 # keep other kwargs at defaults (risk weights etc.) unless you decide to expose them
             )
 
@@ -373,7 +388,23 @@ with right:
             st.markdown("**EA leaderboard (top candidates)**")
             st.dataframe(lb, width="stretch", height=360)
 
+            st.session_state["ea_log_file"] = log_file
             st.success(f"EA complete. Best score={best_score:.3f}. A Walk-Forward button is now available below.")
+
+            # Offer EA log download (if file exists)
+            try:
+                if os.path.exists(log_file):
+                    with open(log_file, "rb") as _fh:
+                        st.download_button(
+                            "⬇️ Download EA log (JSONL)",
+                            data=_fh.read(),
+                            file_name=os.path.basename(log_file),
+                            mime="application/json",
+                            use_container_width=True,
+                        )
+            except Exception:
+                pass
+
             prog.progress(1.0)
 
         except Exception as e:
