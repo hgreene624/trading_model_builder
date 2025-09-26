@@ -144,12 +144,12 @@ with left:
     base = _ss_get_dict(
         "adapter_base_params",
         {
-            "breakout_n": 14,
-            "exit_n": 6,
+            "breakout_n": 20,
+            "exit_n": 10,
             "atr_n": 14,
             "atr_multiple": 2.0,
-            "tp_multiple": 0.5,
-            "holding_period_limit": 5,
+            "tp_multiple": 1.5,
+            "holding_period_limit": 20,
             # extras (the strategy ignores unknowns; we keep them for future work)
             "risk_per_trade": 0.005,
             "use_trend_filter": False,
@@ -172,12 +172,12 @@ with left:
             "min_trades": 5,
             "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
             # param bounds (inclusive ints; floats as (min, max))
-            "breakout_n_min": 8,   "breakout_n_max": 60,
-            "exit_n_min": 4,       "exit_n_max": 30,
-            "atr_n_min": 5,        "atr_n_max": 30,
-            "atr_multiple_min": 0.5, "atr_multiple_max": 3.0,
-            "tp_multiple_min": 0.2,  "tp_multiple_max": 2.0,
-            "hold_min": 3,         "hold_max": 30,
+            "breakout_n_min": 8,   "breakout_n_max": 80,
+            "exit_n_min": 4,       "exit_n_max": 40,
+            "atr_n_min": 7,        "atr_n_max": 35,
+            "atr_multiple_min": 0.8, "atr_multiple_max": 4.0,
+            "tp_multiple_min": 0.8,  "tp_multiple_max": 4.0,
+            "hold_min": 5,         "hold_max": 60,
         },
     )
 
@@ -194,30 +194,50 @@ with left:
 
         st.caption("Parameter search bounds")
 
+        # Dynamically tighten slider track to the configured bounds (better UX)
+        def _pad_int_range(lo: int, hi: int, pad_ratio: float = 0.25, hard_lo: int = 1, hard_hi: int = 600) -> tuple[int, int]:
+            span = max(1, hi - lo)
+            pad = max(1, int(span * pad_ratio))
+            return max(hard_lo, lo - pad), min(hard_hi, hi + pad)
+
+        def _pad_float_range(lo: float, hi: float, pad_ratio: float = 0.25, hard_lo: float = 0.05, hard_hi: float = 50.0) -> tuple[float, float]:
+            span = max(1e-9, hi - lo)
+            pad = span * pad_ratio
+            return max(hard_lo, lo - pad), min(hard_hi, hi + pad)
+
+        # Compute padded domains for each param based on current bounds
+        _br_min, _br_max = _pad_int_range(int(ea_cfg["breakout_n_min"]), int(ea_cfg["breakout_n_max"]))
+        _ex_min, _ex_max = _pad_int_range(int(ea_cfg["exit_n_min"]), int(ea_cfg["exit_n_max"]))
+        _atrn_min, _atrn_max = _pad_int_range(int(ea_cfg["atr_n_min"]), int(ea_cfg["atr_n_max"]))
+        _hold_min, _hold_max = _pad_int_range(int(ea_cfg["hold_min"]), int(ea_cfg["hold_max"]))
+
+        _atrm_min, _atrm_max = _pad_float_range(float(ea_cfg["atr_multiple_min"]), float(ea_cfg["atr_multiple_max"]))
+        _tpm_min, _tpm_max   = _pad_float_range(float(ea_cfg["tp_multiple_min"]),  float(ea_cfg["tp_multiple_max"]))
+
         # ---- INT ranges via sliders ----
         c1, c2 = st.columns(2)
         with c1:
             br_lo, br_hi = st.slider(
                 "breakout_n range",
-                min_value=2, max_value=600,
+                min_value=_br_min, max_value=_br_max,
                 value=(int(ea_cfg["breakout_n_min"]), int(ea_cfg["breakout_n_max"])),
                 step=1,
                 help="Bars for the entry breakout lookback.")
             ex_lo, ex_hi = st.slider(
                 "exit_n range",
-                min_value=2, max_value=600,
+                min_value=_ex_min, max_value=_ex_max,
                 value=(int(ea_cfg["exit_n_min"]), int(ea_cfg["exit_n_max"])),
                 step=1,
                 help="Bars for exit/stop lookback.")
             atrn_lo, atrn_hi = st.slider(
                 "atr_n range",
-                min_value=2, max_value=600,
+                min_value=_atrn_min, max_value=_atrn_max,
                 value=(int(ea_cfg["atr_n_min"]), int(ea_cfg["atr_n_max"])),
                 step=1,
                 help="ATR window length.")
             hold_lo, hold_hi = st.slider(
                 "holding_period_limit range",
-                min_value=1, max_value=600,
+                min_value=_hold_min, max_value=_hold_max,
                 value=(int(ea_cfg["hold_min"]), int(ea_cfg["hold_max"])),
                 step=1,
                 help="Max bars a trade may be held.")
@@ -226,13 +246,13 @@ with left:
         with c2:
             atrm_lo, atrm_hi = st.slider(
                 "atr_multiple range",
-                min_value=0.05, max_value=50.0,
+                min_value=_atrm_min, max_value=_atrm_max,
                 value=(float(ea_cfg["atr_multiple_min"]), float(ea_cfg["atr_multiple_max"])),
                 step=0.05,
                 help="Stop distance as multiple of ATR.")
             tpm_lo, tpm_hi = st.slider(
                 "tp_multiple range",
-                min_value=0.05, max_value=50.0,
+                min_value=_tpm_min, max_value=_tpm_max,
                 value=(float(ea_cfg["tp_multiple_min"]), float(ea_cfg["tp_multiple_max"])),
                 step=0.05,
                 help="Take-profit multiple.")
