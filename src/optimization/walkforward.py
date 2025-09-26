@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 import importlib
 import math
 
@@ -14,6 +14,14 @@ from src.data.loader import get_ohlcv as _load_ohlcv
 from src.backtest.metrics import compute_core_metrics
 from src.optimization.evolutionary import evolutionary_search
 from src.utils.training_logger import TrainingLogger  # your existing logger
+
+
+# Worker-safe progress type & default no-op callback
+ProgressCb = Callable[[str, Dict[str, Any]], None]
+
+
+def _noop_progress(event: str, payload: Dict[str, Any]) -> None:
+    return
 
 
 @dataclass
@@ -94,6 +102,8 @@ def walk_forward(
     seed: Optional[int] = None,
     # logging
     log_file: str = "walkforward.jsonl",
+    ea_kwargs: Optional[Dict[str, Any]] = None,
+    progress_cb: Optional[ProgressCb] = None,
 ) -> Dict[str, Any]:
     """
     Rolling walk-forward validation.
@@ -106,6 +116,9 @@ def walk_forward(
         "aggregate": {"oos_mean": {...}, "oos_median": {...}}
       }
     """
+    if progress_cb is None:
+        progress_cb = _noop_progress
+
     logger = TrainingLogger(log_file)
 
     if step_days is None:
@@ -158,20 +171,24 @@ def walk_forward(
                 "holding_period_limit": (max(2, params_in.get("holding_period_limit", 5) - 2), params_in.get("holding_period_limit", 5) + 2),
             }
             # Evaluate EA on train window (equal-weight across symbols)
+            resolved_ea_kwargs: Dict[str, Any] = {
+                "generations": ea_generations,
+                "pop_size": ea_pop,
+                "min_trades": min_trades,
+                "n_jobs": n_jobs,
+                "seed": seed,
+                "log_file": log_file,
+            }
+            if ea_kwargs:
+                resolved_ea_kwargs.update({k: v for k, v in ea_kwargs.items() if v is not None})
+            resolved_ea_kwargs.setdefault("progress_cb", progress_cb)
             top = evolutionary_search(
                 strategy_dotted,
                 tickers,
                 train_start, train_end,
                 starting_equity,
                 space,
-                generations=ea_generations,
-                pop_size=ea_pop,
-                min_trades=min_trades,
-                n_jobs=n_jobs,
-                # keep the same fitness defaults as your EA, no day-trading, etc.
-                progress_cb=lambda *_a, **_k: None,
-                log_file=log_file,
-                seed=seed,
+                **resolved_ea_kwargs,
             )
             if isinstance(top, list) and len(top) > 0 and isinstance(top[0], tuple):
                 params_used = dict(top[0][0])  # best param set
