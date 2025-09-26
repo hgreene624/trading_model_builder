@@ -202,14 +202,20 @@ def walk_forward(
             # In-sample
             is_res = _run_strategy_on_range(strategy_dotted, sym, train_start, train_end, starting_equity, params_used)
             is_eq: pd.Series = is_res.get("equity", pd.Series(dtype=float))
-            is_daily: pd.Series = is_res.get("daily_returns") or _eq_to_daily_returns(is_eq)
+            # Guard: avoid truthiness of Series with "or"
+            is_daily = is_res.get("daily_returns", None)
+            if not isinstance(is_daily, pd.Series) or len(is_daily) == 0:
+                is_daily = _eq_to_daily_returns(is_eq)
             is_trades: List[Dict[str, Any]] = is_res.get("trades", []) or []
             is_metrics = compute_core_metrics(is_eq, is_daily, is_trades)
 
             # OOS
             oos_res = _run_strategy_on_range(strategy_dotted, sym, test_start, test_end, starting_equity, params_used)
             oos_eq: pd.Series = oos_res.get("equity", pd.Series(dtype=float))
-            oos_daily: pd.Series = oos_res.get("daily_returns") or _eq_to_daily_returns(oos_eq)
+            # Guard: avoid truthiness of Series with "or"
+            oos_daily = oos_res.get("daily_returns", None)
+            if not isinstance(oos_daily, pd.Series) or len(oos_daily) == 0:
+                oos_daily = _eq_to_daily_returns(oos_eq)
             oos_trades: List[Dict[str, Any]] = oos_res.get("trades", []) or []
             oos_metrics = compute_core_metrics(oos_eq, oos_daily, oos_trades)
 

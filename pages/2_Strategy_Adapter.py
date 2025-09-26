@@ -464,39 +464,58 @@ with right:
                 progress_cb=lambda evt, ctx: None,  # keep console quiet; UI below
             )
 
+            # --- Adapt to new walkforward.py shape ---
             prog_wf.progress(0.7, text="Rendering results…")
 
-            # Expecting the structure returned by your tested walkforward.py
-            # { "splits": [...], "summary": {...}, "artifacts": {... optional ...} }
-            summary = (out or {}).get("summary", {}) or {}
-            splits = (out or {}).get("splits", []) or []
-            artifacts = (out or {}).get("artifacts", {}) or {}
+            out = out or {}
+            splits = out.get("splits", []) or []
 
-            # Summary block
-            if summary:
-                st.markdown("**Walk-Forward (OOS mean) summary**")
-                st.dataframe(
-                    pd.DataFrame({"metric": list(summary.keys()), "value": [summary[k] for k in summary.keys()]}),
-                    width="stretch",
-                    height=320,
+            # Aggregate → show both mean & median OOS metrics if available
+            aggregate = out.get("aggregate", {}) or {}
+            oos_mean = aggregate.get("oos_mean") or {}
+            oos_median = aggregate.get("oos_median") or {}
+
+            if oos_mean or oos_median:
+                st.markdown("**Walk-Forward OOS aggregate (equal-weight across splits)**")
+                import pandas as _pd
+                # Build a two-column table: metric | mean | median
+                metrics = sorted(set(list(oos_mean.keys()) + list(oos_median.keys())))
+                df_sum = _pd.DataFrame(
+                    {
+                        "metric": metrics,
+                        "mean": [oos_mean.get(m) for m in metrics],
+                        "median": [oos_median.get(m) for m in metrics],
+                    }
                 )
+                st.dataframe(df_sum, width="stretch", height=340)
             else:
-                st.warning("No summary metrics were returned.")
+                st.warning("No aggregate OOS metrics were returned.")
 
-            # First split preview (mirrors your test output)
+            # First split preview: dates, params_used, and key OOS metrics
             if splits:
-                first = splits[0]
+                first = splits[0] or {}
+                train_start = first.get("train_start")
+                train_end = first.get("train_end")
+                test_start = first.get("test_start")
+                test_end = first.get("test_end")
+                params_used = first.get("params_used") or {}
+                oos = first.get("out_sample") or {}
+
                 st.markdown("**First split preview**")
-                meta = first.get("meta", {})
                 st.code(
-                    f"dates: {meta.get('train_start')} → {meta.get('train_end')} | "
-                    f"OOS: {meta.get('test_start')} → {meta.get('test_end')}\n"
-                    f"params: {first.get('params')}\n"
-                    f"oos trades: {first.get('metrics', {}).get('trades', 'N/A')}",
+                    "train: {ts} → {te} | OOS: {os} → {oe}\nparams_used: {p}\n"
+                    "oos trades: {trades}".format(
+                        ts=train_start, te=train_end, os=test_start, oe=test_end,
+                        p=params_used,
+                        trades=oos.get("trades", "N/A"),
+                    ),
                     language="text",
                 )
+            else:
+                st.info("No split details were returned.")
 
-            # Artifacts / anomalies (if your walkforward attaches them)
+            # Optional artifacts (older UI expected this; walkforward.py may not emit it)
+            artifacts = out.get("artifacts", {}) or {}
             if artifacts:
                 st.markdown("**WF Artifacts / Anomalies**")
                 _write_kv_table(artifacts)
