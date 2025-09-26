@@ -27,8 +27,15 @@ def get(symbol, start, end, timeframe="1D") -> Optional[pd.DataFrame]:
     ent = _STORE.get(_key(symbol, timeframe))
     if ent is None:
         return None
-    s = pd.Timestamp(start, tz="UTC")
-    e = pd.Timestamp(end, tz="UTC")
+
+    def _to_utc(ts):
+        ts = pd.Timestamp(ts)
+        # If tz-naive, localize to UTC; if tz-aware, convert to UTC
+        return ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+
+    s = _to_utc(start)
+    e = _to_utc(end)
+
     if ent.start <= s and e <= ent.end:
         return ent.df.loc[s:e]
     return None
