@@ -119,6 +119,9 @@ def _portfolio_equity_curve(
 def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
     """Render stacked equity curves (latest highlighted)."""
 
+    placeholder.empty()
+    block = placeholder.container()
+
     if not curves:
         fig = go.Figure()
         fig.update_layout(
@@ -140,11 +143,7 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
             ],
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0, title="Current best"),
         )
-        placeholder.plotly_chart(
-            fig,
-            use_container_width=True,
-            key="holdout_equity_chart_empty",
-        )
+        block.plotly_chart(fig, use_container_width=True)
         return
 
     fig = go.Figure()
@@ -175,7 +174,7 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
         added = True
 
     if not added:
-        placeholder.info("Holdout equity will appear when a best candidate is found.")
+        block.info("Holdout equity will appear when a best candidate is found.")
         return
 
     fig.update_layout(
@@ -185,11 +184,7 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0, title="Current best"),
         yaxis_title="Equity ($)",
     )
-    placeholder.plotly_chart(
-        fig,
-        use_container_width=True,
-        key=f"holdout_equity_chart_{len(curves)}",
-    )
+    block.plotly_chart(fig, use_container_width=True)
 
 # --- Symbol normalization (defensive against headers/objects) ---
 import re
