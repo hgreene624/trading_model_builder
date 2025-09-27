@@ -140,7 +140,11 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
             ],
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0, title="Current best"),
         )
-        placeholder.plotly_chart(fig, use_container_width=True)
+        placeholder.plotly_chart(
+            fig,
+            use_container_width=True,
+            key="holdout_equity_chart",
+        )
         return
 
     fig = go.Figure()
@@ -181,7 +185,11 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0, title="Current best"),
         yaxis_title="Equity ($)",
     )
-    placeholder.plotly_chart(fig, use_container_width=True)
+    placeholder.plotly_chart(
+        fig,
+        use_container_width=True,
+        key="holdout_equity_chart",
+    )
 
 # --- Symbol normalization (defensive against headers/objects) ---
 import re
