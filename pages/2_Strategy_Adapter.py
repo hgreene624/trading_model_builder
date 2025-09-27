@@ -466,7 +466,7 @@ with right:
         best_tracker: dict[str, Any] = {"score": float("-inf"), "params": {}}
         holdout_history: list[dict[str, Any]] = []
         generation_best: dict[int, dict[str, Any]] = {}
-        holdout_best_score = float("-inf")
+        holdout_tracker: dict[str, float] = {"best_score": float("-inf")}
 
         # EA logging: timestamped JSONL under storage/logs/ea
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -504,7 +504,6 @@ with right:
             def _cb(evt, ctx):
                 # evt: e.g., "generation_start", "evaluation", "generation_end"
                 # ctx: dict with gen/pop etc. (best-effort)
-                nonlocal holdout_best_score
                 try:
                     ui_cb(evt, ctx)  # forward to rich UI sink
                 except Exception:
@@ -599,7 +598,7 @@ with right:
                             gen_params = gen_entry.get("params")
                             if (
                                 isinstance(gen_score, (int, float))
-                                and gen_score > holdout_best_score
+                                and gen_score > holdout_tracker["best_score"]
                                 and gen_params
                             ):
                                 try:
@@ -629,7 +628,7 @@ with right:
                                         }
                                     )
                                     holdout_history[:] = holdout_history[-8:]
-                                    holdout_best_score = float(gen_score)
+                                    holdout_tracker["best_score"] = float(gen_score)
                                     _render_equity_history(holdout_history, holdout_chart_placeholder)
                                     holdout_status_placeholder.success(
                                         "Updated holdout equity with the latest best candidate."
