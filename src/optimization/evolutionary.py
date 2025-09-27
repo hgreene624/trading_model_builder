@@ -9,7 +9,8 @@ New in this revision:
     trades_per_symbol_per_year = total_trades / num_symbols / years
     soft penalty outside [trade_rate_min, trade_rate_max]
 - Fitness:
-    base = α*CAGR + β*Calmar + γ*Sharpe
+        base = α*CAGR + β*Calmar + γ*Sharpe + δ*TotalReturn
+        Calmar is clamped to ±calmar_cap before weighting to avoid runaway ratios.
     hold_pen = λ_hold * penalty(avg_holding_days outside [min_hold, max_hold])
     rate_pen = λ_rate * penalty(trade_rate outside [rate_min, rate_max])
     score = base - hold_pen - rate_pen
@@ -115,6 +116,7 @@ def _clamped_fitness(
     alpha_cagr: float,
     beta_calmar: float,
     gamma_sharpe: float,
+    delta_total_return: float,
     # holding window preference
     min_holding_days: float,
     max_holding_days: float,
@@ -126,6 +128,7 @@ def _clamped_fitness(
     # context for rate
     num_symbols: int,
     years: float,
+    calmar_cap: float,
 ) -> float:
     """
     Robust fitness:
@@ -161,7 +164,17 @@ def _clamped_fitness(
     if abs(sharpe) < eps_sharpe:
         sharpe = 0.0
 
-    base = (alpha_cagr * cagr) + (beta_calmar * calmar) + (gamma_sharpe * sharpe)
+    total_return = float(metrics.get("total_return", 0.0) or 0.0)
+
+    if calmar_cap > 0:
+        calmar = max(-calmar_cap, min(calmar, calmar_cap))
+
+    base = (
+        (alpha_cagr * cagr)
+        + (beta_calmar * calmar)
+        + (gamma_sharpe * sharpe)
+        + (delta_total_return * total_return)
+    )
 
     hold_pen = holding_penalty_weight * _holding_penalty(avg_hold, min_holding_days, max_holding_days)
 
@@ -227,8 +240,9 @@ def evolutionary_search(
     eps_sharpe: float = 1e-4,
     # Fitness weights (growth vs risk)
     alpha_cagr: float = 1.0,
-    beta_calmar: float = 1.0,
+    beta_calmar: float = 0.2,
     gamma_sharpe: float = 0.25,
+    delta_total_return: float = 1.0,
     # Holding window preference (avoid day-trading & buy/hold)
     min_holding_days: float = 3.0,
     max_holding_days: float = 30.0,
@@ -237,6 +251,7 @@ def evolutionary_search(
     trade_rate_min: float = 5.0,
     trade_rate_max: float = 50.0,
     trade_rate_penalty_weight: float = 0.5,
+    calmar_cap: float = 3.0,
     # Progress & logging
     progress_cb: Optional[ProgressCb] = None,
     log_file: str = "training.log",
@@ -342,6 +357,7 @@ def evolutionary_search(
                 alpha_cagr=alpha_cagr,
                 beta_calmar=beta_calmar,
                 gamma_sharpe=gamma_sharpe,
+                delta_total_return=delta_total_return,
                 min_holding_days=min_holding_days,
                 max_holding_days=max_holding_days,
                 holding_penalty_weight=holding_penalty_weight,
@@ -350,6 +366,7 @@ def evolutionary_search(
                 trade_rate_penalty_weight=trade_rate_penalty_weight,
                 num_symbols=num_symbols,
                 years=years,
+                calmar_cap=calmar_cap,
             )
 
             trades = int(metrics.get("trades", 0) or 0)
@@ -431,6 +448,13 @@ def evolutionary_search(
             "elite_n": elite_n,
             "breed_n": breed_n,
             "inject_n": inject_n,
+            "fitness_weights": {
+                "alpha_cagr": alpha_cagr,
+                "beta_calmar": beta_calmar,
+                "gamma_sharpe": gamma_sharpe,
+                "delta_total_return": delta_total_return,
+                "calmar_cap": calmar_cap,
+            },
         }
         progress_cb("generation_end", end_payload)
         logger.log("generation_end", end_payload)
@@ -438,7 +462,18 @@ def evolutionary_search(
     elapsed_total = time.time() - t0
     scored.sort(key=lambda x: x[1], reverse=True)
     best = scored[0] if scored else ({}, 0.0)
-    done_payload = {"elapsed_sec": elapsed_total, "best": best[0], "score": best[1]}
+    done_payload = {
+        "elapsed_sec": elapsed_total,
+        "best": best[0],
+        "score": best[1],
+        "fitness_weights": {
+            "alpha_cagr": alpha_cagr,
+            "beta_calmar": beta_calmar,
+            "gamma_sharpe": gamma_sharpe,
+            "delta_total_return": delta_total_return,
+            "calmar_cap": calmar_cap,
+        },
+    }
     progress_cb("done", done_payload)
     logger.log("session_end", done_payload)
     return scored[:5]
