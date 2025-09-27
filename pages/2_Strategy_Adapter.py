@@ -710,6 +710,8 @@ if run_btn:
 
     best_params, best_score = top[0]
     st.session_state["ea_best_params"] = dict(best_params)
+    st.session_state["ea_portfolio"] = port_name
+    st.session_state["ea_strategy"] = strategy_dotted
     st.session_state["ea_top_results"] = list(top)
 
     prog.progress(0.95, text="Rendering EA leaderboard…")
@@ -726,25 +728,42 @@ if run_btn:
     st.session_state["ea_log_file"] = log_file
     st.success(f"EA complete. Best score={best_score:.3f}.")
 
-    # ---- Save EA Best Params ----
-    ea_best = st.session_state.get("ea_best_params") or {}
-    with st.expander("EA best parameters", expanded=bool(ea_best)):
-        if ea_best:
-            st.json(ea_best)
-        else:
-            st.info("No EA best parameters available yet.")
 
-    col_s1, col_s2 = st.columns([1, 3])
-    with col_s1:
-        do_save = st.button("💾 Save EA Best Params", type="primary", use_container_width=True)
-    if do_save:
-        try:
-            saved_path = save_strategy_params(
-                portfolio=port_name,
-                strategy=strategy_dotted,
-                params=ea_best,
-                scope="ea",
+
+# --- Always-available Save EA Best Params section ---
+with right:
+    st.divider()
+    st.subheader("Save EA Best Params")
+
+    ea_best = st.session_state.get("ea_best_params") or {}
+    if not ea_best:
+        st.info("Run training to produce EA params, then save them here.")
+    else:
+        # show what will be saved
+        with st.expander("EA best parameters", expanded=False):
+            st.json(ea_best)
+
+        # default to the portfolio/strategy that produced these params
+        portfolio_to_save = st.session_state.get("ea_portfolio") or port_name
+        strategy_to_save = st.session_state.get("ea_strategy") or strategy_dotted
+
+        col_s1, col_s2 = st.columns([1, 3])
+        with col_s1:
+            do_save_always = st.button(
+                "💾 Save EA Best Params",
+                type="primary",
+                use_container_width=True,
+                key="save_ea_btn"
             )
-            st.success(f"Saved EA params for '{port_name}' → {saved_path}")
-        except Exception as e:
-            st.error(f"Save failed: {e}")
+
+        if do_save_always:
+            try:
+                saved_path = save_strategy_params(
+                    portfolio=portfolio_to_save,
+                    strategy=strategy_to_save,
+                    params=ea_best,
+                    scope="ea",
+                )
+                st.success(f"Saved EA params for '{portfolio_to_save}' → {saved_path or '(path not returned)'}")
+            except Exception as e:
+                st.error(f"Save failed: {e}")
