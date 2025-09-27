@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 from src.storage import list_portfolios, load_portfolio
 
@@ -33,6 +34,96 @@ def _write_kv_table(d: Dict[str, Any], title: str = ""):
         st.markdown(f"**{title}**")
     df = pd.DataFrame({"key": list(d.keys()), "value": [d[k] for k in d.keys()]})
     st.dataframe(df, width="stretch", height=min(360, 40 + 28 * len(df)))
+
+
+def _portfolio_equity_curve(
+    strategy_dotted: str,
+    tickers: List[str],
+    start,
+    end,
+    starting_equity: float,
+    params: Dict[str, Any],
+) -> pd.Series:
+    """Simulate aggregated portfolio equity for the given params on [start, end)."""
+
+    try:
+        mod = _safe_import(strategy_dotted)
+        run = getattr(mod, "run_strategy")
+    except Exception:
+        return pd.Series(dtype=float)
+
+    curves: Dict[str, pd.Series] = {}
+    for sym in tickers:
+        try:
+            result = run(sym, start, end, starting_equity, params)
+        except Exception:
+            continue
+        eq = result.get("equity")
+        if eq is None or len(eq) == 0:
+            continue
+        eq = eq.dropna()
+        if eq.empty:
+            continue
+        first = eq.iloc[0]
+        if pd.isna(first) or not float(first):
+            continue
+        norm = (eq / float(first)).astype(float)
+        curves[sym] = norm
+
+    if not curves:
+        return pd.Series(dtype=float)
+
+    df = pd.DataFrame(curves).sort_index().dropna(how="all")
+    if df.empty:
+        return pd.Series(dtype=float)
+
+    portfolio = df.mean(axis=1, skipna=True) * float(starting_equity)
+    portfolio.name = "portfolio_equity"
+    return portfolio
+
+
+def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
+    """Render stacked equity curves (latest highlighted)."""
+
+    if not curves:
+        placeholder.info("Holdout equity will appear when a best candidate is found.")
+        return
+
+    fig = go.Figure()
+    added = False
+    for idx, entry in enumerate(curves):
+        series = entry.get("series")
+        if series is None or len(series) == 0:
+            continue
+        label = entry.get("label") or f"Candidate {idx + 1}"
+        is_latest = idx == len(curves) - 1
+        color = "#1f77b4" if is_latest else "#999999"
+        width = 3 if is_latest else 1.5
+        opacity = 1.0 if is_latest else 0.3
+        fig.add_trace(
+            go.Scatter(
+                x=series.index,
+                y=series.values,
+                mode="lines",
+                name=label,
+                line=dict(color=color, width=width),
+                opacity=opacity,
+            )
+        )
+        added = True
+
+    if not added:
+        placeholder.info("Holdout equity will appear when a best candidate is found.")
+        return
+
+    fig.update_layout(
+        title="Holdout portfolio equity",
+        height=360,
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+        yaxis_title="Equity ($)",
+    )
+    placeholder.plotly_chart(fig, use_container_width=True)
 
 # --- Symbol normalization (defensive against headers/objects) ---
 import re
@@ -322,15 +413,19 @@ with right:
         prog = st.progress(0.0, text="Preparing EA search…")
         status = st.empty()
 
-        live_eval_col, live_best_col = st.columns(2)
-        with live_eval_col:
-            st.caption("Recent EA evaluations (rolling window)")
-            eval_table_placeholder = st.empty()
-        with live_best_col:
-            st.caption("Best candidate so far")
-            best_score_placeholder = st.empty()
-            best_score_placeholder.info("Waiting for evaluations…")
-            best_params_placeholder = st.empty()
+        st.caption("Recent EA evaluations (rolling window)")
+        eval_table_placeholder = st.empty()
+
+        st.markdown("**Best candidate so far**")
+        best_score_placeholder = st.empty()
+        best_score_placeholder.metric("Best score", "—")
+        best_params_placeholder = st.empty()
+        best_params_placeholder.info("Waiting for evaluations…")
+
+        st.markdown("**Holdout equity (outside training window)**")
+        holdout_chart_placeholder = st.empty()
+        holdout_status_placeholder = st.empty()
+        holdout_status_placeholder.info("Holdout equity will appear when a best candidate is found.")
 
         st.caption("Generation summary")
         gen_summary_placeholder = st.empty()
@@ -338,6 +433,7 @@ with right:
         live_rows: list[dict[str, Any]] = []
         gen_history: list[dict[str, Any]] = []
         best_tracker: dict[str, Any] = {"score": float("-inf"), "params": {}}
+        holdout_history: list[dict[str, Any]] = []
 
         # EA logging: timestamped JSONL under storage/logs/ea
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -401,7 +497,7 @@ with right:
                         live_rows.append(row)
                         live_rows[:] = live_rows[-60:]
                         if live_rows:
-                            eval_table_placeholder.dataframe(pd.DataFrame(live_rows), width="stretch", height=260)
+                            eval_table_placeholder.dataframe(pd.DataFrame(live_rows), width="stretch", height=380)
 
                         score = ctx.get("score")
                         if isinstance(score, (int, float)):
@@ -423,6 +519,43 @@ with right:
                                         {"param": list(params.keys()), "value": [params[k] for k in params.keys()]}
                                     )
                                     best_params_placeholder.dataframe(df_params.set_index("param"), width="stretch", height=220)
+                                else:
+                                    best_params_placeholder.info("Waiting for parameter details…")
+
+                                try:
+                                    holdout_span = max(30, min(180, (end - start).days // 3 or 90))
+                                    holdout_end = start
+                                    holdout_start = holdout_end - timedelta(days=int(holdout_span))
+                                    if holdout_start < holdout_end:
+                                        curve = _portfolio_equity_curve(
+                                            strategy_dotted,
+                                            tickers,
+                                            holdout_start,
+                                            holdout_end,
+                                            float(equity),
+                                            params,
+                                        )
+                                    else:
+                                        curve = pd.Series(dtype=float)
+                                except Exception:
+                                    curve = pd.Series(dtype=float)
+
+                                if curve is not None and len(curve) > 0:
+                                    holdout_history.append(
+                                        {
+                                            "series": curve,
+                                            "label": f"Gen {ctx.get('gen', '?')} best ({score:.3f})",
+                                        }
+                                    )
+                                    holdout_history[:] = holdout_history[-8:]
+                                    _render_equity_history(holdout_history, holdout_chart_placeholder)
+                                    holdout_status_placeholder.success(
+                                        "Updated holdout equity with the latest best candidate."
+                                    )
+                                else:
+                                    holdout_status_placeholder.warning(
+                                        "Unable to compute holdout equity for this candidate."
+                                    )
                     elif evt == "generation_end":
                         best = ctx.get("best_score")
                         gen_history.append(
