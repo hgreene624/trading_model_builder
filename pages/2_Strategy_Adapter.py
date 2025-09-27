@@ -120,7 +120,27 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
     """Render stacked equity curves (latest highlighted)."""
 
     if not curves:
-        placeholder.info("Holdout equity will appear when a best candidate is found.")
+        fig = go.Figure()
+        fig.update_layout(
+            title="Holdout portfolio equity",
+            height=360,
+            margin=dict(l=10, r=10, t=40, b=10),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            annotations=[
+                dict(
+                    text="Holdout equity will appear as soon as evaluations begin.",
+                    x=0.5,
+                    y=0.5,
+                    xref="paper",
+                    yref="paper",
+                    showarrow=False,
+                    font=dict(color="#666", size=14),
+                )
+            ],
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0, title="Current best"),
+        )
+        placeholder.plotly_chart(fig, use_container_width=True)
         return
 
     fig = go.Figure()
