@@ -1,0 +1,5 @@
+# Streamlit secrets (optional). Do NOT commit.
+ ALPACA_API_KEY = "PKF1J0A4UBYZHBCM0Q0P"
+ ALPACA_SECRET_KEY = "4y6VeawxAvFhZaIxSTcBOlCCqm3FR76qZwQwpSd7"
+ ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+ ALPACA_DATA_URL = "https://data.alpaca.markets"

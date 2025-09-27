@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="fixed loading problem, now not training">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working save es parmas button">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
     </list>
@@ -23,7 +23,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="main" />
+        <entry key="$PROJECT_DIR$" value="local-storage-RAM-cache" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -51,30 +51,30 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;ChatGPT-Rebase&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.general&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
+    "git-widget-placeholder": "codex/update-layout-of-ea-evaluations-and-graphs",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "preferences.general",
+    "vue.rearranger.settings.migration": "true"
   }
-}</component>
+}]]></component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/src/utils" />
+      <recent name="$PROJECT_DIR$" />
       <recent name="$PROJECT_DIR$/Pages_UNUSED" />
       <recent name="$PROJECT_DIR$/data" />
-      <recent name="$PROJECT_DIR$" />
       <recent name="$PROJECT_DIR$/my-trading-app" />
-      <recent name="$PROJECT_DIR$/Initial FIles" />
     </key>
   </component>
   <component name="SharedIndexes">
@@ -107,14 +107,8 @@
       <workItem from="1757954257238" duration="4647000" />
       <workItem from="1758033823981" duration="22111000" />
       <workItem from="1758056469773" duration="13190000" />
-    </task>
-    <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
-      <option name="closed" value="true" />
-      <created>1757524469804</created>
-      <option name="number" value="00001" />
-      <option name="presentableId" value="LOCAL-00001" />
-      <option name="project" value="LOCAL" />
-      <updated>1757524469804</updated>
+      <workItem from="1758828289886" duration="3111000" />
+      <workItem from="1758996558016" duration="2016000" />
     </task>
     <task id="LOCAL-00002" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -404,7 +398,111 @@
       <option name="project" value="LOCAL" />
       <updated>1758125132788</updated>
     </task>
-    <option name="localTasksCounter" value="38" />
+    <task id="LOCAL-00038" summary="fixed memory_cache.py time error">
+      <option name="closed" value="true" />
+      <created>1758911854860</created>
+      <option name="number" value="00038" />
+      <option name="presentableId" value="LOCAL-00038" />
+      <option name="project" value="LOCAL" />
+      <updated>1758911854860</updated>
+    </task>
+    <task id="LOCAL-00039" summary="container width error resolved. loader spam removed">
+      <option name="closed" value="true" />
+      <created>1758912602461</created>
+      <option name="number" value="00039" />
+      <option name="presentableId" value="LOCAL-00039" />
+      <option name="project" value="LOCAL" />
+      <updated>1758912602461</updated>
+    </task>
+    <task id="LOCAL-00040" summary="fixed thread calling error in Home.py">
+      <option name="closed" value="true" />
+      <created>1758913639675</created>
+      <option name="number" value="00040" />
+      <option name="presentableId" value="LOCAL-00040" />
+      <option name="project" value="LOCAL" />
+      <updated>1758913639675</updated>
+    </task>
+    <task id="LOCAL-00041" summary="removed traps from home to keep neat">
+      <option name="closed" value="true" />
+      <created>1758913999215</created>
+      <option name="number" value="00041" />
+      <option name="presentableId" value="LOCAL-00041" />
+      <option name="project" value="LOCAL" />
+      <updated>1758913999215</updated>
+    </task>
+    <task id="LOCAL-00042" summary="fixed walk forward error">
+      <option name="closed" value="true" />
+      <created>1758915626876</created>
+      <option name="number" value="00042" />
+      <option name="presentableId" value="LOCAL-00042" />
+      <option name="project" value="LOCAL" />
+      <updated>1758915626876</updated>
+    </task>
+    <task id="LOCAL-00043" summary="ea jsonl log generation working">
+      <option name="closed" value="true" />
+      <created>1758917455877</created>
+      <option name="number" value="00043" />
+      <option name="presentableId" value="LOCAL-00043" />
+      <option name="project" value="LOCAL" />
+      <updated>1758917455877</updated>
+    </task>
+    <task id="LOCAL-00044" summary="changed defulat model values and slider ranges">
+      <option name="closed" value="true" />
+      <created>1758917793321</created>
+      <option name="number" value="00044" />
+      <option name="presentableId" value="LOCAL-00044" />
+      <option name="project" value="LOCAL" />
+      <updated>1758917793321</updated>
+    </task>
+    <task id="LOCAL-00045" summary="working ea_log_inspect.py">
+      <option name="closed" value="true" />
+      <created>1758918582824</created>
+      <option name="number" value="00045" />
+      <option name="presentableId" value="LOCAL-00045" />
+      <option name="project" value="LOCAL" />
+      <updated>1758918582824</updated>
+    </task>
+    <task id="LOCAL-00046" summary="defualt ea params second update">
+      <option name="closed" value="true" />
+      <created>1758919321599</created>
+      <option name="number" value="00046" />
+      <option name="presentableId" value="LOCAL-00046" />
+      <option name="project" value="LOCAL" />
+      <updated>1758919321599</updated>
+    </task>
+    <task id="LOCAL-00047" summary="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades">
+      <option name="closed" value="true" />
+      <created>1758989060487</created>
+      <option name="number" value="00047" />
+      <option name="presentableId" value="LOCAL-00047" />
+      <option name="project" value="LOCAL" />
+      <updated>1758989060487</updated>
+    </task>
+    <task id="LOCAL-00048" summary="gen 0 showing up. still converging on no trades">
+      <option name="closed" value="true" />
+      <created>1758989258485</created>
+      <option name="number" value="00048" />
+      <option name="presentableId" value="LOCAL-00048" />
+      <option name="project" value="LOCAL" />
+      <updated>1758989258485</updated>
+    </task>
+    <task id="LOCAL-00049" summary="refactored strategy adapter to remove walkforward into seperate page. added save load feature for ea params">
+      <option name="closed" value="true" />
+      <created>1758996691333</created>
+      <option name="number" value="00049" />
+      <option name="presentableId" value="LOCAL-00049" />
+      <option name="project" value="LOCAL" />
+      <updated>1758996691333</updated>
+    </task>
+    <task id="LOCAL-00050" summary="working save es parmas button">
+      <option name="closed" value="true" />
+      <created>1758998079850</created>
+      <option name="number" value="00050" />
+      <option name="presentableId" value="LOCAL-00050" />
+      <option name="project" value="LOCAL" />
+      <updated>1758998079850</updated>
+    </task>
+    <option name="localTasksCounter" value="51" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -422,19 +520,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="started new base model + tuning architechture" />
-    <MESSAGE value="setup for storing and fetching historical data from wiki and alpaca. need to confirm local storage and seperate metadata and historical data fetching" />
-    <MESSAGE value="working metadata filter for portfolio data fetching" />
-    <MESSAGE value="basemodel refactor. no error but not computing" />
-    <MESSAGE value="basemodel refactor. computing but slow" />
-    <MESSAGE value="with API Info" />
-    <MESSAGE value="updated data model to have savable portfolio level general model" />
-    <MESSAGE value="reverted to single core. base model trainer not working and no log button" />
-    <MESSAGE value="fixed storage error on home page" />
-    <MESSAGE value="Started logging system for base model, UI Woring, json export working." />
-    <MESSAGE value="working 80/20 model param refactor. No base model training happening yet" />
-    <MESSAGE value="working 80/20 model param refactor. evolution started and testing with trades" />
-    <MESSAGE value="added day trading guards with holding limits" />
     <MESSAGE value="working Strategy Adapter page. with help tips" />
     <MESSAGE value="multi core training and expsed trade rate preferance vars" />
     <MESSAGE value="data pipeline validated, with test. requirements updated. starting test for strategy adapter" />
@@ -447,6 +532,19 @@
     <MESSAGE value="fixed portfolio storage and loading in portfolios page" />
     <MESSAGE value="fixed portfolio loading in strategy adapter. problem loading historical when training" />
     <MESSAGE value="fixed loading problem, now not training" />
-    <option name="LAST_COMMIT_MESSAGE" value="fixed loading problem, now not training" />
+    <MESSAGE value="fixed memory_cache.py time error" />
+    <MESSAGE value="container width error resolved. loader spam removed" />
+    <MESSAGE value="fixed thread calling error in Home.py" />
+    <MESSAGE value="removed traps from home to keep neat" />
+    <MESSAGE value="fixed walk forward error" />
+    <MESSAGE value="ea jsonl log generation working" />
+    <MESSAGE value="changed defulat model values and slider ranges" />
+    <MESSAGE value="working ea_log_inspect.py" />
+    <MESSAGE value="defualt ea params second update" />
+    <MESSAGE value="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades" />
+    <MESSAGE value="gen 0 showing up. still converging on no trades" />
+    <MESSAGE value="refactored strategy adapter to remove walkforward into seperate page. added save load feature for ea params" />
+    <MESSAGE value="working save es parmas button" />
+    <option name="LAST_COMMIT_MESSAGE" value="working save es parmas button" />
   </component>
 </project>

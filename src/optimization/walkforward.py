@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 import importlib
 import math
 
@@ -14,6 +14,14 @@ from src.data.loader import get_ohlcv as _load_ohlcv
 from src.backtest.metrics import compute_core_metrics
 from src.optimization.evolutionary import evolutionary_search
 from src.utils.training_logger import TrainingLogger  # your existing logger
+
+
+# Worker-safe progress type & default no-op callback
+ProgressCb = Callable[[str, Dict[str, Any]], None]
+
+
+def _noop_progress(event: str, payload: Dict[str, Any]) -> None:
+    return
 
 
 @dataclass
@@ -28,6 +36,7 @@ class SplitResult:
     in_sample: Dict[str, Any]            # aggregate IS metrics (equal-weight across tickers)
     out_sample: Dict[str, Any]           # aggregate OOS metrics (equal-weight across tickers)
     per_symbol: List[Dict[str, Any]]     # [{symbol, is_metrics, oos_metrics, is_trades, oos_trades}]
+    oos_equity_curve: List[Tuple[str, float]]  # Normalised equity curve (date -> equity index)
 
 
 def _import_callable(dotted: str):
@@ -94,6 +103,8 @@ def walk_forward(
     seed: Optional[int] = None,
     # logging
     log_file: str = "walkforward.jsonl",
+    ea_kwargs: Optional[Dict[str, Any]] = None,
+    progress_cb: Optional[ProgressCb] = None,
 ) -> Dict[str, Any]:
     """
     Rolling walk-forward validation.
@@ -106,6 +117,9 @@ def walk_forward(
         "aggregate": {"oos_mean": {...}, "oos_median": {...}}
       }
     """
+    if progress_cb is None:
+        progress_cb = _noop_progress
+
     logger = TrainingLogger(log_file)
 
     if step_days is None:
@@ -158,20 +172,24 @@ def walk_forward(
                 "holding_period_limit": (max(2, params_in.get("holding_period_limit", 5) - 2), params_in.get("holding_period_limit", 5) + 2),
             }
             # Evaluate EA on train window (equal-weight across symbols)
+            resolved_ea_kwargs: Dict[str, Any] = {
+                "generations": ea_generations,
+                "pop_size": ea_pop,
+                "min_trades": min_trades,
+                "n_jobs": n_jobs,
+                "seed": seed,
+                "log_file": log_file,
+            }
+            if ea_kwargs:
+                resolved_ea_kwargs.update({k: v for k, v in ea_kwargs.items() if v is not None})
+            resolved_ea_kwargs.setdefault("progress_cb", progress_cb)
             top = evolutionary_search(
                 strategy_dotted,
                 tickers,
                 train_start, train_end,
                 starting_equity,
                 space,
-                generations=ea_generations,
-                pop_size=ea_pop,
-                min_trades=min_trades,
-                n_jobs=n_jobs,
-                # keep the same fitness defaults as your EA, no day-trading, etc.
-                progress_cb=lambda *_a, **_k: None,
-                log_file=log_file,
-                seed=seed,
+                **resolved_ea_kwargs,
             )
             if isinstance(top, list) and len(top) > 0 and isinstance(top[0], tuple):
                 params_used = dict(top[0][0])  # best param set
@@ -185,14 +203,20 @@ def walk_forward(
             # In-sample
             is_res = _run_strategy_on_range(strategy_dotted, sym, train_start, train_end, starting_equity, params_used)
             is_eq: pd.Series = is_res.get("equity", pd.Series(dtype=float))
-            is_daily: pd.Series = is_res.get("daily_returns") or _eq_to_daily_returns(is_eq)
+            # Guard: avoid truthiness of Series with "or"
+            is_daily = is_res.get("daily_returns", None)
+            if not isinstance(is_daily, pd.Series) or len(is_daily) == 0:
+                is_daily = _eq_to_daily_returns(is_eq)
             is_trades: List[Dict[str, Any]] = is_res.get("trades", []) or []
             is_metrics = compute_core_metrics(is_eq, is_daily, is_trades)
 
             # OOS
             oos_res = _run_strategy_on_range(strategy_dotted, sym, test_start, test_end, starting_equity, params_used)
             oos_eq: pd.Series = oos_res.get("equity", pd.Series(dtype=float))
-            oos_daily: pd.Series = oos_res.get("daily_returns") or _eq_to_daily_returns(oos_eq)
+            # Guard: avoid truthiness of Series with "or"
+            oos_daily = oos_res.get("daily_returns", None)
+            if not isinstance(oos_daily, pd.Series) or len(oos_daily) == 0:
+                oos_daily = _eq_to_daily_returns(oos_eq)
             oos_trades: List[Dict[str, Any]] = oos_res.get("trades", []) or []
             oos_metrics = compute_core_metrics(oos_eq, oos_daily, oos_trades)
 
@@ -215,6 +239,17 @@ def walk_forward(
         is_metrics_agg = compute_core_metrics(is_eq_agg, is_daily_agg, trades=[])
         oos_metrics_agg = compute_core_metrics(oos_eq_agg, oos_daily_agg, trades=[])
 
+        oos_curve_payload: List[Tuple[str, float]] = []
+        if isinstance(oos_eq_agg, pd.Series) and len(oos_eq_agg) > 0:
+            for ts, val in oos_eq_agg.items():
+                if pd.isna(val):
+                    continue
+                try:
+                    ts_str = ts.isoformat()
+                except AttributeError:
+                    ts_str = str(ts)
+                oos_curve_payload.append((ts_str, float(val)))
+
         split = SplitResult(
             idx=len(split_results),
             train_start=train_start, train_end=train_end,
@@ -224,6 +259,7 @@ def walk_forward(
             in_sample=is_metrics_agg,
             out_sample=oos_metrics_agg,
             per_symbol=per_symbol_rows,
+            oos_equity_curve=oos_curve_payload,
         )
         split_results.append(split)
 
@@ -237,6 +273,7 @@ def walk_forward(
             "oos_metrics": oos_metrics_agg,
             "is_metrics": is_metrics_agg,
             "per_symbol": per_symbol_rows,
+            "oos_equity_curve": oos_curve_payload,
         })
 
         # Slide the window forward
