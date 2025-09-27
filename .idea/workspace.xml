@@ -4,7 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="gen 0 showing up. still converging on no trades">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -484,7 +485,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758989060487</updated>
     </task>
-    <option name="localTasksCounter" value="48" />
+    <task id="LOCAL-00048" summary="gen 0 showing up. still converging on no trades">
+      <option name="closed" value="true" />
+      <created>1758989258485</created>
+      <option name="number" value="00048" />
+      <option name="presentableId" value="LOCAL-00048" />
+      <option name="project" value="LOCAL" />
+      <updated>1758989258485</updated>
+    </task>
+    <option name="localTasksCounter" value="49" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -502,7 +511,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="working 80/20 model param refactor. No base model training happening yet" />
     <MESSAGE value="working 80/20 model param refactor. evolution started and testing with trades" />
     <MESSAGE value="added day trading guards with holding limits" />
     <MESSAGE value="working Strategy Adapter page. with help tips" />
@@ -527,6 +535,7 @@
     <MESSAGE value="working ea_log_inspect.py" />
     <MESSAGE value="defualt ea params second update" />
     <MESSAGE value="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades" />
-    <option name="LAST_COMMIT_MESSAGE" value="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades" />
+    <MESSAGE value="gen 0 showing up. still converging on no trades" />
+    <option name="LAST_COMMIT_MESSAGE" value="gen 0 showing up. still converging on no trades" />
   </component>
 </project>

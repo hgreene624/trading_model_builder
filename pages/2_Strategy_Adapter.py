@@ -10,12 +10,8 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 
-
 from src.utils.holdout_chart import init_chart, on_generation_end, set_config  # package path fallback
-
-import plotly.graph_objects as go
-
-from src.storage import list_portfolios, load_portfolio
+from src.storage import list_portfolios, load_portfolio, save_strategy_params
 
 # --- Page chrome ---
 st.set_page_config(page_title="Strategy Adapter", layout="wide")
@@ -201,24 +197,37 @@ with left:
         st.warning(f"Could not list portfolios: {e}")
         portfolios = []
 
-    port_name = st.selectbox("Portfolio", options=(["<custom>"] + portfolios) if portfolios else ["<custom>"], index=0)
+    # ---- Portfolio selection (EA uses saved portfolios only) ----
+    tickers: List[str] = []
+    try:
+        portfolios = sorted(list_portfolios())
+    except Exception as e:
+        st.warning(f"Could not list portfolios: {e}")
+        portfolios = []
 
-    if port_name == "<custom>":
-        tickers_csv = st.text_input("Tickers (CSV)", "AAPL,MSFT")
-        raw = [t for t in tickers_csv.split(",")]
+    if not portfolios:
+        st.error("No saved portfolios found. Create one on the Portfolios page first.")
+        st.stop()
+
+    default_idx = portfolios.index("Default") if "Default" in portfolios else 0
+    port_name = st.selectbox(
+        "Portfolio",
+        options=portfolios,
+        index=default_idx,
+        help="EA runs over the selected portfolio's symbols."
+    )
+
+    try:
+        obj = load_portfolio(port_name)
+        # Accept either a plain list of symbols or a dict that contains them
+        if isinstance(obj, dict):
+            raw = obj.get("tickers") or obj.get("symbols") or obj.get("items") or obj.get("data") or []
+        else:
+            raw = obj
         tickers = _normalize_symbols(raw)
-    else:
-        try:
-            obj = load_portfolio(port_name)
-            # Accept either a plain list of symbols or a dict that contains them
-            if isinstance(obj, dict):
-                raw = obj.get("tickers") or obj.get("symbols") or obj.get("items") or obj.get("data") or []
-            else:
-                raw = obj
-            tickers = _normalize_symbols(raw)
-        except Exception as e:
-            st.error(f"Failed to load portfolio '{port_name}': {e}")
-            st.stop()
+    except Exception as e:
+        st.error(f"Failed to load portfolio '{port_name}': {e}")
+        st.stop()
 
     if not tickers:
         st.warning("No tickers selected. Add tickers or choose a portfolio.")
@@ -715,188 +724,27 @@ if run_btn:
     st.dataframe(lb, width="stretch", height=360)
 
     st.session_state["ea_log_file"] = log_file
-    st.success(f"EA complete. Best score={best_score:.3f}. A Walk-Forward button is now available below.")
+    st.success(f"EA complete. Best score={best_score:.3f}.")
 
-# ------------------------ WALK-FORWARD ------------------------
-st.markdown("---")
-st.subheader("Walk-Forward Validation")
+    # ---- Save EA Best Params ----
+    ea_best = st.session_state.get("ea_best_params") or {}
+    with st.expander("EA best parameters", expanded=bool(ea_best)):
+        if ea_best:
+            st.json(ea_best)
+        else:
+            st.info("No EA best parameters available yet.")
 
-wf_cfg = _ss_get_dict(
-    "wf_cfg",
-    {
-        "days_back": 365 * 3,  # 3y default
-        "splits": 3,
-        "train_days": 252,
-        "test_days": 63,
-        "step_days": 0,  # 0 => use test_days
-        "use_ea": False,
-        "ea_generations": 4,
-        "ea_pop": 12,
-        "ea_min_trades": 3,
-    },
-)
-with st.expander("Walk-Forward params", expanded=False):
-    wf_cfg["days_back"] = st.number_input("History window (days)", 252, 365 * 10, wf_cfg["days_back"], 1,
-                                          help="Total lookback used to build WF splits (train+test across splits).")
-    wf_cfg["splits"] = st.number_input("Splits", 1, 12, wf_cfg["splits"], 1,
-                                       help="Number of walk-forward segments.")
-    wf_cfg["train_days"] = st.number_input("Train window (days)", 60, 600, wf_cfg["train_days"], 1,
-                                           help="In-sample training window per split.")
-    wf_cfg["test_days"] = st.number_input("Test window (days)", 21, 252, wf_cfg["test_days"], 1,
-                                          help="Out-of-sample evaluation window per split.")
-    wf_cfg["step_days"] = st.number_input("Step size (days)", 0, 600, wf_cfg["step_days"], 1,
-                                          help="Advance between splits. 0 = same as Test window.")
-    wf_cfg["use_ea"] = st.checkbox("Use EA inside each split (opt params on IS)", value=bool(wf_cfg["use_ea"]))
-    col_ea1, col_ea2, col_ea3 = st.columns(3)
-    with col_ea1:
-        wf_cfg["ea_generations"] = st.number_input("EA generations", 1, 50, wf_cfg["ea_generations"], 1)
-    with col_ea2:
-        wf_cfg["ea_pop"] = st.number_input("EA population", 2, 200, wf_cfg["ea_pop"], 1)
-    with col_ea3:
-        wf_cfg["ea_min_trades"] = st.number_input("EA min trades", 0, 200, wf_cfg["ea_min_trades"], 1)
-
-# Gate WF behind EA completion (best params discovered)
-ea_best = st.session_state.get("ea_best_params")
-if not ea_best:
-    st.info("Run **Train (EA)** first. The Walk-Forward button will appear here after EA finishes.")
-    run_wf = False
-else:
-    st.markdown(f"Using EA-best params for WF: `{ea_best}`")
-    run_wf = st.button("🧭 Run Walk-Forward", type="secondary",
-                       help="Runs walk-forward validation using EA-best params.",
-                       width="stretch")
-
-if run_wf:
-    try:
-        from src.optimization.walkforward import walk_forward
-
-        end = _utc_now()
-        start = end - timedelta(days=int(wf_cfg["days_back"] or 365))
-        step_days = int(wf_cfg["step_days"] or 0) or int(wf_cfg["test_days"])
-
-        # Prefer EA-best params; otherwise fall back to current base params
-        use_params = _filter_params_for_strategy(strategy_dotted, st.session_state.get("ea_best_params") or base)
-
-        st.info("Starting walk-forward…")
-        prog_wf = st.progress(0.05, text="Loading splits & data…")
-
-        out = walk_forward(
-            strategy_dotted=strategy_dotted,
-            tickers=tickers,
-            start=start,
-            end=end,
-            starting_equity=float(equity),
-            base_params=use_params,
-            splits=int(wf_cfg["splits"]),
-            train_days=int(wf_cfg["train_days"]),
-            test_days=int(wf_cfg["test_days"]),
-            step_days=int(step_days),
-            use_ea=bool(wf_cfg["use_ea"]),
-            ea_kwargs=dict(
-                generations=int(wf_cfg["ea_generations"]),
-                pop_size=int(wf_cfg["ea_pop"]),
-                min_trades=int(wf_cfg["ea_min_trades"]),
-                n_jobs=int(n_jobs),
-            ),
-            n_jobs=int(n_jobs),
-            progress_cb=lambda evt, ctx: None,  # keep console quiet; UI below
-        )
-
-        # --- Adapt to new walkforward.py shape ---
-        prog_wf.progress(0.7, text="Rendering results…")
-
-        out = out or {}
-        splits = out.get("splits", []) or []
-
-        # Aggregate → show both mean & median OOS metrics if available
-        aggregate = out.get("aggregate", {}) or {}
-        oos_mean = aggregate.get("oos_mean") or {}
-        oos_median = aggregate.get("oos_median") or {}
-
-        if oos_mean or oos_median:
-            st.markdown("**Walk-Forward OOS aggregate (equal-weight across splits)**")
-            import pandas as _pd
-
-            # Build a two-column table: metric | mean | median
-            metrics = sorted(set(list(oos_mean.keys()) + list(oos_median.keys())))
-            df_sum = _pd.DataFrame(
-                {
-                    "metric": metrics,
-                    "mean": [oos_mean.get(m) for m in metrics],
-                    "median": [oos_median.get(m) for m in metrics],
-                }
+    col_s1, col_s2 = st.columns([1, 3])
+    with col_s1:
+        do_save = st.button("💾 Save EA Best Params", type="primary", use_container_width=True)
+    if do_save:
+        try:
+            saved_path = save_strategy_params(
+                portfolio=port_name,
+                strategy=strategy_dotted,
+                params=ea_best,
+                scope="ea",
             )
-            st.dataframe(df_sum, width="stretch", height=340)
-        else:
-            st.warning("No aggregate OOS metrics were returned.")
-
-        # First split preview: dates, params_used, and key OOS metrics
-        if splits:
-            first = splits[0] or {}
-            train_start = first.get("train_start")
-            train_end = first.get("train_end")
-            test_start = first.get("test_start")
-            test_end = first.get("test_end")
-            params_used = first.get("params_used") or {}
-            oos = first.get("out_sample") or {}
-
-            st.markdown("**First split preview**")
-            st.code(
-                "train: {ts} → {te} | OOS: {os} → {oe}\nparams_used: {p}\n"
-                "oos trades: {trades}".format(
-                    ts=train_start, te=train_end, os=test_start, oe=test_end,
-                    p=params_used,
-                    trades=oos.get("trades", "N/A"),
-                ),
-                language="text",
-            )
-        else:
-            st.info("No split details were returned.")
-
-        equity_records: list[tuple[pd.Timestamp, float]] = []
-        running_equity = float(equity)
-        for split in splits:
-            curve = split.get("oos_equity_curve") or []
-            if not curve:
-                continue
-            try:
-                base = float(curve[0][1])
-            except (TypeError, IndexError, ValueError):
-                base = 1.0
-            if not base:
-                base = 1.0
-            for ts, val in curve:
-                if val is None:
-                    continue
-                try:
-                    ts_dt = pd.to_datetime(ts)
-                except Exception:
-                    continue
-                actual = running_equity * (float(val) / base if base else 0.0)
-                equity_records.append((ts_dt, actual))
-            try:
-                last_val = float(curve[-1][1])
-                running_equity = running_equity * (last_val / base if base else 1.0)
-            except (TypeError, IndexError, ValueError):
-                pass
-
-        if equity_records:
-            eq_df = pd.DataFrame(equity_records, columns=["date", "equity"])
-            eq_df = eq_df.groupby("date", as_index=False).agg({"equity": "last"}).sort_values("date")
-            eq_df.set_index("date", inplace=True)
-            st.markdown("**Out-of-sample equity (stitched across splits)**")
-            st.bar_chart(eq_df)
-        else:
-            st.info("No out-of-sample equity curve was produced for the configured splits.")
-
-        # Optional artifacts (older UI expected this; walkforward.py may not emit it)
-        artifacts = out.get("artifacts", {}) or {}
-        if artifacts:
-            st.markdown("**WF Artifacts / Anomalies**")
-            _write_kv_table(artifacts)
-
-        prog_wf.progress(1.0, text="Walk-Forward complete.")
-
-    except Exception as e:
-        st.error(f"Walk-forward failed: {e}")
-        st.stop()
+            st.success(f"Saved EA params for '{port_name}' → {saved_path}")
+        except Exception as e:
+            st.error(f"Save failed: {e}")

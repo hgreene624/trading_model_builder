@@ -349,3 +349,50 @@ def get_ohlcv_root() -> Path:
     root = Path("storage") / "data" / "ohlcv"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+# ----------------------------------------------------------------------
+# Strategy parameter I/O (EA / WF)
+# ----------------------------------------------------------------------
+from pathlib import Path
+from typing import Any, Dict, Optional
+from datetime import datetime
+
+def _params_dir(scope: str = "ea") -> Path:
+    root = Path("storage") / "params" / scope
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+def save_strategy_params(portfolio: str, strategy: str, params: Dict[str, Any], scope: str = "ea") -> str:
+    """
+    Save params under storage/params/<scope>/<portfolio>__<strategy>.json
+    Returns absolute path as a string.
+    """
+    safe_port = "".join(c for c in (portfolio or "") if c.isalnum() or c in ("-", "_", ".")).strip() or "default"
+    safe_strat = (strategy or "").replace("/", ".").replace("\\", ".")
+    fname = f"{safe_port}__{safe_strat}.json"
+    path = _params_dir(scope) / fname
+    payload = {
+        "portfolio": portfolio,
+        "strategy": strategy,
+        "scope": scope,
+        "params": params or {},
+        "saved_at": datetime.utcnow().isoformat() + "Z",
+    }
+    _write_json_atomic(path, payload)
+    return str(path.resolve())
+
+def load_strategy_params(portfolio: str, strategy: str, scope: str = "ea") -> Optional[Dict[str, Any]]:
+    """
+    Load params from storage/params/<scope>/<portfolio>__<strategy>.json
+    Returns {'portfolio','strategy','scope','params','saved_at'} or None.
+    """
+    safe_port = "".join(c for c in (portfolio or "") if c.isalnum() or c in ("-", "_", ".")).strip() or "default"
+    safe_strat = (strategy or "").replace("/", ".").replace("\\", ".")
+    fname = f"{safe_port}__{safe_strat}.json"
+    path = _params_dir(scope) / fname
+    if not path.exists():
+        return None
+    try:
+        return _read_json(path)
+    except Exception:
+        return None
