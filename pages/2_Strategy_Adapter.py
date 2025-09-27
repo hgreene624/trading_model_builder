@@ -428,10 +428,81 @@ with left:
 with right:
     # ------------------------ BASE TRAINING ------------------------
     st.subheader("Train Base Model")
-    run_btn = st.button("🚀 Train (portfolio)", type="primary", help="Runs the portfolio-level base trainer with the config on the left.", width="stretch")
+    run_btn = st.button(
+        "🚀 Train (portfolio)",
+        type="primary",
+        help="Runs the portfolio-level base trainer with the config on the left.",
+        width="stretch",
+    )
 
     st.divider()
     st.subheader("Results")
+
+    # --- Persistent result placeholders (rehydrate from session if available) ---
+    st.caption("Recent EA evaluations (rolling window)")
+    eval_table_placeholder = st.empty()
+
+    st.markdown("**Best candidate so far**")
+    best_score_col, best_params_col = st.columns([1, 1.8], gap="large")
+    with best_score_col:
+        best_score_placeholder = st.empty()
+    with best_params_col:
+        best_params_placeholder = st.empty()
+
+    st.markdown("**Holdout equity (outside training window)**")
+    holdout_chart_placeholder = st.empty()
+    holdout_status_placeholder = st.empty()
+
+    st.caption("Generation summary")
+    gen_summary_placeholder = st.empty()
+
+    # --- Pull any previous run artifacts back into the UI ---
+    live_rows_state = st.session_state.get("adapter_live_rows") or []
+    if live_rows_state:
+        eval_table_placeholder.dataframe(pd.DataFrame(live_rows_state), width="stretch", height=380)
+    else:
+        eval_table_placeholder.info("No evaluations yet. Run the EA to populate this table.")
+
+    best_tracker_state = st.session_state.get("adapter_best_tracker") or {}
+    best_score_val = best_tracker_state.get("score")
+    best_delta_val = best_tracker_state.get("delta")
+    if isinstance(best_score_val, (int, float)) and best_score_val not in (float("-inf"), float("inf")):
+        best_score_placeholder.metric(
+            "Best score",
+            f"{best_score_val:.3f}",
+            delta=None if best_delta_val is None else f"{best_delta_val:+.3f}",
+        )
+    else:
+        best_score_placeholder.metric("Best score", "—")
+
+    best_params_state = best_tracker_state.get("params") or {}
+    if best_params_state:
+        df_params_state = pd.DataFrame(
+            {"param": list(best_params_state.keys()), "value": [best_params_state[k] for k in best_params_state.keys()]}
+        )
+        best_params_placeholder.dataframe(df_params_state.set_index("param"), width="stretch", height=220)
+    else:
+        best_params_placeholder.info("Waiting for evaluations…")
+
+    holdout_history_state = st.session_state.get("adapter_holdout_history") or []
+    _render_equity_history(holdout_history_state, holdout_chart_placeholder)
+
+    holdout_status_state = st.session_state.get("adapter_holdout_status") or ("info", "Holdout equity will appear when a best candidate is found.")
+    status_kind, status_msg = holdout_status_state
+    if status_kind == "success":
+        holdout_status_placeholder.success(status_msg)
+    elif status_kind == "warning":
+        holdout_status_placeholder.warning(status_msg)
+    elif status_kind == "error":
+        holdout_status_placeholder.error(status_msg)
+    else:
+        holdout_status_placeholder.info(status_msg)
+
+    gen_history_state = st.session_state.get("adapter_gen_history") or []
+    if gen_history_state:
+        gen_summary_placeholder.dataframe(pd.DataFrame(gen_history_state[-12:]), width="stretch", height=180)
+    else:
+        gen_summary_placeholder.info("No generations have completed yet.")
 
     if run_btn:
         if not tickers:
@@ -451,32 +522,25 @@ with right:
         prog = st.progress(0.0, text="Preparing EA search…")
         status = st.empty()
 
-        st.caption("Recent EA evaluations (rolling window)")
-        eval_table_placeholder = st.empty()
-
-        st.markdown("**Best candidate so far**")
-        best_score_col, best_params_col = st.columns([1, 1.8], gap="large")
-        with best_score_col:
-            best_score_placeholder = st.empty()
-            best_score_placeholder.metric("Best score", "—")
-        with best_params_col:
-            best_params_placeholder = st.empty()
-            best_params_placeholder.info("Waiting for evaluations…")
-
-        st.markdown("**Holdout equity (outside training window)**")
-        holdout_chart_placeholder = st.empty()
-        holdout_status_placeholder = st.empty()
-        holdout_status_placeholder.info("Holdout equity will appear when a best candidate is found.")
-
-        st.caption("Generation summary")
-        gen_summary_placeholder = st.empty()
-
         live_rows: list[dict[str, Any]] = []
         gen_history: list[dict[str, Any]] = []
         best_tracker: dict[str, Any] = {"score": float("-inf"), "params": {}}
         holdout_history: list[dict[str, Any]] = []
         generation_best: dict[int, dict[str, Any]] = {}
         holdout_tracker: dict[str, float] = {"best_score": float("-inf")}
+
+        st.session_state["adapter_live_rows"] = []
+        st.session_state["adapter_gen_history"] = []
+        st.session_state["adapter_best_tracker"] = {"score": float("-inf"), "params": {}, "delta": None}
+        st.session_state["adapter_holdout_history"] = []
+        st.session_state["adapter_holdout_status"] = ("info", "Holdout equity will appear when a best candidate is found.")
+
+        eval_table_placeholder.empty()
+        best_score_placeholder.metric("Best score", "—")
+        best_params_placeholder.info("Waiting for evaluations…")
+        _render_equity_history([], holdout_chart_placeholder)
+        holdout_status_placeholder.info("Holdout equity will appear when a best candidate is found.")
+        gen_summary_placeholder.info("Awaiting first generation…")
 
         # EA logging: timestamped JSONL under storage/logs/ea
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -544,6 +608,7 @@ with right:
                         live_rows[:] = live_rows[-60:]
                         if live_rows:
                             eval_table_placeholder.dataframe(pd.DataFrame(live_rows), width="stretch", height=380)
+                            st.session_state["adapter_live_rows"] = list(live_rows)
 
                         score = ctx.get("score")
                         if isinstance(score, (int, float)):
@@ -564,6 +629,7 @@ with right:
                                 delta = None
                                 if prev_best not in (None, float("-inf")):
                                     delta = float(score) - float(prev_best)
+                                best_tracker["delta"] = delta
                                 best_score_placeholder.metric(
                                     "Best score",
                                     f"{score:.3f}",
@@ -577,6 +643,7 @@ with right:
                                     best_params_placeholder.dataframe(df_params.set_index("param"), width="stretch", height=220)
                                 else:
                                     best_params_placeholder.info("Waiting for parameter details…")
+                                st.session_state["adapter_best_tracker"] = dict(best_tracker)
 
                     elif evt == "generation_end":
                         best = ctx.get("best_score")
@@ -593,6 +660,7 @@ with right:
                         if gen_history:
                             gen_df = pd.DataFrame(gen_history[-12:])
                             gen_summary_placeholder.dataframe(gen_df, width="stretch", height=180)
+                            st.session_state["adapter_gen_history"] = list(gen_history)
                         prog.progress(
                             None,
                             text=(
@@ -654,13 +722,26 @@ with right:
                                     holdout_status_placeholder.success(
                                         "Updated holdout equity with the latest best candidate."
                                     )
+                                    st.session_state["adapter_holdout_history"] = list(holdout_history)
+                                    st.session_state["adapter_holdout_status"] = (
+                                        "success",
+                                        "Updated holdout equity with the latest best candidate.",
+                                    )
                                 else:
                                     holdout_status_placeholder.warning(
                                         "Unable to compute holdout equity for this generation's best candidate."
                                     )
+                                    st.session_state["adapter_holdout_status"] = (
+                                        "warning",
+                                        "Unable to compute holdout equity for this generation's best candidate.",
+                                    )
                             elif isinstance(gen_score, (int, float)) and gen_params:
                                 holdout_status_placeholder.info(
                                     "Holdout equity unchanged; no better candidate this generation."
+                                )
+                                st.session_state["adapter_holdout_status"] = (
+                                    "info",
+                                    "Holdout equity unchanged; no better candidate this generation.",
                                 )
                     elif evt == "done":
                         elapsed = ctx.get("elapsed_sec")
@@ -725,9 +806,18 @@ with right:
                     holdout_status_placeholder.success(
                         "Initialized holdout equity with the EA's top candidate."
                     )
+                    st.session_state["adapter_holdout_history"] = list(holdout_history)
+                    st.session_state["adapter_holdout_status"] = (
+                        "success",
+                        "Initialized holdout equity with the EA's top candidate.",
+                    )
                 else:
                     holdout_status_placeholder.warning(
                         "EA best candidate did not yield a holdout equity curve."
+                    )
+                    st.session_state["adapter_holdout_status"] = (
+                        "warning",
+                        "EA best candidate did not yield a holdout equity curve.",
                     )
 
             rows = []
@@ -741,6 +831,11 @@ with right:
 
             st.session_state["ea_log_file"] = log_file
             st.success(f"EA complete. Best score={best_score:.3f}. A Walk-Forward button is now available below.")
+
+            st.session_state["adapter_live_rows"] = list(live_rows)
+            st.session_state["adapter_gen_history"] = list(gen_history)
+            st.session_state["adapter_best_tracker"] = dict(best_tracker)
+            st.session_state["adapter_holdout_history"] = list(holdout_history)
 
             # Offer EA log download (if file exists)
             try:
