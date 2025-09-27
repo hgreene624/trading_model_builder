@@ -143,6 +143,7 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
         placeholder.plotly_chart(
             fig,
             use_container_width=True,
+            key="holdout_equity_chart_empty",
         )
         return
 
@@ -187,6 +188,7 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
     placeholder.plotly_chart(
         fig,
         use_container_width=True,
+        key=f"holdout_equity_chart_{len(curves)}",
     )
 
 # --- Symbol normalization (defensive against headers/objects) ---
