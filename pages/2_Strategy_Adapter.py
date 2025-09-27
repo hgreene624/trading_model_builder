@@ -604,8 +604,19 @@ with right:
 
                         if isinstance(gen, int):
                             gen_entry = generation_best.get(gen, {})
+                            if not gen_entry:
+                                gen_entry = {"score": float("-inf"), "params": {}, "label": None}
+                                generation_best[gen] = gen_entry
                             gen_score = gen_entry.get("score")
                             gen_params = gen_entry.get("params")
+                            if (not gen_params) and ctx.get("top_params"):
+                                gen_params = dict(ctx.get("top_params") or {})
+                                gen_entry["params"] = gen_params
+                            if gen_entry.get("label") is None and isinstance(best, (int, float)):
+                                gen_entry["label"] = f"Gen {gen} best ({best:.3f})"
+                            if gen_score in (None, float("-inf")) and isinstance(best, (int, float)):
+                                gen_score = float(best)
+                                gen_entry["score"] = gen_score
                             if (
                                 isinstance(gen_score, (int, float))
                                 and gen_score > holdout_tracker["best_score"]
@@ -683,6 +694,41 @@ with right:
             st.session_state["ea_top_results"] = list(top)
 
             prog.progress(0.95, text="Rendering EA leaderboard…")
+
+            if not holdout_history and isinstance(best_score, (int, float)):
+                try:
+                    holdout_span = max(30, min(180, (end - start).days // 3 or 90))
+                    holdout_end = start
+                    holdout_start = holdout_end - timedelta(days=int(holdout_span))
+                    curve = pd.Series(dtype=float)
+                    if holdout_start < holdout_end:
+                        curve = _portfolio_equity_curve(
+                            strategy_dotted,
+                            tickers,
+                            holdout_start,
+                            holdout_end,
+                            float(equity),
+                            best_params,
+                        )
+                except Exception:
+                    curve = pd.Series(dtype=float)
+
+                if curve is not None and len(curve) > 0:
+                    holdout_history.append(
+                        {
+                            "series": curve,
+                            "label": f"Gen 0 best ({float(best_score):.3f})",
+                        }
+                    )
+                    holdout_tracker["best_score"] = float(best_score)
+                    _render_equity_history(holdout_history, holdout_chart_placeholder)
+                    holdout_status_placeholder.success(
+                        "Initialized holdout equity with the EA's top candidate."
+                    )
+                else:
+                    holdout_status_placeholder.warning(
+                        "EA best candidate did not yield a holdout equity curve."
+                    )
 
             rows = []
             for params, score in top[: min(50, len(top))]:
