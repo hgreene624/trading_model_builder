@@ -61,8 +61,31 @@ def _portfolio_equity_curve(
         eq = result.get("equity")
         if eq is None or len(eq) == 0:
             continue
+        if isinstance(eq, pd.DataFrame):
+            if "equity" in eq.columns:
+                eq = eq["equity"]
+            else:
+                eq = eq.iloc[:, 0]
+        elif not isinstance(eq, pd.Series):
+            try:
+                eq = pd.Series(eq)
+            except Exception:
+                continue
         eq = eq.dropna()
         if eq.empty:
+            continue
+        eq = eq[~eq.index.duplicated(keep="last")]
+        try:
+            if not isinstance(eq.index, pd.DatetimeIndex):
+                eq.index = pd.to_datetime(eq.index, errors="coerce")
+        except Exception:
+            continue
+        eq = eq[~eq.index.isna()].sort_index()
+        if eq.empty:
+            continue
+        try:
+            eq = eq.astype(float)
+        except Exception:
             continue
         first = eq.iloc[0]
         if pd.isna(first) or not float(first):
@@ -73,7 +96,8 @@ def _portfolio_equity_curve(
     if not curves:
         return pd.Series(dtype=float)
 
-    df = pd.DataFrame(curves).sort_index().dropna(how="all")
+    df = pd.DataFrame(curves).sort_index()
+    df = df.ffill().dropna(how="all")
     if df.empty:
         return pd.Series(dtype=float)
 
@@ -105,9 +129,13 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
                 x=series.index,
                 y=series.values,
                 mode="lines",
-                name=label,
+                name=label if is_latest else None,
                 line=dict(color=color, width=width),
                 opacity=opacity,
+                showlegend=is_latest,
+                hovertemplate=(
+                    f"{label}<br>%{{x|%Y-%m-%d}}<br>Equity: $%{{y:,.0f}}<extra></extra>"
+                ),
             )
         )
         added = True
@@ -120,7 +148,7 @@ def _render_equity_history(curves: List[Dict[str, Any]], placeholder):
         title="Holdout portfolio equity",
         height=360,
         margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0, title="Current best"),
         yaxis_title="Equity ($)",
     )
     placeholder.plotly_chart(fig, use_container_width=True)
@@ -417,10 +445,13 @@ with right:
         eval_table_placeholder = st.empty()
 
         st.markdown("**Best candidate so far**")
-        best_score_placeholder = st.empty()
-        best_score_placeholder.metric("Best score", "—")
-        best_params_placeholder = st.empty()
-        best_params_placeholder.info("Waiting for evaluations…")
+        best_score_col, best_params_col = st.columns([1, 1.8], gap="large")
+        with best_score_col:
+            best_score_placeholder = st.empty()
+            best_score_placeholder.metric("Best score", "—")
+        with best_params_col:
+            best_params_placeholder = st.empty()
+            best_params_placeholder.info("Waiting for evaluations…")
 
         st.markdown("**Holdout equity (outside training window)**")
         holdout_chart_placeholder = st.empty()
