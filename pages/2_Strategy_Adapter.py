@@ -465,6 +465,8 @@ with right:
         gen_history: list[dict[str, Any]] = []
         best_tracker: dict[str, Any] = {"score": float("-inf"), "params": {}}
         holdout_history: list[dict[str, Any]] = []
+        generation_best: dict[int, dict[str, Any]] = {}
+        holdout_best_score = float("-inf")
 
         # EA logging: timestamped JSONL under storage/logs/ea
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -502,6 +504,7 @@ with right:
             def _cb(evt, ctx):
                 # evt: e.g., "generation_start", "evaluation", "generation_end"
                 # ctx: dict with gen/pop etc. (best-effort)
+                nonlocal holdout_best_score
                 try:
                     ui_cb(evt, ctx)  # forward to rich UI sink
                 except Exception:
@@ -509,6 +512,8 @@ with right:
                 try:
                     if evt == "generation_start":
                         gen = ctx.get("gen", 0)
+                        if isinstance(gen, int):
+                            generation_best[gen] = {"score": float("-inf"), "params": {}, "label": None}
                         status.info(f"Generation {gen + 1} starting (population={ctx.get('pop_size', 'n/a')})")
                         prog.progress(
                             min(0.9, 0.1 + (gen / max(1, cfg['generations'])) * 0.8),
@@ -516,8 +521,9 @@ with right:
                         )
                     elif evt == "individual_evaluated":
                         metrics = ctx.get("metrics", {}) or {}
+                        gen = ctx.get("gen")
                         row = {
-                            "gen": ctx.get("gen"),
+                            "gen": gen,
                             "idx": ctx.get("idx"),
                             "score": ctx.get("score"),
                             "trades": int(metrics.get("trades", 0) or 0),
@@ -532,6 +538,16 @@ with right:
 
                         score = ctx.get("score")
                         if isinstance(score, (int, float)):
+                            if isinstance(gen, int):
+                                gen_entry = generation_best.setdefault(
+                                    gen,
+                                    {"score": float("-inf"), "params": {}, "label": None},
+                                )
+                                if gen_entry.get("score") in (None, float("-inf")) or score > float(gen_entry["score"]):
+                                    gen_entry["score"] = float(score)
+                                    gen_entry["params"] = dict(ctx.get("params") or {})
+                                    gen_entry["label"] = f"Gen {gen} best ({score:.3f})"
+
                             prev_best = best_tracker.get("score")
                             if prev_best is None or score > float(prev_best):
                                 best_tracker["score"] = float(score)
@@ -553,45 +569,12 @@ with right:
                                 else:
                                     best_params_placeholder.info("Waiting for parameter details…")
 
-                                try:
-                                    holdout_span = max(30, min(180, (end - start).days // 3 or 90))
-                                    holdout_end = start
-                                    holdout_start = holdout_end - timedelta(days=int(holdout_span))
-                                    if holdout_start < holdout_end:
-                                        curve = _portfolio_equity_curve(
-                                            strategy_dotted,
-                                            tickers,
-                                            holdout_start,
-                                            holdout_end,
-                                            float(equity),
-                                            params,
-                                        )
-                                    else:
-                                        curve = pd.Series(dtype=float)
-                                except Exception:
-                                    curve = pd.Series(dtype=float)
-
-                                if curve is not None and len(curve) > 0:
-                                    holdout_history.append(
-                                        {
-                                            "series": curve,
-                                            "label": f"Gen {ctx.get('gen', '?')} best ({score:.3f})",
-                                        }
-                                    )
-                                    holdout_history[:] = holdout_history[-8:]
-                                    _render_equity_history(holdout_history, holdout_chart_placeholder)
-                                    holdout_status_placeholder.success(
-                                        "Updated holdout equity with the latest best candidate."
-                                    )
-                                else:
-                                    holdout_status_placeholder.warning(
-                                        "Unable to compute holdout equity for this candidate."
-                                    )
                     elif evt == "generation_end":
                         best = ctx.get("best_score")
+                        gen = ctx.get("gen")
                         gen_history.append(
                             {
-                                "generation": ctx.get("gen"),
+                                "generation": gen,
                                 "best_score": best,
                                 "avg_score": ctx.get("avg_score"),
                                 "avg_trades": ctx.get("avg_trades"),
@@ -609,6 +592,56 @@ with right:
                                 else "EA evolving…"
                             ),
                         )
+
+                        if isinstance(gen, int):
+                            gen_entry = generation_best.get(gen, {})
+                            gen_score = gen_entry.get("score")
+                            gen_params = gen_entry.get("params")
+                            if (
+                                isinstance(gen_score, (int, float))
+                                and gen_score > holdout_best_score
+                                and gen_params
+                            ):
+                                try:
+                                    holdout_span = max(30, min(180, (end - start).days // 3 or 90))
+                                    holdout_end = start
+                                    holdout_start = holdout_end - timedelta(days=int(holdout_span))
+                                    if holdout_start < holdout_end:
+                                        curve = _portfolio_equity_curve(
+                                            strategy_dotted,
+                                            tickers,
+                                            holdout_start,
+                                            holdout_end,
+                                            float(equity),
+                                            gen_params,
+                                        )
+                                    else:
+                                        curve = pd.Series(dtype=float)
+                                except Exception:
+                                    curve = pd.Series(dtype=float)
+
+                                if curve is not None and len(curve) > 0:
+                                    holdout_history.append(
+                                        {
+                                            "series": curve,
+                                            "label": gen_entry.get("label")
+                                            or f"Gen {gen} best ({gen_score:.3f})",
+                                        }
+                                    )
+                                    holdout_history[:] = holdout_history[-8:]
+                                    holdout_best_score = float(gen_score)
+                                    _render_equity_history(holdout_history, holdout_chart_placeholder)
+                                    holdout_status_placeholder.success(
+                                        "Updated holdout equity with the latest best candidate."
+                                    )
+                                else:
+                                    holdout_status_placeholder.warning(
+                                        "Unable to compute holdout equity for this generation's best candidate."
+                                    )
+                            elif isinstance(gen_score, (int, float)) and gen_params:
+                                holdout_status_placeholder.info(
+                                    "Holdout equity unchanged; no better candidate this generation."
+                                )
                     elif evt == "done":
                         elapsed = ctx.get("elapsed_sec")
                         if isinstance(elapsed, (int, float)):
