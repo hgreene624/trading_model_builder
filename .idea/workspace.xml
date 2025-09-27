@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="refactored strategy adapter to remove walkforward into seperate page. added save load feature for ea params">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working save es parmas button">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
     </list>
@@ -108,15 +108,7 @@
       <workItem from="1758033823981" duration="22111000" />
       <workItem from="1758056469773" duration="13190000" />
       <workItem from="1758828289886" duration="3111000" />
-      <workItem from="1758996558016" duration="1298000" />
-    </task>
-    <task id="LOCAL-00001" summary="Working V1 framework. No evolution algo">
-      <option name="closed" value="true" />
-      <created>1757524469804</created>
-      <option name="number" value="00001" />
-      <option name="presentableId" value="LOCAL-00001" />
-      <option name="project" value="LOCAL" />
-      <updated>1757524469804</updated>
+      <workItem from="1758996558016" duration="2016000" />
     </task>
     <task id="LOCAL-00002" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -502,7 +494,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758996691333</updated>
     </task>
-    <option name="localTasksCounter" value="50" />
+    <task id="LOCAL-00050" summary="working save es parmas button">
+      <option name="closed" value="true" />
+      <created>1758998079850</created>
+      <option name="number" value="00050" />
+      <option name="presentableId" value="LOCAL-00050" />
+      <option name="project" value="LOCAL" />
+      <updated>1758998079850</updated>
+    </task>
+    <option name="localTasksCounter" value="51" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -520,7 +520,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="added day trading guards with holding limits" />
     <MESSAGE value="working Strategy Adapter page. with help tips" />
     <MESSAGE value="multi core training and expsed trade rate preferance vars" />
     <MESSAGE value="data pipeline validated, with test. requirements updated. starting test for strategy adapter" />
@@ -545,6 +544,7 @@
     <MESSAGE value="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades" />
     <MESSAGE value="gen 0 showing up. still converging on no trades" />
     <MESSAGE value="refactored strategy adapter to remove walkforward into seperate page. added save load feature for ea params" />
-    <option name="LAST_COMMIT_MESSAGE" value="refactored strategy adapter to remove walkforward into seperate page. added save load feature for ea params" />
+    <MESSAGE value="working save es parmas button" />
+    <option name="LAST_COMMIT_MESSAGE" value="working save es parmas button" />
   </component>
 </project>
