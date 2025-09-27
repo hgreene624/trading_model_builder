@@ -10,15 +10,9 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 
-try:
-    from holdout_chart import init_chart, on_generation_end, set_config  # project root helper
-except Exception:
-    try:
-        from src.utils.holdout_chart import init_chart, on_generation_end, set_config  # package path fallback
-    except Exception as _e:
-        raise ImportError(
-            "Could not import holdout_chart. Place holdout_chart.py at project root or under src/utils/."
-        ) from _e
+
+from src.utils.holdout_chart import init_chart, on_generation_end, set_config  # package path fallback
+
 import plotly.graph_objects as go
 
 from src.storage import list_portfolios, load_portfolio
@@ -549,6 +543,7 @@ if run_btn:
         symbols=tickers,
         max_curves=8,
     )
+    st.session_state["_hc_last_score"] = None
 
     # ---- Build EA param space from UI bounds ----
     cfg = ea_cfg
@@ -641,27 +636,32 @@ if run_btn:
             })
             gen_summary_placeholder.dataframe(pd.DataFrame(gen_history[-12:]), width="stretch", height=180)
             st.session_state["adapter_gen_history"] = list(gen_history)
-            # Push holdout update if this gen improved over last plotted
-            best_score_gen = gen_best.get("score", float("-inf"))
-            best_params_gen = gen_best.get("params") or {}
+            # Determine gen-best from ctx first, then fallback to accumulator
+            best_score_gen = ctx.get("best_score")
+            if not isinstance(best_score_gen, (int, float)):
+                best_score_gen = gen_best.get("score", float("-inf"))
+            best_params_gen = ctx.get("best_params") or gen_best.get("params") or dict(ctx.get("params") or {})
             last_plotted = st.session_state.get("_hc_last_score")
-            if isinstance(best_score_gen, (int, float)) and (last_plotted is None or best_score_gen > last_plotted):
+
+            # Always push Gen 0; otherwise only if score improves
+            should_push = (last_plotted is None) or (isinstance(best_score_gen, (int, float)) and best_score_gen > last_plotted)
+            if should_push and isinstance(best_score_gen, (int, float)) and best_params_gen:
                 try:
                     on_generation_end(int(ctx.get("gen", 0)), float(best_score_gen), dict(best_params_gen))
                     st.session_state["_hc_last_score"] = float(best_score_gen)
                 except Exception:
                     pass
-                gen_idx = int(ctx.get("gen", 0))
-                total_gens = int(cfg.get("generations", 1)) or 1
-                p = min(0.95, 0.1 + ((gen_idx + 1) / total_gens) * 0.8)
-                prog.progress(
-                    p,
-                    text=(
-                        f"EA gen {gen_idx} done; best={ctx.get('best_score'):.3f}"
-                        if isinstance(ctx.get('best_score'), (int, float)) else
-                        "EA evolving…"
-                    ),
-                )
+
+            # Progress update
+            gen_idx = int(ctx.get("gen", 0))
+            total_gens = int(cfg.get("generations", 1)) or 1
+            p = min(0.95, 0.1 + ((gen_idx + 1) / total_gens) * 0.8)
+            label = (
+                f"EA gen {gen_idx} done; best={best_score_gen:.3f}"
+                if isinstance(best_score_gen, (int, float)) else
+                "EA evolving…"
+            )
+            prog.progress(p, text=label)
 
         elif evt == "done":
             elapsed = ctx.get("elapsed_sec")

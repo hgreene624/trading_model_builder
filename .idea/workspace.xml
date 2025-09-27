@@ -4,11 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="defualt ea params second update">
-      <change afterPath="$PROJECT_DIR$/info.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/wf_result_inspect.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/utils/holdout_chart.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades">
       <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -480,7 +476,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758919321599</updated>
     </task>
-    <option name="localTasksCounter" value="47" />
+    <task id="LOCAL-00047" summary="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades">
+      <option name="closed" value="true" />
+      <created>1758989060487</created>
+      <option name="number" value="00047" />
+      <option name="presentableId" value="LOCAL-00047" />
+      <option name="project" value="LOCAL" />
+      <updated>1758989060487</updated>
+    </task>
+    <option name="localTasksCounter" value="48" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -498,7 +502,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Started logging system for base model, UI Woring, json export working." />
     <MESSAGE value="working 80/20 model param refactor. No base model training happening yet" />
     <MESSAGE value="working 80/20 model param refactor. evolution started and testing with trades" />
     <MESSAGE value="added day trading guards with holding limits" />
@@ -523,6 +526,7 @@
     <MESSAGE value="changed defulat model values and slider ranges" />
     <MESSAGE value="working ea_log_inspect.py" />
     <MESSAGE value="defualt ea params second update" />
-    <option name="LAST_COMMIT_MESSAGE" value="defualt ea params second update" />
+    <MESSAGE value="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades" />
+    <option name="LAST_COMMIT_MESSAGE" value="graph working but no gen 0 to start. trade performance also not good relative to score. converges towards no trades" />
   </component>
 </project>
