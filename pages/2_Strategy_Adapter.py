@@ -87,10 +87,20 @@ def _portfolio_equity_curve(
             eq = eq.astype(float)
         except Exception:
             continue
-        first = eq.iloc[0]
-        if pd.isna(first) or not float(first):
+        first_valid = None
+        for val in eq.values:
+            if pd.isna(val):
+                continue
+            try:
+                fv = float(val)
+            except (TypeError, ValueError):
+                continue
+            if abs(fv) > 1e-9:
+                first_valid = fv
+                break
+        if first_valid is None:
             continue
-        norm = (eq / float(first)).astype(float)
+        norm = (eq / first_valid).astype(float)
         curves[sym] = norm
 
     if not curves:
