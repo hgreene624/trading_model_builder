@@ -129,6 +129,7 @@ def _clamped_fitness(
     num_symbols: int,
     years: float,
     calmar_cap: float,
+    use_normalized_scoring: bool = True,
 ) -> float:
     """
     Robust fitness:
@@ -169,12 +170,37 @@ def _clamped_fitness(
     if calmar_cap > 0:
         calmar = max(-calmar_cap, min(calmar, calmar_cap))
 
-    base = (
-        (alpha_cagr * cagr)
-        + (beta_calmar * calmar)
-        + (gamma_sharpe * sharpe)
-        + (delta_total_return * total_return)
-    )
+    # ---- Scoring (legacy vs normalized) ---------------------------------
+    if not use_normalized_scoring:
+        # Legacy behavior: raw weighted sum with Calmar clamped
+        base = (
+            (alpha_cagr * cagr)
+            + (beta_calmar * calmar)
+            + (gamma_sharpe * sharpe)
+            + (delta_total_return * total_return)
+        )
+    else:
+        # Normalized scoring: map metrics to comparable 0..1 ranges to avoid any
+        # single term (e.g., Calmar/Sharpe) overwhelming absolute growth metrics.
+        def _clip01(x: float) -> float:
+            return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+        # Conservative caps; adjust later if you know your universe differs.
+        # total_return: 0..50% → 0..1
+        tr_n = _clip01((total_return - 0.0) / 0.50)
+        # CAGR: 0..30% → 0..1
+        cagr_n = _clip01((cagr - 0.0) / 0.30)
+        # Sharpe: 0..3 → 0..1 (negatives clipped to 0)
+        sh_n = _clip01((sharpe - 0.0) / 3.0)
+        # Calmar: 0..calmar_cap → 0..1 (already clamped to ±cap above; use positive band)
+        cm_n = _clip01(max(0.0, calmar) / max(1e-9, calmar_cap))
+
+        base = (
+            (alpha_cagr * cagr_n)
+            + (beta_calmar * cm_n)
+            + (gamma_sharpe * sh_n)
+            + (delta_total_return * tr_n)
+        )
 
     hold_pen = holding_penalty_weight * _holding_penalty(avg_hold, min_holding_days, max_holding_days)
 
@@ -252,6 +278,7 @@ def evolutionary_search(
     trade_rate_max: float = 50.0,
     trade_rate_penalty_weight: float = 0.5,
     calmar_cap: float = 3.0,
+    use_normalized_scoring: bool = True,
     # Progress & logging
     progress_cb: Optional[ProgressCb] = None,
     log_file: str = "training.log",
@@ -278,6 +305,7 @@ def evolutionary_search(
     population = [random_param(param_space) for _ in range(pop_size)]
     scored: List[Tuple[Dict[str, Any], float]] = []
     t0 = time.time()
+    best_run_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
 
     # years used for trade-rate normalization
     def _years(a, b) -> float:
@@ -296,9 +324,10 @@ def evolutionary_search(
         progress_cb("generation_start", {"gen": gen, "pop_size": len(population)})
         logger.log("generation_start", {"gen": gen, "pop_size": len(population)})
 
-        gen_scores: List[Tuple[Dict[str, Any], float]] = []
+        gen_scores: List[Tuple[Dict[str, Any], float, float]] = []
         gen_trades: List[int] = []
         no_trade_count = 0
+        best_gen_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
 
         # ---- Evaluate population (parallel or single) ----
         results: List[Dict[str, Any]] = []
@@ -367,10 +396,20 @@ def evolutionary_search(
                 num_symbols=num_symbols,
                 years=years,
                 calmar_cap=calmar_cap,
+                use_normalized_scoring=use_normalized_scoring,
             )
 
             trades = int(metrics.get("trades", 0) or 0)
             gen_trades.append(trades)
+
+            ret = float(metrics.get("total_return", 0.0) or 0.0)
+
+            # Track best-by-return for this generation
+            if (best_gen_return_rec is None) or (ret > best_gen_return_rec[1]):
+                best_gen_return_rec = (params, ret, score)
+            # Track best-by-return across the whole run
+            if (best_run_return_rec is None) or (ret > best_run_return_rec[1]):
+                best_run_return_rec = (params, ret, score)
 
             payload = {
                 "gen": gen,
@@ -390,11 +429,12 @@ def evolutionary_search(
                     logger.log("degenerate_fitness", payload)
                 no_trade_count += (1 if trades == 0 else 0)
 
-            gen_scores.append((params, score))
+            gen_scores.append((params, score, ret))
 
         # ---- Selection & breeding ----
-        gen_scores.sort(key=lambda x: x[1], reverse=True)
-        scored.extend(gen_scores)
+        # Sort primarily by score, then tie-break by total_return
+        gen_scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        scored.extend([(p, s) for (p, s, _ret) in gen_scores])
 
         elite_n = max(1, int(pop_size * elite_frac))
         inject_n = max(0, int(pop_size * random_inject_frac))
@@ -404,7 +444,7 @@ def evolutionary_search(
             breed_n = pop_size - elite_n - inject_n
 
         survivors: List[Dict[str, Any]] = []
-        for p, s in gen_scores:
+        for p, s, _r in gen_scores:
             if s > 0:
                 survivors.append(p)
             if len(survivors) == elite_n:
@@ -433,7 +473,7 @@ def evolutionary_search(
         if len(population) > pop_size:
             population = population[:pop_size]
 
-        avg_score = (sum(s for _, s in gen_scores) / len(gen_scores)) if gen_scores else 0.0
+        avg_score = (sum(s for _, s, _ in gen_scores) / len(gen_scores)) if gen_scores else 0.0
         best_score = gen_scores[0][1] if gen_scores else 0.0
         avg_trades = (sum(gen_trades) / len(gen_trades)) if gen_trades else 0.0
         pct_no_trades = (no_trade_count / len(gen_trades)) if gen_trades else 0.0
@@ -445,6 +485,9 @@ def evolutionary_search(
             "avg_trades": avg_trades,
             "pct_no_trades": pct_no_trades,
             "top_params": gen_scores[0][0] if gen_scores else {},
+            "top_by_return_params": (best_gen_return_rec[0] if best_gen_return_rec else {}),
+            "best_return": (best_gen_return_rec[1] if best_gen_return_rec else 0.0),
+            "best_return_score": (best_gen_return_rec[2] if best_gen_return_rec else 0.0),
             "elite_n": elite_n,
             "breed_n": breed_n,
             "inject_n": inject_n,
@@ -454,6 +497,7 @@ def evolutionary_search(
                 "gamma_sharpe": gamma_sharpe,
                 "delta_total_return": delta_total_return,
                 "calmar_cap": calmar_cap,
+                "use_normalized_scoring": use_normalized_scoring,
             },
         }
         progress_cb("generation_end", end_payload)
@@ -466,12 +510,16 @@ def evolutionary_search(
         "elapsed_sec": elapsed_total,
         "best": best[0],
         "score": best[1],
+        "best_by_return": (best_run_return_rec[0] if best_run_return_rec else {}),
+        "best_by_return_value": (best_run_return_rec[1] if best_run_return_rec else 0.0),
+        "best_by_return_score": (best_run_return_rec[2] if best_run_return_rec else 0.0),
         "fitness_weights": {
             "alpha_cagr": alpha_cagr,
             "beta_calmar": beta_calmar,
             "gamma_sharpe": gamma_sharpe,
             "delta_total_return": delta_total_return,
             "calmar_cap": calmar_cap,
+            "use_normalized_scoring": use_normalized_scoring,
         },
     }
     progress_cb("done", done_payload)

@@ -4,9 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working save es parmas button">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="md params file created">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -23,7 +23,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="local-storage-RAM-cache" />
+        <entry key="$PROJECT_DIR$" value="codex/update-layout-of-ea-evaluations-and-graphs" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -58,7 +58,7 @@
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "codex/update-layout-of-ea-evaluations-and-graphs",
+    "git-widget-placeholder": "#9 on codex/update-layout-of-ea-evaluat…raphs",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -109,14 +109,7 @@
       <workItem from="1758056469773" duration="13190000" />
       <workItem from="1758828289886" duration="3111000" />
       <workItem from="1758996558016" duration="2016000" />
-    </task>
-    <task id="LOCAL-00002" summary="Working V1 framework. No evolution algo">
-      <option name="closed" value="true" />
-      <created>1757524485314</created>
-      <option name="number" value="00002" />
-      <option name="presentableId" value="LOCAL-00002" />
-      <option name="project" value="LOCAL" />
-      <updated>1757524485314</updated>
+      <workItem from="1758999746262" duration="1487000" />
     </task>
     <task id="LOCAL-00003" summary="Working V1 framework. No evolution algo">
       <option name="closed" value="true" />
@@ -502,7 +495,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758998079850</updated>
     </task>
-    <option name="localTasksCounter" value="51" />
+    <task id="LOCAL-00051" summary="md params file created">
+      <option name="closed" value="true" />
+      <created>1759000464009</created>
+      <option name="number" value="00051" />
+      <option name="presentableId" value="LOCAL-00051" />
+      <option name="project" value="LOCAL" />
+      <updated>1759000464010</updated>
+    </task>
+    <option name="localTasksCounter" value="52" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -520,7 +521,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="working Strategy Adapter page. with help tips" />
     <MESSAGE value="multi core training and expsed trade rate preferance vars" />
     <MESSAGE value="data pipeline validated, with test. requirements updated. starting test for strategy adapter" />
     <MESSAGE value="sucessfull strategy adapter test" />
@@ -545,6 +545,7 @@
     <MESSAGE value="gen 0 showing up. still converging on no trades" />
     <MESSAGE value="refactored strategy adapter to remove walkforward into seperate page. added save load feature for ea params" />
     <MESSAGE value="working save es parmas button" />
-    <option name="LAST_COMMIT_MESSAGE" value="working save es parmas button" />
+    <MESSAGE value="md params file created" />
+    <option name="LAST_COMMIT_MESSAGE" value="md params file created" />
   </component>
 </project>
