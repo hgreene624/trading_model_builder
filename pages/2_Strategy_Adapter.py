@@ -322,6 +322,23 @@ with right:
         prog = st.progress(0.0, text="Preparing EA search…")
         status = st.empty()
 
+        live_eval_col, live_best_col = st.columns(2)
+        with live_eval_col:
+            st.caption("Recent EA evaluations (rolling window)")
+            eval_table_placeholder = st.empty()
+        with live_best_col:
+            st.caption("Best candidate so far")
+            best_score_placeholder = st.empty()
+            best_score_placeholder.info("Waiting for evaluations…")
+            best_params_placeholder = st.empty()
+
+        st.caption("Generation summary")
+        gen_summary_placeholder = st.empty()
+
+        live_rows: list[dict[str, Any]] = []
+        gen_history: list[dict[str, Any]] = []
+        best_tracker: dict[str, Any] = {"score": float("-inf"), "params": {}}
+
         # EA logging: timestamped JSONL under storage/logs/ea
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = os.path.join("storage", "logs", "ea")
@@ -365,11 +382,73 @@ with right:
                 try:
                     if evt == "generation_start":
                         gen = ctx.get("gen", 0)
-                        prog.progress(min(0.9, 0.1 + (gen / max(1, cfg['generations'])) * 0.8),
-                                      text=f"EA generation {gen+1}/{cfg['generations']}…")
+                        status.info(f"Generation {gen + 1} starting (population={ctx.get('pop_size', 'n/a')})")
+                        prog.progress(
+                            min(0.9, 0.1 + (gen / max(1, cfg['generations'])) * 0.8),
+                            text=f"EA generation {gen+1}/{cfg['generations']}…",
+                        )
+                    elif evt == "individual_evaluated":
+                        metrics = ctx.get("metrics", {}) or {}
+                        row = {
+                            "gen": ctx.get("gen"),
+                            "idx": ctx.get("idx"),
+                            "score": ctx.get("score"),
+                            "trades": int(metrics.get("trades", 0) or 0),
+                            "cagr": metrics.get("cagr"),
+                            "calmar": metrics.get("calmar"),
+                            "sharpe": metrics.get("sharpe"),
+                        }
+                        live_rows.append(row)
+                        live_rows[:] = live_rows[-60:]
+                        if live_rows:
+                            eval_table_placeholder.dataframe(pd.DataFrame(live_rows), width="stretch", height=260)
+
+                        score = ctx.get("score")
+                        if isinstance(score, (int, float)):
+                            prev_best = best_tracker.get("score")
+                            if prev_best is None or score > float(prev_best):
+                                best_tracker["score"] = float(score)
+                                best_tracker["params"] = dict(ctx.get("params") or {})
+                                delta = None
+                                if prev_best not in (None, float("-inf")):
+                                    delta = float(score) - float(prev_best)
+                                best_score_placeholder.metric(
+                                    "Best score",
+                                    f"{score:.3f}",
+                                    delta=None if delta is None else f"{delta:+.3f}",
+                                )
+                                params = best_tracker.get("params") or {}
+                                if params:
+                                    df_params = pd.DataFrame(
+                                        {"param": list(params.keys()), "value": [params[k] for k in params.keys()]}
+                                    )
+                                    best_params_placeholder.dataframe(df_params.set_index("param"), width="stretch", height=220)
                     elif evt == "generation_end":
                         best = ctx.get("best_score")
-                        prog.progress(None, text=f"EA gen {ctx.get('gen')} done; best={best:.3f}" if best is not None else "EA evolving…")
+                        gen_history.append(
+                            {
+                                "generation": ctx.get("gen"),
+                                "best_score": best,
+                                "avg_score": ctx.get("avg_score"),
+                                "avg_trades": ctx.get("avg_trades"),
+                                "no_trades_pct": ctx.get("pct_no_trades"),
+                            }
+                        )
+                        if gen_history:
+                            gen_df = pd.DataFrame(gen_history[-12:])
+                            gen_summary_placeholder.dataframe(gen_df, width="stretch", height=180)
+                        prog.progress(
+                            None,
+                            text=(
+                                f"EA gen {ctx.get('gen')} done; best={best:.3f}"
+                                if isinstance(best, (int, float))
+                                else "EA evolving…"
+                            ),
+                        )
+                    elif evt == "done":
+                        elapsed = ctx.get("elapsed_sec")
+                        if isinstance(elapsed, (int, float)):
+                            status.success(f"EA completed in {elapsed:.1f}s")
                 except Exception:
                     pass
 
@@ -564,6 +643,42 @@ with right:
                 )
             else:
                 st.info("No split details were returned.")
+
+            equity_records: list[tuple[pd.Timestamp, float]] = []
+            running_equity = float(equity)
+            for split in splits:
+                curve = split.get("oos_equity_curve") or []
+                if not curve:
+                    continue
+                try:
+                    base = float(curve[0][1])
+                except (TypeError, IndexError, ValueError):
+                    base = 1.0
+                if not base:
+                    base = 1.0
+                for ts, val in curve:
+                    if val is None:
+                        continue
+                    try:
+                        ts_dt = pd.to_datetime(ts)
+                    except Exception:
+                        continue
+                    actual = running_equity * (float(val) / base if base else 0.0)
+                    equity_records.append((ts_dt, actual))
+                try:
+                    last_val = float(curve[-1][1])
+                    running_equity = running_equity * (last_val / base if base else 1.0)
+                except (TypeError, IndexError, ValueError):
+                    pass
+
+            if equity_records:
+                eq_df = pd.DataFrame(equity_records, columns=["date", "equity"])
+                eq_df = eq_df.groupby("date", as_index=False).agg({"equity": "last"}).sort_values("date")
+                eq_df.set_index("date", inplace=True)
+                st.markdown("**Out-of-sample equity (stitched across splits)**")
+                st.bar_chart(eq_df)
+            else:
+                st.info("No out-of-sample equity curve was produced for the configured splits.")
 
             # Optional artifacts (older UI expected this; walkforward.py may not emit it)
             artifacts = out.get("artifacts", {}) or {}

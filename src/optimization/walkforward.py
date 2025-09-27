@@ -36,6 +36,7 @@ class SplitResult:
     in_sample: Dict[str, Any]            # aggregate IS metrics (equal-weight across tickers)
     out_sample: Dict[str, Any]           # aggregate OOS metrics (equal-weight across tickers)
     per_symbol: List[Dict[str, Any]]     # [{symbol, is_metrics, oos_metrics, is_trades, oos_trades}]
+    oos_equity_curve: List[Tuple[str, float]]  # Normalised equity curve (date -> equity index)
 
 
 def _import_callable(dotted: str):
@@ -238,6 +239,17 @@ def walk_forward(
         is_metrics_agg = compute_core_metrics(is_eq_agg, is_daily_agg, trades=[])
         oos_metrics_agg = compute_core_metrics(oos_eq_agg, oos_daily_agg, trades=[])
 
+        oos_curve_payload: List[Tuple[str, float]] = []
+        if isinstance(oos_eq_agg, pd.Series) and len(oos_eq_agg) > 0:
+            for ts, val in oos_eq_agg.items():
+                if pd.isna(val):
+                    continue
+                try:
+                    ts_str = ts.isoformat()
+                except AttributeError:
+                    ts_str = str(ts)
+                oos_curve_payload.append((ts_str, float(val)))
+
         split = SplitResult(
             idx=len(split_results),
             train_start=train_start, train_end=train_end,
@@ -247,6 +259,7 @@ def walk_forward(
             in_sample=is_metrics_agg,
             out_sample=oos_metrics_agg,
             per_symbol=per_symbol_rows,
+            oos_equity_curve=oos_curve_payload,
         )
         split_results.append(split)
 
@@ -260,6 +273,7 @@ def walk_forward(
             "oos_metrics": oos_metrics_agg,
             "is_metrics": is_metrics_agg,
             "per_symbol": per_symbol_rows,
+            "oos_equity_curve": oos_curve_payload,
         })
 
         # Slide the window forward
