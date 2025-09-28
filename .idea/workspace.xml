@@ -4,8 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes.">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="pre big change to evolutionary.py">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -108,15 +109,7 @@
       <workItem from="1758056469773" duration="13190000" />
       <workItem from="1758828289886" duration="3111000" />
       <workItem from="1758996558016" duration="2016000" />
-      <workItem from="1758999746262" duration="8511000" />
-    </task>
-    <task id="LOCAL-00006" summary="V1 evolutionary tuning">
-      <option name="closed" value="true" />
-      <created>1757528975498</created>
-      <option name="number" value="00006" />
-      <option name="presentableId" value="LOCAL-00006" />
-      <option name="project" value="LOCAL" />
-      <updated>1757528975499</updated>
+      <workItem from="1758999746262" duration="10747000" />
     </task>
     <task id="LOCAL-00007" summary="working param and model profiles">
       <option name="closed" value="true" />
@@ -502,7 +495,15 @@
       <option name="project" value="LOCAL" />
       <updated>1759069870624</updated>
     </task>
-    <option name="localTasksCounter" value="55" />
+    <task id="LOCAL-00055" summary="pre big change to evolutionary.py">
+      <option name="closed" value="true" />
+      <created>1759071199297</created>
+      <option name="number" value="00055" />
+      <option name="presentableId" value="LOCAL-00055" />
+      <option name="project" value="LOCAL" />
+      <updated>1759071199297</updated>
+    </task>
+    <option name="localTasksCounter" value="56" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -520,7 +521,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="sucessfull strategy adapter test V2" />
     <MESSAGE value="successfull walkforward test" />
     <MESSAGE value="walkforward with artifact detection, test sucess" />
     <MESSAGE value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
@@ -545,6 +545,7 @@
     <MESSAGE value="updated fitness calculation in evolutionary.py with normalized values to address noncorrelation of socres and ROE. improved but still replacing better models with worse performers with higher score" />
     <MESSAGE value="converted evolutionary.py to use json config and patched loader.py cache issue" />
     <MESSAGE value="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes." />
-    <option name="LAST_COMMIT_MESSAGE" value="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes." />
+    <MESSAGE value="pre big change to evolutionary.py" />
+    <option name="LAST_COMMIT_MESSAGE" value="pre big change to evolutionary.py" />
   </component>
 </project>
