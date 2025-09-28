@@ -154,14 +154,43 @@ def _read_cache(path: Path) -> pd.DataFrame | None:
 
 
 def _write_cache(path: Path, df: pd.DataFrame) -> None:
+    """
+    Atomic, multiprocess-safe cache write:
+      - ensure parent dir exists
+      - write to a unique tmp file in the same directory
+      - os.replace to final path
+      - if another process wins the race, accept the existing final
+    """
+    import os, time, uuid
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".parquet.tmp")
-        df.to_parquet(tmp, index=True)
-        tmp.replace(path)
     except Exception as e:
-        print(f"[loader] cache write error {path}: {e!r}")
+        print(f"[loader] mkdir failed {path.parent}: {e!r}")
+        return
 
+    tmp = path.parent / (path.name + f".{os.getpid()}.{int(time.time()*1e6)}.{uuid.uuid4().hex}.tmp")
+    try:
+        df.to_parquet(tmp, index=True)
+        try:
+            os.replace(tmp, path)  # atomic on same filesystem
+        except FileNotFoundError:
+            # Lost a race on tmp (or already replaced). If final exists, accept it.
+            if path.exists():
+                try:
+                    tmp.unlink(missing_ok=True)  # py>=3.8
+                except Exception:
+                    pass
+                return
+            raise
+    except Exception as e:
+        # Best-effort cleanup
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        print(f"[loader] cache write error {path}: {e!r}")
 
 # ----------------
 # Public function

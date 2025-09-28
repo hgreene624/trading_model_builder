@@ -29,11 +29,55 @@ from src.models.general_trainer import train_general_model
 from src.utils.training_logger import TrainingLogger
 from src.utils.progress import ProgressCallback, console_progress
 
+import json
+import os
+
 import sys
 from pathlib import Path
 ROOT = str(Path(__file__).resolve().parents[2])  # project root
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# ---- Fitness config (JSON) ----------------------------------------------
+
+def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load fitness weight configuration from JSON. Returns {} if file missing or malformed.
+    Default location: storage/config/ea_fitness.json
+    Recognized keys:
+      - alpha_cagr, beta_calmar, gamma_sharpe, delta_total_return (floats)
+      - calmar_cap (float)
+      - use_normalized_scoring (bool)
+    """
+    try:
+        p = Path(path or "storage/config/ea_fitness.json")
+        if not p.exists():
+            return {}
+        data = json.loads(p.read_text())
+        if not isinstance(data, dict):
+            return {}
+        out: Dict[str, Any] = {}
+        # Copy only known keys with safe coercion
+        def _getf(k: str):
+            try:
+                return float(data[k])
+            except Exception:
+                return None
+        if "alpha_cagr" in data: out["alpha_cagr"] = _getf("alpha_cagr")
+        if "beta_calmar" in data: out["beta_calmar"] = _getf("beta_calmar")
+        if "gamma_sharpe" in data: out["gamma_sharpe"] = _getf("gamma_sharpe")
+        if "delta_total_return" in data: out["delta_total_return"] = _getf("delta_total_return")
+        if "calmar_cap" in data: out["calmar_cap"] = _getf("calmar_cap")
+        if "use_normalized_scoring" in data:
+            v = data["use_normalized_scoring"]
+            out["use_normalized_scoring"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
+        # Drop any None-coerced floats
+        for k in ["alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap"]:
+            if k in out and out[k] is None:
+                out.pop(k, None)
+        return out
+    except Exception:
+        return {}
 
 import multiprocessing as mp
 try:
@@ -306,6 +350,28 @@ def evolutionary_search(
     scored: List[Tuple[Dict[str, Any], float]] = []
     t0 = time.time()
     best_run_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
+
+    # Load fitness weights from JSON config (single source of truth)
+    _cfg = _load_fitness_config_json(None)
+    if _cfg:
+        alpha_cagr = _cfg.get("alpha_cagr", alpha_cagr)
+        beta_calmar = _cfg.get("beta_calmar", beta_calmar)
+        gamma_sharpe = _cfg.get("gamma_sharpe", gamma_sharpe)
+        delta_total_return = _cfg.get("delta_total_return", delta_total_return)
+        calmar_cap = _cfg.get("calmar_cap", calmar_cap)
+        use_normalized_scoring = _cfg.get("use_normalized_scoring", use_normalized_scoring)
+        # Emit a one-time breadcrumb so logs show which source set the weights
+        logger.log("fitness_config", {
+            "source": "storage/config/ea_fitness.json",
+            "fitness_weights": {
+                "alpha_cagr": alpha_cagr,
+                "beta_calmar": beta_calmar,
+                "gamma_sharpe": gamma_sharpe,
+                "delta_total_return": delta_total_return,
+                "calmar_cap": calmar_cap,
+                "use_normalized_scoring": use_normalized_scoring,
+            },
+        })
 
     # years used for trade-rate normalization
     def _years(a, b) -> float:

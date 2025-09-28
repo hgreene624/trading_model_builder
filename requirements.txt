@@ -22,3 +22,6 @@ requests>=2.31,<3
 
 # Optional HTML parsing for index scraping
 lxml>=5.2,<6
+
+#used for stat analysis
+scipy>=1.12,<2.0
