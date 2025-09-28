@@ -317,4 +317,7 @@ def holdout_equity(
     if portfolio.empty:
         return pd.DataFrame(columns=["date", "equity"])
 
-    return pd.DataFrame({"date": portfolio.index, "equity": portfolio.values})
+    date_index = portfolio.index
+    if isinstance(date_index, pd.DatetimeIndex):
+        date_index = date_index.tz_localize(None)
+    return pd.DataFrame({"date": date_index, "equity": portfolio.values})

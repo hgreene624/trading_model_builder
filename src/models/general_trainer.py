@@ -123,7 +123,7 @@ def train_general_model(
         # Curve-quality metrics from aggregate equity
         agg_metrics = compute_core_metrics(aggregate_equity, daily, trades=[])  # trades list intentionally empty here
 
-        # Provide an explicit equity curve for downstream visualizations (e.g., EA Inspector)
+        # Provide explicit equity curve payloads for downstream visualizations (e.g., EA Inspector)
         agg_curve = aggregate_equity.dropna().astype(float)
         if not agg_curve.empty:
             try:
@@ -158,12 +158,21 @@ def train_general_model(
 
     aggregate_payload: Dict[str, Any] = {"metrics": agg_metrics}
     if agg_curve_payload:
-        aggregate_payload["equity_curve"] = agg_curve_payload
+        curve_pairs = list(zip(agg_curve_payload["date"], agg_curve_payload["equity"]))
+        aggregate_payload["equity_curve"] = curve_pairs
+        # Back-compat aliases for callers that expect dict/list payloads
+        aggregate_payload["curve"] = dict(agg_curve_payload)
+        aggregate_payload["equity"] = dict(agg_curve_payload)
 
-    return {
+    portfolio_payload = dict(agg_curve_payload) if agg_curve_payload else None
+
+    result: Dict[str, Any] = {
         "strategy": strategy_dotted,
         "params": dict(base_params),
         "period": {"start": str(start), "end": str(end)},
         "results": per_symbol,
         "aggregate": aggregate_payload,
     }
+    if portfolio_payload:
+        result["portfolio"] = portfolio_payload
+    return result

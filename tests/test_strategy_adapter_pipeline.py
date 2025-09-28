@@ -91,6 +91,20 @@ def test_train_general_model_aggregates_metrics(stub_strategy_module: str, sampl
     for key in ["total_return", "cagr", "max_drawdown", "calmar", "sharpe"]:
         assert key in aggregate
 
+    curve_pairs = report["aggregate"].get("equity_curve")
+    assert isinstance(curve_pairs, list) and len(curve_pairs) > 0
+    first_pair = curve_pairs[0]
+    assert isinstance(first_pair, (list, tuple)) and len(first_pair) == 2
+
+    curve_dict = report["aggregate"].get("equity")
+    assert isinstance(curve_dict, dict)
+    assert set(curve_dict.keys()) == {"date", "equity"}
+    assert len(curve_dict["date"]) == len(curve_dict["equity"]) > 0
+
+    portfolio_payload = report.get("portfolio")
+    assert isinstance(portfolio_payload, dict)
+    assert set(portfolio_payload.keys()) == {"date", "equity"}
+
 
 def test_import_callable_validates_presence(monkeypatch: pytest.MonkeyPatch) -> None:
     module_name = "tests.empty_strategy"
