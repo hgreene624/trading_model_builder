@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import time
 import warnings
 
 # ---------- settings ----------
@@ -42,6 +44,107 @@ def load_ea_log(log_path: str) -> pd.DataFrame:
             except Exception:
                 continue
     return pd.DataFrame(rows)
+
+def _coerce_date(value: Any) -> Optional[date]:
+    """Parse *value* into a ``date`` (day precision) when possible."""
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        coerced = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return None
+    if isinstance(coerced, pd.Series):
+        coerced = coerced.iloc[0] if not coerced.empty else pd.NaT
+    if pd.isna(coerced):
+        return None
+    if isinstance(coerced, pd.Timestamp):
+        return coerced.date()
+    if isinstance(coerced, datetime):
+        return coerced.date()
+    if isinstance(coerced, date):
+        return coerced
+    return None
+
+def _deep_get(mapping: Dict[str, Any], *keys: str) -> Any:
+    cur: Any = mapping
+    for key in keys:
+        if isinstance(cur, dict):
+            cur = cur.get(key)
+        else:
+            return None
+    return cur
+
+def _infer_log_windows(df: pd.DataFrame) -> Dict[str, Optional[date]]:
+    """Infer train/test date bounds from an EA log."""
+    train_starts: List[date] = []
+    train_ends: List[date] = []
+    dataset_starts: List[date] = []
+    dataset_ends: List[date] = []
+
+    if "event" not in df.columns or "payload" not in df.columns:
+        return {"train_start": None, "train_end": None, "test_start": None, "test_end": None}
+
+    for _, row in df.iterrows():
+        payload = row.get("payload", {})
+        if not isinstance(payload, dict):
+            continue
+
+        event = row.get("event")
+        def _push(bucket: List[date], value: Any) -> None:
+            d = _coerce_date(value)
+            if d is not None:
+                bucket.append(d)
+
+        if event == "session_meta":
+            _push(train_starts, payload.get("train_start"))
+            _push(train_ends, payload.get("train_end"))
+        if event == "holdout_meta":
+            _push(dataset_starts, payload.get("holdout_start"))
+            _push(dataset_ends, payload.get("holdout_end"))
+            _push(train_ends, payload.get("train_end"))
+
+        # Generic nested fallbacks
+        for key in ("train_start", "start"):
+            _push(train_starts, payload.get(key))
+        for key in ("train_end", "end"):
+            _push(train_ends, payload.get(key))
+
+        _push(train_starts, _deep_get(payload, "train", "start"))
+        _push(train_ends, _deep_get(payload, "train", "end"))
+        _push(dataset_starts, _deep_get(payload, "test", "start"))
+        _push(dataset_ends, _deep_get(payload, "test", "end"))
+        _push(train_starts, _deep_get(payload, "period", "start"))
+        _push(train_ends, _deep_get(payload, "period", "end"))
+        _push(dataset_starts, _deep_get(payload, "period", "start"))
+        _push(dataset_ends, _deep_get(payload, "period", "end"))
+
+    train_start = min(train_starts) if train_starts else (min(dataset_starts) if dataset_starts else None)
+    train_end = max(train_ends) if train_ends else None
+    if train_start and train_end and train_start > train_end:
+        train_start, train_end = train_end, train_start
+    dataset_end = max(dataset_ends) if dataset_ends else train_end
+    if dataset_end and train_end and dataset_end < train_end:
+        dataset_end = train_end
+
+    test_start = None
+    if train_end is not None:
+        test_start = train_end + timedelta(days=1)
+        if dataset_end is not None and test_start > dataset_end:
+            test_start = dataset_end
+    elif dataset_starts:
+        # Fallback: use dataset start if train_end missing
+        test_start = min(dataset_starts)
+
+    return {
+        "train_start": train_start,
+        "train_end": train_end,
+        "test_start": test_start,
+        "test_end": dataset_end,
+    }
 
 def _get_session_meta(df: pd.DataFrame) -> Dict[str, Any]:
     smeta_rows = (
@@ -350,28 +453,35 @@ def main():
     strategy = smeta.get("strategy", "src.models.atr_breakout:Strategy")
     tickers = smeta.get("tickers", [])
     starting_equity = float(smeta.get("starting_equity", 10000.0))
-    train_start = smeta.get("train_start")
-    train_end = smeta.get("train_end")
+
+    windows = _infer_log_windows(df)
+
+    train_start_date = windows.get("train_start") or _coerce_date(smeta.get("train_start"))
+    train_end_date = windows.get("train_end") or _coerce_date(smeta.get("train_end"))
+    test_start_date = windows.get("test_start") or _coerce_date(hmeta.get("holdout_start"))
+    test_end_date = windows.get("test_end") or _coerce_date(hmeta.get("holdout_end"))
+
+    def _fmt(d: Optional[date]) -> str:
+        return d.isoformat() if isinstance(d, date) else ""
+
+    max_gen = int(eval_df["gen"].max()) if not eval_df.empty else 0
+    st.session_state.setdefault("ea_inspect_gen", 0)
+    st.session_state.setdefault("ea_playback_active", False)
+    st.session_state.setdefault("ea_playback_speed", 1.0)
+    st.session_state.ea_inspect_gen = int(min(max_gen, max(0, st.session_state.ea_inspect_gen)))
 
     # Controls row
     c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
 
     with c1:
         st.markdown("**Training window**")
-        train_start = st.text_input("Train start (ISO)", value=str(train_start) if train_start else "")
-        train_end = st.text_input("Train end (ISO)", value=str(train_end) if train_end else "")
+        train_start = st.text_input("Train start (ISO)", value=_fmt(train_start_date)).strip()
+        train_end = st.text_input("Train end (ISO)", value=_fmt(train_end_date)).strip()
 
     with c2:
         st.markdown("**Test window**")
-        # default from holdout_meta, else next day after train_end
-        default_test_start = hmeta.get("holdout_start")
-        if not default_test_start and train_end:
-            try:
-                default_test_start = (pd.to_datetime(train_end) + pd.Timedelta(days=1)).date().isoformat()
-            except Exception:
-                default_test_start = ""
-        test_start = st.text_input("Test start (ISO)", value=str(default_test_start) if default_test_start else "")
-        test_end = st.text_input("Test end (ISO)", value=str(hmeta.get("holdout_end")) if hmeta.get("holdout_end") else "")
+        test_start = st.text_input("Test start (ISO)", value=_fmt(test_start_date)).strip()
+        test_end = st.text_input("Test end (ISO)", value=_fmt(test_end_date)).strip()
 
     with c3:
         st.markdown("**Top-K (current gen)**")
@@ -379,14 +489,31 @@ def main():
 
     with c4:
         st.markdown("**Playback**")
-        max_gen = int(eval_df["gen"].max()) if not eval_df.empty else 0
-        if "ea_inspect_gen" not in st.session_state:
-            st.session_state.ea_inspect_gen = 0
-        cols = st.columns(3)
-        if cols[0].button("⟵ Prev", use_container_width=True):
+        control_cols = st.columns(4)
+        if control_cols[0].button("◀ Prev", use_container_width=True):
             st.session_state.ea_inspect_gen = max(0, st.session_state.ea_inspect_gen - 1)
-        if cols[2].button("Next ⟶", use_container_width=True):
+            st.session_state.ea_playback_active = False
+        if control_cols[1].button("▶ Play", use_container_width=True):
+            if st.session_state.ea_inspect_gen >= max_gen:
+                st.session_state.ea_inspect_gen = 0
+            st.session_state.ea_playback_active = True
+        if control_cols[2].button("⏸ Pause", use_container_width=True):
+            st.session_state.ea_playback_active = False
+        if control_cols[3].button("Next ▶", use_container_width=True):
             st.session_state.ea_inspect_gen = min(max_gen, st.session_state.ea_inspect_gen + 1)
+            st.session_state.ea_playback_active = False
+
+        speed_options = [0.25, 0.5, 1.0, 1.5, 2.0]
+        current_speed = float(st.session_state.get("ea_playback_speed", 1.0))
+        if current_speed not in speed_options:
+            current_speed = 1.0
+        speed = st.select_slider(
+            "Speed (sec/step)",
+            options=speed_options,
+            value=current_speed,
+            format_func=lambda x: f"{x:.2f}s" if x < 1.0 else f"{x:.1f}s",
+        )
+        st.session_state.ea_playback_speed = float(speed)
         st.caption(f"Max gen in log: {max_gen}")
 
     with c5:
@@ -397,6 +524,20 @@ def main():
             int(eval_df["gen"].max() if not eval_df.empty else 0),
             int(st.session_state.ea_inspect_gen),
         )
+
+    # Auto-advance playback if active
+    if st.session_state.get("ea_playback_active", False):
+        if st.session_state.ea_inspect_gen < max_gen:
+            delay = max(0.0, float(st.session_state.get("ea_playback_speed", 1.0)))
+            if delay:
+                time.sleep(delay)
+            st.session_state.ea_inspect_gen = min(max_gen, st.session_state.ea_inspect_gen + 1)
+            try:
+                st.experimental_rerun()
+            except AttributeError:
+                st.rerun()
+        else:
+            st.session_state.ea_playback_active = False
 
     # safety
     if not train_start or not train_end:
