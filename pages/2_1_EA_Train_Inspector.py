@@ -347,11 +347,18 @@ def main():
     smeta = _get_session_meta(df)
     hmeta = _get_holdout_meta(df)
 
-    strategy = smeta.get("strategy", "src.models.atr_breakout:Strategy")
-    tickers = smeta.get("tickers", [])
-    starting_equity = float(smeta.get("starting_equity", 10000.0))
-    train_start = smeta.get("train_start")
-    train_end = smeta.get("train_end")
+    # Session meta is emitted by the EA run (preferred source).  When unavailable,
+    # fall back to anything provided in the holdout metadata payload so the page
+    # still has reasonable defaults even for older/partial logs.
+    strategy = smeta.get("strategy") or hmeta.get("strategy") or "src.models.atr_breakout:Strategy"
+    tickers = smeta.get("tickers") or hmeta.get("tickers") or []
+    starting_equity = float(
+        smeta.get("starting_equity")
+        or hmeta.get("starting_equity")
+        or 10000.0
+    )
+    train_start = smeta.get("train_start") or hmeta.get("train_start")
+    train_end = smeta.get("train_end") or hmeta.get("train_end")
 
     # Controls row
     c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
@@ -371,7 +378,13 @@ def main():
             except Exception:
                 default_test_start = ""
         test_start = st.text_input("Test start (ISO)", value=str(default_test_start) if default_test_start else "")
-        test_end = st.text_input("Test end (ISO)", value=str(hmeta.get("holdout_end")) if hmeta.get("holdout_end") else "")
+        default_test_end = hmeta.get("holdout_end")
+        test_end = st.text_input("Test end (ISO)", value=str(default_test_end) if default_test_end else "")
+        # Ensure empty user inputs fall back to holdout metadata when possible
+        if not test_start:
+            test_start = str(default_test_start) if default_test_start else ""
+        if not test_end:
+            test_end = str(default_test_end) if default_test_end else ""
 
     with c3:
         st.markdown("**Top-K (current gen)**")
@@ -443,6 +456,9 @@ def main():
             st.code("\n".join(msgs))
         else:
             st.caption("No debug messages yet.")
+        if hmeta:
+            st.caption("Holdout metadata snapshot from EA log:")
+            st.json(hmeta)
 
     st.caption(
         "A vertical dotted line marks the end of the training window. "
