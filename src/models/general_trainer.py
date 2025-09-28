@@ -15,6 +15,8 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any, Dict, List, Tuple
 
+from datetime import date, datetime
+
 import pandas as pd
 
 from src.backtest.metrics import compute_core_metrics
@@ -44,6 +46,44 @@ def _weighted_average(values: List[float], weights: List[float]) -> float:
     return float(s / w) if w else 0.0
 
 
+def _coerce_datetime(value: Any, label: str) -> datetime:
+    """Best-effort conversion of common date inputs to ``datetime``."""
+
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+
+    if value is None:
+        raise ValueError(f"{label} must be datetime")
+
+    try:
+        coerced = pd.to_datetime(value, errors="raise")
+    except Exception as exc:  # pragma: no cover - defensive branch
+        raise ValueError(f"{label} must be datetime") from exc
+
+    if isinstance(coerced, pd.Series):
+        if coerced.empty:
+            raise ValueError(f"{label} must be datetime")
+        coerced = coerced.iloc[0]
+
+    if pd.isna(coerced):
+        raise ValueError(f"{label} must be datetime")
+
+    if isinstance(coerced, pd.Timestamp):
+        return coerced.to_pydatetime()
+    if isinstance(coerced, datetime):
+        return coerced
+
+    # Fallback for numpy datetime64 or similar scalars
+    try:
+        return pd.Timestamp(coerced).to_pydatetime()
+    except Exception as exc:  # pragma: no cover - defensive branch
+        raise ValueError(f"{label} must be datetime") from exc
+
+
 def train_general_model(
     strategy_dotted: str,
     tickers: List[str],
@@ -69,6 +109,9 @@ def train_general_model(
     """
     run = import_callable(strategy_dotted)
 
+    start_dt = _coerce_datetime(start, "start")
+    end_dt = _coerce_datetime(end, "end")
+
     per_symbol: List[Dict[str, Any]] = []
     # Collect normalized curves in a DataFrame for clean aggregation
     norm_curves: Dict[str, pd.Series] = {}
@@ -81,7 +124,7 @@ def train_general_model(
 
     # --- per-symbol loop ---
     for sym in tickers:
-        result = run(sym, start, end, starting_equity, base_params)
+        result = run(sym, start_dt, end_dt, starting_equity, base_params)
 
         # Compute symbol-level metrics
         metrics = compute_core_metrics(result["equity"], result["daily_returns"], result["trades"])
@@ -169,7 +212,7 @@ def train_general_model(
     result: Dict[str, Any] = {
         "strategy": strategy_dotted,
         "params": dict(base_params),
-        "period": {"start": str(start), "end": str(end)},
+        "period": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
         "results": per_symbol,
         "aggregate": aggregate_payload,
     }

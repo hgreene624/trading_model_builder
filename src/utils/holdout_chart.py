@@ -1,6 +1,8 @@
 from importlib import import_module
 from typing import Any, Callable, Dict, List, Tuple
 
+from datetime import date, datetime
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -215,6 +217,40 @@ def on_generation_end(gen_idx: int, best_score: float, best_params: Dict[str, An
 
 # ---- Standalone equity helper -------------------------------------------------
 
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if value is None:
+        return None
+
+    try:
+        coerced = pd.to_datetime(value, errors="raise")
+    except Exception:
+        return None
+
+    if isinstance(coerced, pd.Series):
+        if coerced.empty:
+            return None
+        coerced = coerced.iloc[0]
+
+    if pd.isna(coerced):
+        return None
+
+    if isinstance(coerced, pd.Timestamp):
+        return coerced.to_pydatetime()
+    if isinstance(coerced, datetime):
+        return coerced
+
+    try:
+        return pd.Timestamp(coerced).to_pydatetime()
+    except Exception:
+        return None
+
+
 def holdout_equity(
     params: Dict[str, Any] | None = None,
     start: Any | None = None,
@@ -247,10 +283,15 @@ def holdout_equity(
     except Exception:
         return pd.DataFrame(columns=["date", "equity"])
 
+    start_dt = _coerce_datetime(start)
+    end_dt = _coerce_datetime(end)
+    if start_dt is None or end_dt is None:
+        return pd.DataFrame(columns=["date", "equity"])
+
     curves: Dict[str, pd.Series] = {}
     for sym in tickers:
         try:
-            result = run_strategy(sym, start, end, starting_equity, params)
+            result = run_strategy(sym, start_dt, end_dt, starting_equity, params)
         except Exception:
             continue
 

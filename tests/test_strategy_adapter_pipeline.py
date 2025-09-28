@@ -18,6 +18,8 @@ def stub_strategy_module(monkeypatch: pytest.MonkeyPatch) -> str:
     mod = types.ModuleType(module_name)
 
     def run_strategy(symbol: str, start: datetime, end: datetime, equity: float, params: Dict[str, Any]) -> Dict[str, Any]:
+        assert isinstance(start, datetime)
+        assert isinstance(end, datetime)
         # simple deterministic equity curve: start at equity, +1% per day
         idx = pd.date_range(start, end, freq="D")
         if len(idx) < 2:
@@ -104,6 +106,25 @@ def test_train_general_model_aggregates_metrics(stub_strategy_module: str, sampl
     portfolio_payload = report.get("portfolio")
     assert isinstance(portfolio_payload, dict)
     assert set(portfolio_payload.keys()) == {"date", "equity"}
+
+
+def test_train_general_model_accepts_iso_dates(stub_strategy_module: str, sample_period: tuple[datetime, datetime]) -> None:
+    start, end = sample_period
+    tickers = ["AAPL"]
+    params = {"breakout_n": 20}
+
+    report = general_trainer.train_general_model(
+        stub_strategy_module,
+        tickers,
+        start.isoformat(),
+        end.isoformat(),
+        starting_equity=5_000.0,
+        base_params=params,
+    )
+
+    aggregate = report["aggregate"].get("equity_curve")
+    assert aggregate
+    assert all(isinstance(pair[0], str) for pair in aggregate)
 
 
 def test_import_callable_validates_presence(monkeypatch: pytest.MonkeyPatch) -> None:

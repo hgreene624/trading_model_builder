@@ -10,7 +10,9 @@ def _make_fake_module(equity_values):
     mod = types.ModuleType("fake.strategy")
 
     def _run_strategy(symbol, start, end, starting_equity, params):
-        idx = pd.date_range(start=datetime(2020, 1, 1), periods=len(equity_values), freq="D")
+        assert isinstance(start, datetime)
+        assert isinstance(end, datetime)
+        idx = pd.date_range(start=start, periods=len(equity_values), freq="D")
         series = pd.Series(equity_values, index=idx)
         return {
             "equity": series,
@@ -40,6 +42,22 @@ def test_holdout_equity_returns_curve(monkeypatch):
     assert len(df) == 3
     assert float(df["equity"].iloc[0]) == 100_000.0
     assert float(df["equity"].iloc[-1]) > float(df["equity"].iloc[0])
+
+
+def test_holdout_equity_rejects_non_datetime_inputs(monkeypatch):
+    fake_mod = _make_fake_module([100_000.0, 101_000.0])
+    monkeypatch.setattr(holdout_chart, "import_module", lambda _: fake_mod)
+
+    df = holdout_chart.holdout_equity(
+        params={"foo": 1},
+        start=None,
+        end="2020-01-02",
+        tickers=["AAPL"],
+        starting_equity=100_000.0,
+        strategy="fake.strategy",
+    )
+
+    assert df.empty
 
 
 def test_holdout_equity_handles_missing_strategy(monkeypatch):
