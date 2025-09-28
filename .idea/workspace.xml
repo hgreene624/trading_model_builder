@@ -4,12 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="changed scoring to verify engine use of penalty caps. zero penalty test">
-      <change afterPath="$PROJECT_DIR$/pages/2_1_EA_Train_Inspector.py" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="ea train inspector started. EA logger updated with session timeframe data. framework there but not working.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/ea_score_audit.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/ea_score_audit.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_1_EA_Train_Inspector.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_1_EA_Train_Inspector.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -113,15 +110,7 @@
       <workItem from="1758828289886" duration="3111000" />
       <workItem from="1758996558016" duration="2016000" />
       <workItem from="1758999746262" duration="14204000" />
-      <workItem from="1759077063615" duration="1311000" />
-    </task>
-    <task id="LOCAL-00009" summary="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy">
-      <option name="closed" value="true" />
-      <created>1757532285448</created>
-      <option name="number" value="00009" />
-      <option name="presentableId" value="LOCAL-00009" />
-      <option name="project" value="LOCAL" />
-      <updated>1757532285448</updated>
+      <workItem from="1759077063615" duration="2294000" />
     </task>
     <task id="LOCAL-00010" summary="&#10;- Checkbox to toggle risk-parity vs equal weights.&#10;- Compute weights from daily stddev of returns over sim range.&#10;- Keep per-ticker strategy selection + portfolio params fallback.">
       <option name="closed" value="true" />
@@ -507,7 +496,15 @@
       <option name="project" value="LOCAL" />
       <updated>1759074710167</updated>
     </task>
-    <option name="localTasksCounter" value="58" />
+    <task id="LOCAL-00058" summary="ea train inspector started. EA logger updated with session timeframe data. framework there but not working.">
+      <option name="closed" value="true" />
+      <created>1759078579041</created>
+      <option name="number" value="00058" />
+      <option name="presentableId" value="LOCAL-00058" />
+      <option name="project" value="LOCAL" />
+      <updated>1759078579041</updated>
+    </task>
+    <option name="localTasksCounter" value="59" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -525,7 +522,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="walkforward with artifact detection, test sucess" />
     <MESSAGE value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
     <MESSAGE value="refactor storage and fix portfolio page error" />
     <MESSAGE value="fixed portfolio storage and loading in portfolios page" />
@@ -550,6 +546,7 @@
     <MESSAGE value="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes." />
     <MESSAGE value="pre big change to evolutionary.py" />
     <MESSAGE value="changed scoring to verify engine use of penalty caps. zero penalty test" />
-    <option name="LAST_COMMIT_MESSAGE" value="changed scoring to verify engine use of penalty caps. zero penalty test" />
+    <MESSAGE value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
+    <option name="LAST_COMMIT_MESSAGE" value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
   </component>
 </project>

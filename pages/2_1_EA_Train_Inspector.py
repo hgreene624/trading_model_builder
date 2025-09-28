@@ -1,17 +1,26 @@
 # pages/5_EA_Train_Test_Inspector.py
 from __future__ import annotations
-import json, os
-from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
 
-import streamlit as st
-import pandas as pd
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
+import warnings
 
 # ---------- settings ----------
 LOG_DIR = Path("storage/logs/ea")
 DEFAULT_PAGE_TITLE = "EA Train/Test Inspector"
+
+# ---------- small debug buffer ----------
+def _dbg(msg: str):
+    try:
+        st.session_state.setdefault("ea_inspector_debug", []).append(str(msg))
+    except Exception:
+        pass
 
 # ---------- helpers ----------
 
@@ -21,7 +30,6 @@ def _latest_log_file(dirpath: Path) -> Optional[Path]:
     files = sorted(dirpath.glob("*_ea.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
-@st.cache_data(show_spinner=False)
 def load_ea_log(log_path: str) -> pd.DataFrame:
     rows = []
     with open(log_path, "r") as f:
@@ -36,37 +44,72 @@ def load_ea_log(log_path: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 def _get_session_meta(df: pd.DataFrame) -> Dict[str, Any]:
-    # Prefer explicit session_meta if present
-    smeta_rows = df[df["event"]=="session_meta"]["payload"].apply(pd.Series) if ("event" in df.columns and (df["event"]=="session_meta").any()) else pd.DataFrame()
-    if not smeta_rows.empty:
-        return smeta_rows.iloc[-1].to_dict()
-    # Fallback: infer train window from evolutionary_search args is not possible here; leave None
-    return {}
+    smeta_rows = (
+        df[df["event"] == "session_meta"]["payload"].apply(pd.Series)
+        if ("event" in df.columns and (df["event"] == "session_meta").any())
+        else pd.DataFrame()
+    )
+    return smeta_rows.iloc[-1].to_dict() if not smeta_rows.empty else {}
 
-@st.cache_data(show_spinner=False)
+def _get_holdout_meta(df: pd.DataFrame) -> Dict[str, Any]:
+    hmeta_rows = (
+        df[df["event"] == "holdout_meta"]["payload"].apply(pd.Series)
+        if ("event" in df.columns and (df["event"] == "holdout_meta").any())
+        else pd.DataFrame()
+    )
+    # last one wins
+    return hmeta_rows.iloc[-1].to_dict() if not hmeta_rows.empty else {}
+
+def _sanitize_obj_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """JSON-encode any dict/list columns (prevents hashing errors later)."""
+    if df.empty:
+        return df
+    out = df.copy()
+    for col in list(out.columns):
+        if out[col].map(lambda x: isinstance(x, (dict, list))).any():
+            out[col] = out[col].apply(lambda x: json.dumps(x, sort_keys=True) if isinstance(x, (dict, list)) else x)
+    return out
+
 def _eval_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Return tidy table of individual evaluations with metrics."""
-    evals = df[df["event"]=="individual_evaluated"]["payload"].apply(pd.Series).reset_index(drop=True)
+    """Return tidy table of individual evaluations with metrics.
+    NOTE: JSON-encode 'params' and any dict/list columns to avoid caching/hashing issues.
+    """
+    if "event" not in df.columns:
+        return pd.DataFrame()
+    evals = df[df["event"] == "individual_evaluated"]["payload"].apply(pd.Series).reset_index(drop=True)
     if evals.empty:
         return pd.DataFrame()
     metrics = pd.json_normalize(evals["metrics"]).reset_index(drop=True)
     out = pd.concat([evals.drop(columns=["metrics"]), metrics], axis=1)
+    # Avoid dicts; keep a JSON copy of params
+    if "params" in out.columns:
+        out["params_json"] = out["params"].apply(
+            lambda d: json.dumps(d, sort_keys=True) if isinstance(d, dict) else (d if isinstance(d, str) else "{}")
+        )
+        out = out.drop(columns=["params"])
+    out = _sanitize_obj_cols(out)
+    # Make sure 'gen' is numeric
+    if "gen" in out.columns:
+        out["gen"] = pd.to_numeric(out["gen"], errors="coerce").fillna(0).astype(int)
     return out
 
-@st.cache_data(show_spinner=False)
 def _gen_end_table(df: pd.DataFrame) -> pd.DataFrame:
     if "event" not in df.columns:
         return pd.DataFrame()
-    g = df[df["event"]=="generation_end"]["payload"].apply(pd.Series)
+    g = df[df["event"] == "generation_end"]["payload"].apply(pd.Series)
+    g = _sanitize_obj_cols(g)
     return g.reset_index(drop=True) if not g.empty else pd.DataFrame()
 
-# --- equity simulators (pluggable) ---
+def _row_params(row: pd.Series) -> Dict[str, Any]:
+    pj = row.get("params_json")
+    try:
+        return json.loads(pj) if isinstance(pj, str) else {}
+    except Exception:
+        return {}
 
-def _hashable_params(d: Dict[str, Any]) -> Tuple:
-    # makes a stable key for cache
-    return tuple(sorted(d.items()))
+# ---------- equity provider ----------
 
-@st.cache_data(show_spinner=True)
+@st.cache_data(show_spinner=True, hash_funcs={dict: lambda d: json.dumps(d, sort_keys=True)})
 def run_equity_curve(
     strategy_dotted: str,
     tickers: List[str],
@@ -76,51 +119,101 @@ def run_equity_curve(
     params: Dict[str, Any],
 ) -> pd.DataFrame:
     """
-    Try to produce an equity curve [date,equity] for the window.
-    We attempt train_general_model first; if that does not return a curve,
-    users can adapt here to call their holdout_chart runner.
+    Produce an equity curve [date,equity] for the window using the same path the EA uses.
+    Tries general_trainer first. If no curve is found, tries multiple signatures against
+    src.utils.holdout_chart (or fallback holdout_chart). Emits debug breadcrumbs.
     """
-    # 1) primary: general_trainer
+    # Normalize tickers
+    if isinstance(tickers, str):
+        tickers = [t.strip() for t in tickers.split(",") if t.strip()]
+    tickers = list(tickers)
+
+    # 1) general_trainer
     try:
         from src.models.general_trainer import train_general_model
+        _dbg("trainer: calling train_general_model(...)")
         res = train_general_model(strategy_dotted, tickers, start_iso, end_iso, starting_equity, params)
-        # Try common shapes:
-        # res["aggregate"]["equity_curve"] -> list of [ts, equity] or dict with 'date','equity'
-        agg = (res or {}).get("aggregate", {})
-        curve = agg.get("equity_curve") or agg.get("curve") or None
-        if isinstance(curve, list) and curve and isinstance(curve[0], (list, tuple)):
-            df = pd.DataFrame(curve, columns=["date","equity"])
-            df["date"] = pd.to_datetime(df["date"])
-            return df
-        # sometimes a dict of arrays
-        if isinstance(curve, dict) and "date" in curve and "equity" in curve:
-            df = pd.DataFrame({"date": pd.to_datetime(curve["date"]), "equity": curve["equity"]})
-            return df
-        # Fallback: try day-level portfolio in res
-        if "portfolio" in res and isinstance(res["portfolio"], dict):
-            p = res["portfolio"]
-            if "date" in p and "equity" in p:
-                return pd.DataFrame({"date": pd.to_datetime(p["date"]), "equity": p["equity"]})
-    except Exception:
-        pass
+        if isinstance(res, dict):
+            agg = res.get("aggregate") or {}
+            for key in ("equity_curve", "curve", "equity"):
+                curve = agg.get(key)
+                # list-of-pairs
+                if isinstance(curve, list) and curve and isinstance(curve[0], (list, tuple)):
+                    df = pd.DataFrame(curve, columns=["date", "equity"])
+                    df["date"] = pd.to_datetime(df["date"])
+                    _dbg(f"trainer: aggregate.{key} list-of-pairs")
+                    return df
+                # dict-of-arrays
+                if isinstance(curve, dict) and {"date", "equity"}.issubset(curve.keys()):
+                    df = pd.DataFrame({"date": pd.to_datetime(curve["date"]), "equity": curve["equity"]})
+                    _dbg(f"trainer: aggregate.{key} dict-of-arrays")
+                    return df
+            p = res.get("portfolio")
+            if isinstance(p, dict) and {"date", "equity"}.issubset(p.keys()):
+                df = pd.DataFrame({"date": pd.to_datetime(p["date"]), "equity": p["equity"]})
+                _dbg("trainer: portfolio{date,equity}")
+                return df
+        _dbg("trainer: no curve fields found")
+    except Exception as e:
+        _dbg(f"trainer: exception {type(e).__name__}: {e}")
 
-    # 2) optional: project-specific holdout runner (uncomment/adjust if you have one)
+    # 2) holdout runner (same module Strategy Adapter uses)
+    hc = None
     try:
-        import holdout_chart as hc  # adjust if module path differs
-        if hasattr(hc, "simulate_holdout"):
-            ec, _stats = hc.simulate_holdout(params, start_iso, end_iso)  # signature may differ in your project
-            # expecting ec as list of [date,equity] or a DataFrame
-            if isinstance(ec, pd.DataFrame):
-                df = ec.copy()
-            else:
-                df = pd.DataFrame(ec, columns=["date","equity"])
-            df["date"] = pd.to_datetime(df["date"])
-            return df
-    except Exception:
-        pass
+        try:
+            from src.utils import holdout_chart as hc_mod
+            hc = hc_mod
+            _dbg("holdout: using src.utils.holdout_chart")
+        except Exception:
+            import holdout_chart as hc_mod  # root module fallback
+            hc = hc_mod
+            _dbg("holdout: using root holdout_chart")
+    except Exception as e:
+        _dbg(f"holdout: import failed {type(e).__name__}: {e}")
 
-    # 3) last resort: return a 2-point flat line to avoid crashing the UI
+    if hc is not None:
+        # Candidate function names and signature variants
+        candidates = [
+            ("holdout_equity", ("params", "start", "end", "tickers", "starting_equity", "strategy")),
+            ("simulate_holdout", ("params", "start", "end", "tickers", "starting_equity", "strategy")),
+            ("run_holdout", ("params", "start", "end", "tickers", "starting_equity", "strategy")),
+        ]
+        args = {
+            "params": params,
+            "start": start_iso,
+            "end": end_iso,
+            "tickers": tickers,
+            "starting_equity": starting_equity,
+            "strategy": strategy_dotted,
+        }
+        for fn_name, _sig in candidates:
+            if hasattr(hc, fn_name):
+                fn = getattr(hc, fn_name)
+                try:
+                    from inspect import signature
+                    sig = signature(fn)
+                    kwargs = {k: v for k, v in args.items() if k in sig.parameters}
+                    _dbg(f"holdout: calling {fn_name} with {list(kwargs.keys())}")
+                    ec = fn(**kwargs)
+                    if isinstance(ec, tuple):
+                        ec = ec[0]
+                    if isinstance(ec, pd.DataFrame) and {"date", "equity"}.issubset(ec.columns):
+                        df = ec[["date", "equity"]].copy()
+                        df["date"] = pd.to_datetime(df["date"])
+                        return df
+                    if isinstance(ec, list) and ec and isinstance(ec[0], (list, tuple)):
+                        df = pd.DataFrame(ec, columns=["date", "equity"])
+                        df["date"] = pd.to_datetime(df["date"])
+                        return df
+                    _dbg(f"holdout: {fn_name} returned no usable curve")
+                except Exception as e:
+                    _dbg(f"holdout: {fn_name} raised {type(e).__name__}: {e}")
+
+    # 3) last resort: flat line (UI warns)
+    _dbg("fallback: flat 2-point line returned")
     return pd.DataFrame({"date": pd.to_datetime([start_iso, end_iso]), "equity": [starting_equity, starting_equity]})
+
+# ---------- plotting ----------
 
 def _plot_gen_topK(
     eval_df: pd.DataFrame,
@@ -134,22 +227,42 @@ def _plot_gen_topK(
     test_end: str,
     starting_equity: float,
 ) -> go.Figure:
-    G = eval_df[eval_df["gen"]==gen_idx].copy()
+    G = eval_df[eval_df["gen"] == gen_idx].copy()
     if G.empty:
         return go.Figure()
     # rank by final return in that gen
     G = G.sort_values(by="total_return", ascending=False).head(min(k, len(G)))
-    # plot
+
     fig = go.Figure()
-    for i, row in G.iterrows():
-        params = row["params"]
+    flat_warn = False
+    for _, row in G.iterrows():
+        params = _row_params(row)
         ec_train = run_equity_curve(strategy, tickers, train_start, train_end, starting_equity, params)
-        ec_test  = run_equity_curve(strategy, tickers, test_start,  test_end,  ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity, params)
-        # combine for seamless line (train then test)
+        end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
+        ec_test = run_equity_curve(strategy, tickers, test_start, test_end, end_equity, params)
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
+        if len(ec) <= 2 or ec["equity"].nunique() <= 1:
+            flat_warn = True
         name = f"gen{gen_idx} idx{int(row['idx'])} (ret {row['total_return']:.3f})"
-        fig.add_trace(go.Scatter(x=ec["date"], y=ec["equity"], mode="lines", name=name, line=dict(width=1)))
-    # demarcation line at train_end
+        fig.add_trace(
+            go.Scatter(x=ec["date"], y=ec["equity"], mode="lines", name=name, line=dict(width=1))
+        )
+
+    if flat_warn:
+        warnings.warn(
+            "Equity curve(s) appear flat; the trainer didn't return a curve. Wire your holdout/trainer curve provider in run_equity_curve()."
+        )
+
+    # all-flat annotation
+    if len(fig.data) > 0:
+        all_flat = all((len(t.y) <= 2 or (np.max(t.y) - np.min(t.y) == 0)) for t in fig.data)
+        if all_flat:
+            fig.add_annotation(
+                text="No equity curves returned by simulator. Check run_equity_curve wiring.",
+                showarrow=False, xref="paper", yref="paper", x=0.01, y=0.95,
+                bgcolor="#ffeeee", bordercolor="#cc0000",
+            )
+
     fig.add_vline(x=pd.to_datetime(train_end), line_width=2, line_dash="dot", line_color="#888")
     fig.update_layout(
         title=f"Gen {gen_idx}: Top-{k} by final return (train + test)",
@@ -174,16 +287,28 @@ def _plot_leaders_through_gen(
     fig = go.Figure()
     all_gens = sorted(eval_df["gen"].unique())
     for g in [g for g in all_gens if g <= upto_gen]:
-        G = eval_df[eval_df["gen"]==g]
+        G = eval_df[eval_df["gen"] == g]
         if G.empty:
             continue
         row = G.loc[G["total_return"].idxmax()]  # best by return in that gen
-        params = row["params"]
+        params = _row_params(row)
         ec_train = run_equity_curve(strategy, tickers, train_start, train_end, starting_equity, params)
-        ec_test  = run_equity_curve(strategy, tickers, test_start,  test_end,  ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity, params)
+        end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
+        ec_test = run_equity_curve(strategy, tickers, test_start, test_end, end_equity, params)
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
         name = f"Gen {g} (ret {row['total_return']:.3f})"
         fig.add_trace(go.Scatter(x=ec["date"], y=ec["equity"], mode="lines", name=name, line=dict(width=1)))
+
+    # all-flat annotation
+    if len(fig.data) > 0:
+        all_flat = all((len(t.y) <= 2 or (np.max(t.y) - np.min(t.y) == 0)) for t in fig.data)
+        if all_flat:
+            fig.add_annotation(
+                text="No equity curves returned by simulator. Check run_equity_curve wiring.",
+                showarrow=False, xref="paper", yref="paper", x=0.01, y=0.95,
+                bgcolor="#ffeeee", bordercolor="#cc0000",
+            )
+
     fig.add_vline(x=pd.to_datetime(train_end), line_width=2, line_dash="dot", line_color="#888")
     fig.update_layout(
         title=f"Leaders up to Gen {upto_gen} (best-by-return per gen | train + test)",
@@ -218,57 +343,60 @@ def main():
     eval_df = _eval_table(df)
     gen_df = _gen_end_table(df)
 
-    # session meta (train window, etc.)
+    # session + holdout meta
     smeta = _get_session_meta(df)
+    hmeta = _get_holdout_meta(df)
+
     strategy = smeta.get("strategy", "src.models.atr_breakout:Strategy")
     tickers = smeta.get("tickers", [])
     starting_equity = float(smeta.get("starting_equity", 10000.0))
     train_start = smeta.get("train_start")
-    train_end   = smeta.get("train_end")
+    train_end = smeta.get("train_end")
 
     # Controls row
-    c1, c2, c3, c4, c5 = st.columns([2,2,2,2,2])
+    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
 
-    # Train/Test pickers (train defaults from log; test you can set)
     with c1:
         st.markdown("**Training window**")
         train_start = st.text_input("Train start (ISO)", value=str(train_start) if train_start else "")
-        train_end   = st.text_input("Train end (ISO)", value=str(train_end) if train_end else "")
+        train_end = st.text_input("Train end (ISO)", value=str(train_end) if train_end else "")
+
     with c2:
         st.markdown("**Test window**")
-        # default: next day after train_end → today
-        default_test_start = ""
-        if train_end:
+        # default from holdout_meta, else next day after train_end
+        default_test_start = hmeta.get("holdout_start")
+        if not default_test_start and train_end:
             try:
                 default_test_start = (pd.to_datetime(train_end) + pd.Timedelta(days=1)).date().isoformat()
             except Exception:
                 default_test_start = ""
-        test_start = st.text_input("Test start (ISO)", value=default_test_start)
-        test_end   = st.text_input("Test end (ISO)", value="")
+        test_start = st.text_input("Test start (ISO)", value=str(default_test_start) if default_test_start else "")
+        test_end = st.text_input("Test end (ISO)", value=str(hmeta.get("holdout_end")) if hmeta.get("holdout_end") else "")
+
     with c3:
         st.markdown("**Top-K (current gen)**")
         top_k = st.number_input("K", min_value=1, max_value=50, value=5, step=1)
+
     with c4:
         st.markdown("**Playback**")
         max_gen = int(eval_df["gen"].max()) if not eval_df.empty else 0
         if "ea_inspect_gen" not in st.session_state:
             st.session_state.ea_inspect_gen = 0
-        # stepper
         cols = st.columns(3)
         if cols[0].button("⟵ Prev", use_container_width=True):
             st.session_state.ea_inspect_gen = max(0, st.session_state.ea_inspect_gen - 1)
         if cols[2].button("Next ⟶", use_container_width=True):
             st.session_state.ea_inspect_gen = min(max_gen, st.session_state.ea_inspect_gen + 1)
-        # play controls
-        play = st.checkbox("Play", value=False)
-        speed = st.slider("Speed (gens/sec)", min_value=0.2, max_value=5.0, value=1.0, step=0.1)
-        if play:
-            # use autorefresh to tick forward
-            interval_ms = int(1000.0 / max(0.2, float(speed)))
-            st.experimental_rerun()  # first rerun to apply; below we use autorefresh
+        st.caption(f"Max gen in log: {max_gen}")
+
     with c5:
         st.markdown("**Generation**")
-        st.session_state.ea_inspect_gen = st.slider("Gen", 0, int(eval_df["gen"].max() if not eval_df.empty else 0), int(st.session_state.ea_inspect_gen))
+        st.session_state.ea_inspect_gen = st.slider(
+            "Gen",
+            0,
+            int(eval_df["gen"].max() if not eval_df.empty else 0),
+            int(st.session_state.ea_inspect_gen),
+        )
 
     # safety
     if not train_start or not train_end:
@@ -285,8 +413,10 @@ def main():
         k=int(top_k),
         strategy=strategy,
         tickers=tickers,
-        train_start=train_start, train_end=train_end,
-        test_start=test_start,   test_end=test_end,
+        train_start=train_start,
+        train_end=train_end,
+        test_start=test_start,
+        test_end=test_end,
         starting_equity=starting_equity,
     )
     st.plotly_chart(fig1, use_container_width=True)
@@ -298,13 +428,26 @@ def main():
         upto_gen=int(st.session_state.ea_inspect_gen),
         strategy=strategy,
         tickers=tickers,
-        train_start=train_start, train_end=train_end,
-        test_start=test_start,   test_end=test_end,
+        train_start=train_start,
+        train_end=train_end,
+        test_start=test_start,
+        test_end=test_end,
         starting_equity=starting_equity,
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-    st.caption("A vertical dotted line marks the end of the training window. Curves continue into the test window on the same scale.")
+    # Debug trace from the equity provider
+    with st.expander("Debug: equity provider trace", expanded=False):
+        msgs = st.session_state.get("ea_inspector_debug", [])
+        if msgs:
+            st.code("\n".join(msgs))
+        else:
+            st.caption("No debug messages yet.")
+
+    st.caption(
+        "A vertical dotted line marks the end of the training window. "
+        "Curves continue into the test window on the same scale."
+    )
 
 if __name__ == "__main__":
     main()
