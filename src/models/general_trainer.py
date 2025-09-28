@@ -109,6 +109,8 @@ def train_general_model(
     # --- aggregate equity & metrics ---
     agg_metrics: Dict[str, Any] = {}
 
+    agg_curve_payload = None
+
     if norm_curves:
         # Align on common index; average across columns (equal weight)
         df_curves = pd.DataFrame(norm_curves).sort_index()
@@ -120,6 +122,18 @@ def train_general_model(
 
         # Curve-quality metrics from aggregate equity
         agg_metrics = compute_core_metrics(aggregate_equity, daily, trades=[])  # trades list intentionally empty here
+
+        # Provide an explicit equity curve for downstream visualizations (e.g., EA Inspector)
+        agg_curve = aggregate_equity.dropna().astype(float)
+        if not agg_curve.empty:
+            try:
+                idx = pd.to_datetime(agg_curve.index)
+            except Exception:
+                idx = agg_curve.index
+            start_val = float(starting_equity) if starting_equity else 1.0
+            curve_values = (agg_curve * start_val).tolist()
+            curve_dates = [getattr(d, "isoformat", lambda: str(d))() for d in idx]
+            agg_curve_payload = {"date": curve_dates, "equity": curve_values}
     else:
         # No curves → empty metrics
         aggregate_equity = pd.Series(dtype=float)
@@ -142,10 +156,14 @@ def train_general_model(
     agg_metrics["win_rate"] = w_win_rate
     agg_metrics["expectancy"] = w_expectancy  # portfolio-level expectancy proxy
 
+    aggregate_payload: Dict[str, Any] = {"metrics": agg_metrics}
+    if agg_curve_payload:
+        aggregate_payload["equity_curve"] = agg_curve_payload
+
     return {
         "strategy": strategy_dotted,
         "params": dict(base_params),
         "period": {"start": str(start), "end": str(end)},
         "results": per_symbol,
-        "aggregate": {"metrics": agg_metrics},
+        "aggregate": aggregate_payload,
     }
