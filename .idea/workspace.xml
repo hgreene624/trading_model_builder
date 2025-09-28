@@ -4,9 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="pre big change to evolutionary.py">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="changed scoring to verify engine use of penalty caps. zero penalty test">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -109,15 +108,7 @@
       <workItem from="1758056469773" duration="13190000" />
       <workItem from="1758828289886" duration="3111000" />
       <workItem from="1758996558016" duration="2016000" />
-      <workItem from="1758999746262" duration="10747000" />
-    </task>
-    <task id="LOCAL-00007" summary="working param and model profiles">
-      <option name="closed" value="true" />
-      <created>1757530257452</created>
-      <option name="number" value="00007" />
-      <option name="presentableId" value="LOCAL-00007" />
-      <option name="project" value="LOCAL" />
-      <updated>1757530257452</updated>
+      <workItem from="1758999746262" duration="11864000" />
     </task>
     <task id="LOCAL-00008" summary="updated with addtional model params and working profile selectors">
       <option name="closed" value="true" />
@@ -503,7 +494,15 @@
       <option name="project" value="LOCAL" />
       <updated>1759071199297</updated>
     </task>
-    <option name="localTasksCounter" value="56" />
+    <task id="LOCAL-00056" summary="changed scoring to verify engine use of penalty caps. zero penalty test">
+      <option name="closed" value="true" />
+      <created>1759073713128</created>
+      <option name="number" value="00056" />
+      <option name="presentableId" value="LOCAL-00056" />
+      <option name="project" value="LOCAL" />
+      <updated>1759073713128</updated>
+    </task>
+    <option name="localTasksCounter" value="57" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -521,7 +520,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="successfull walkforward test" />
     <MESSAGE value="walkforward with artifact detection, test sucess" />
     <MESSAGE value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
     <MESSAGE value="refactor storage and fix portfolio page error" />
@@ -546,6 +544,7 @@
     <MESSAGE value="converted evolutionary.py to use json config and patched loader.py cache issue" />
     <MESSAGE value="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes." />
     <MESSAGE value="pre big change to evolutionary.py" />
-    <option name="LAST_COMMIT_MESSAGE" value="pre big change to evolutionary.py" />
+    <MESSAGE value="changed scoring to verify engine use of penalty caps. zero penalty test" />
+    <option name="LAST_COMMIT_MESSAGE" value="changed scoring to verify engine use of penalty caps. zero penalty test" />
   </component>
 </project>
