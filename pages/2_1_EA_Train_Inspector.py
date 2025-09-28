@@ -146,22 +146,27 @@ def _infer_log_windows(df: pd.DataFrame) -> Dict[str, Optional[date]]:
         "test_end": dataset_end,
     }
 
-def _get_session_meta(df: pd.DataFrame) -> Dict[str, Any]:
+def _get_session_meta(df: pd.DataFrame, *, first: bool = False) -> Dict[str, Any]:
     smeta_rows = (
         df[df["event"] == "session_meta"]["payload"].apply(pd.Series)
         if ("event" in df.columns and (df["event"] == "session_meta").any())
         else pd.DataFrame()
     )
-    return smeta_rows.iloc[-1].to_dict() if not smeta_rows.empty else {}
+    if smeta_rows.empty:
+        return {}
+    idx = 0 if first else -1
+    return smeta_rows.iloc[idx].to_dict()
 
-def _get_holdout_meta(df: pd.DataFrame) -> Dict[str, Any]:
+def _get_holdout_meta(df: pd.DataFrame, *, first: bool = False) -> Dict[str, Any]:
     hmeta_rows = (
         df[df["event"] == "holdout_meta"]["payload"].apply(pd.Series)
         if ("event" in df.columns and (df["event"] == "holdout_meta").any())
         else pd.DataFrame()
     )
-    # last one wins
-    return hmeta_rows.iloc[-1].to_dict() if not hmeta_rows.empty else {}
+    if hmeta_rows.empty:
+        return {}
+    idx = 0 if first else -1
+    return hmeta_rows.iloc[idx].to_dict()
 
 def _sanitize_obj_cols(df: pd.DataFrame) -> pd.DataFrame:
     """JSON-encode any dict/list columns (prevents hashing errors later)."""
@@ -447,19 +452,64 @@ def main():
     gen_df = _gen_end_table(df)
 
     # session + holdout meta
-    smeta = _get_session_meta(df)
-    hmeta = _get_holdout_meta(df)
+    smeta_latest = _get_session_meta(df)
+    smeta_initial = _get_session_meta(df, first=True)
+    hmeta_latest = _get_holdout_meta(df)
+    hmeta_initial = _get_holdout_meta(df, first=True)
 
-    strategy = smeta.get("strategy", "src.models.atr_breakout:Strategy")
-    tickers = smeta.get("tickers", [])
-    starting_equity = float(smeta.get("starting_equity", 10000.0))
+    strategy = smeta_latest.get("strategy", "src.models.atr_breakout:Strategy")
+    tickers = smeta_latest.get("tickers", [])
+    starting_equity = float(smeta_latest.get("starting_equity", 10000.0))
 
     windows = _infer_log_windows(df)
 
-    train_start_date = windows.get("train_start") or _coerce_date(smeta.get("train_start"))
-    train_end_date = windows.get("train_end") or _coerce_date(smeta.get("train_end"))
-    test_start_date = windows.get("test_start") or _coerce_date(hmeta.get("holdout_start"))
-    test_end_date = windows.get("test_end") or _coerce_date(hmeta.get("holdout_end"))
+    def _first_non_null(*candidates: Any) -> Optional[date]:
+        for cand in candidates:
+            d = _coerce_date(cand)
+            if d is not None:
+                return d
+        return None
+
+    train_start_date = _first_non_null(
+        smeta_initial.get("train_start"),
+        _deep_get(smeta_initial, "train", "start"),
+        windows.get("train_start"),
+    )
+
+    train_end_date = _first_non_null(
+        smeta_initial.get("train_end"),
+        _deep_get(smeta_initial, "train", "end"),
+        hmeta_initial.get("train_end"),
+        windows.get("train_end"),
+    )
+
+    dataset_start = _first_non_null(
+        hmeta_initial.get("holdout_start"),
+        _deep_get(hmeta_initial, "test", "start"),
+        windows.get("test_start"),
+    )
+
+    dataset_end = _first_non_null(
+        hmeta_latest.get("holdout_end"),
+        _deep_get(hmeta_latest, "test", "end"),
+        windows.get("test_end"),
+    )
+
+    test_start_date: Optional[date] = None
+    if train_end_date is not None:
+        test_start_date = train_end_date + timedelta(days=1)
+        if dataset_start is not None and test_start_date < dataset_start:
+            test_start_date = dataset_start
+    else:
+        test_start_date = dataset_start
+
+    test_end_date = dataset_end
+
+    if train_start_date and train_end_date and train_start_date > train_end_date:
+        train_start_date, train_end_date = train_end_date, train_start_date
+
+    if test_end_date and test_start_date and test_end_date < test_start_date:
+        test_end_date = test_start_date
 
     def _fmt(d: Optional[date]) -> str:
         return d.isoformat() if isinstance(d, date) else ""
@@ -471,7 +521,7 @@ def main():
     st.session_state.ea_inspect_gen = int(min(max_gen, max(0, st.session_state.ea_inspect_gen)))
 
     # Controls row
-    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
+    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 3, 2])
 
     with c1:
         st.markdown("**Training window**")
@@ -489,18 +539,20 @@ def main():
 
     with c4:
         st.markdown("**Playback**")
-        control_cols = st.columns(4)
-        if control_cols[0].button("◀ Prev", use_container_width=True):
+        top_controls = st.columns(2)
+        if top_controls[0].button("◀ Prev", use_container_width=True):
             st.session_state.ea_inspect_gen = max(0, st.session_state.ea_inspect_gen - 1)
             st.session_state.ea_playback_active = False
-        if control_cols[1].button("▶ Play", use_container_width=True):
+        if top_controls[1].button("Next ▶", use_container_width=True):
+            st.session_state.ea_inspect_gen = min(max_gen, st.session_state.ea_inspect_gen + 1)
+            st.session_state.ea_playback_active = False
+
+        bottom_controls = st.columns(2)
+        if bottom_controls[0].button("▶ Play", use_container_width=True):
             if st.session_state.ea_inspect_gen >= max_gen:
                 st.session_state.ea_inspect_gen = 0
             st.session_state.ea_playback_active = True
-        if control_cols[2].button("⏸ Pause", use_container_width=True):
-            st.session_state.ea_playback_active = False
-        if control_cols[3].button("Next ▶", use_container_width=True):
-            st.session_state.ea_inspect_gen = min(max_gen, st.session_state.ea_inspect_gen + 1)
+        if bottom_controls[1].button("⏸ Pause", use_container_width=True):
             st.session_state.ea_playback_active = False
 
         speed_options = [0.25, 0.5, 1.0, 1.5, 2.0]
