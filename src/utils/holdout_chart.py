@@ -1,7 +1,9 @@
+from importlib import import_module
 from typing import Any, Callable, Dict, List, Tuple
-import streamlit as st
-import plotly.graph_objects as go
+
 import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
 
 
 # ---- Internal state keys ------------------------------------------------------
@@ -209,3 +211,110 @@ def on_generation_end(gen_idx: int, best_score: float, best_params: Dict[str, An
     st.session_state[_ss_key("history")] = history
 
     _render(history, placeholder)
+
+
+# ---- Standalone equity helper -------------------------------------------------
+
+def holdout_equity(
+    params: Dict[str, Any] | None = None,
+    start: Any | None = None,
+    end: Any | None = None,
+    tickers: List[str] | str | None = None,
+    starting_equity: float | None = None,
+    strategy: str | None = None,
+) -> pd.DataFrame:
+    """Simulate the aggregated equity curve for the requested window.
+
+    This mirrors the Strategy Adapter's portfolio simulation logic so that
+    external tools (e.g. EA Train/Test Inspector) can render the same holdout
+    curve without importing Streamlit UI helpers.
+    """
+
+    if not strategy:
+        return pd.DataFrame(columns=["date", "equity"])
+
+    params = params or {}
+    tickers = tickers or []
+    if isinstance(tickers, str):
+        tickers = [t.strip() for t in tickers.split(",") if t.strip()]
+
+    if not tickers:
+        return pd.DataFrame(columns=["date", "equity"])
+
+    try:
+        mod = import_module(strategy)
+        run_strategy = getattr(mod, "run_strategy")
+    except Exception:
+        return pd.DataFrame(columns=["date", "equity"])
+
+    curves: Dict[str, pd.Series] = {}
+    for sym in tickers:
+        try:
+            result = run_strategy(sym, start, end, starting_equity, params)
+        except Exception:
+            continue
+
+        eq = result.get("equity") if isinstance(result, dict) else None
+        if eq is None or len(eq) == 0:
+            continue
+
+        if isinstance(eq, pd.DataFrame):
+            if "equity" in eq.columns:
+                eq = eq["equity"]
+            else:
+                eq = eq.iloc[:, 0]
+        elif not isinstance(eq, pd.Series):
+            try:
+                eq = pd.Series(eq)
+            except Exception:
+                continue
+
+        eq = eq.dropna()
+        if eq.empty:
+            continue
+
+        if not isinstance(eq.index, pd.DatetimeIndex):
+            try:
+                eq.index = pd.to_datetime(eq.index, errors="coerce")
+            except Exception:
+                continue
+
+        eq = eq[~eq.index.isna()].sort_index()
+        if eq.empty:
+            continue
+
+        try:
+            eq = eq.astype(float)
+        except Exception:
+            continue
+
+        first_valid = None
+        for val in eq.values:
+            if pd.isna(val):
+                continue
+            try:
+                fv = float(val)
+            except (TypeError, ValueError):
+                continue
+            if abs(fv) > 1e-12:
+                first_valid = fv
+                break
+        if first_valid is None:
+            continue
+
+        curves[sym] = (eq / first_valid).astype(float)
+
+    if not curves:
+        return pd.DataFrame(columns=["date", "equity"])
+
+    df_curves = pd.DataFrame(curves).sort_index().ffill().dropna(how="all")
+    if df_curves.empty:
+        return pd.DataFrame(columns=["date", "equity"])
+
+    base_equity = float(starting_equity or 100_000.0)
+    portfolio = df_curves.mean(axis=1, skipna=True) * base_equity
+    portfolio = portfolio.dropna()
+    if portfolio.empty:
+        return pd.DataFrame(columns=["date", "equity"])
+
+    return pd.DataFrame({"date": portfolio.index, "equity": portfolio.values})
