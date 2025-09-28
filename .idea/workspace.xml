@@ -4,11 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="updated fitness calculation in evolutionary.py with normalized values to address noncorrelation of socres and ROE. improved but still replacing better models with worse performers with higher score">
-      <change afterPath="$PROJECT_DIR$/scripts/ea_score_audit.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/ea_weight_tuner.py" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="converted evolutionary.py to use json config and patched loader.py cache issue">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/ea_score_audit.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/ea_score_audit.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/ea_weight_tuner.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/ea_weight_tuner.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -112,15 +111,7 @@
       <workItem from="1758056469773" duration="13190000" />
       <workItem from="1758828289886" duration="3111000" />
       <workItem from="1758996558016" duration="2016000" />
-      <workItem from="1758999746262" duration="5444000" />
-    </task>
-    <task id="LOCAL-00004" summary="Working V1 framework. No evolution algo">
-      <option name="closed" value="true" />
-      <created>1757525043412</created>
-      <option name="number" value="00004" />
-      <option name="presentableId" value="LOCAL-00004" />
-      <option name="project" value="LOCAL" />
-      <updated>1757525043412</updated>
+      <workItem from="1758999746262" duration="7247000" />
     </task>
     <task id="LOCAL-00005" summary="engine updates. pre tker page update">
       <option name="closed" value="true" />
@@ -506,7 +497,15 @@
       <option name="project" value="LOCAL" />
       <updated>1759001422709</updated>
     </task>
-    <option name="localTasksCounter" value="53" />
+    <task id="LOCAL-00053" summary="converted evolutionary.py to use json config and patched loader.py cache issue">
+      <option name="closed" value="true" />
+      <created>1759068242398</created>
+      <option name="number" value="00053" />
+      <option name="presentableId" value="LOCAL-00053" />
+      <option name="project" value="LOCAL" />
+      <updated>1759068242398</updated>
+    </task>
+    <option name="localTasksCounter" value="54" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -524,7 +523,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="data pipeline validated, with test. requirements updated. starting test for strategy adapter" />
     <MESSAGE value="sucessfull strategy adapter test" />
     <MESSAGE value="sucessfull strategy adapter test V2" />
     <MESSAGE value="successfull walkforward test" />
@@ -549,6 +547,7 @@
     <MESSAGE value="working save es parmas button" />
     <MESSAGE value="md params file created" />
     <MESSAGE value="updated fitness calculation in evolutionary.py with normalized values to address noncorrelation of socres and ROE. improved but still replacing better models with worse performers with higher score" />
-    <option name="LAST_COMMIT_MESSAGE" value="updated fitness calculation in evolutionary.py with normalized values to address noncorrelation of socres and ROE. improved but still replacing better models with worse performers with higher score" />
+    <MESSAGE value="converted evolutionary.py to use json config and patched loader.py cache issue" />
+    <option name="LAST_COMMIT_MESSAGE" value="converted evolutionary.py to use json config and patched loader.py cache issue" />
   </component>
 </project>

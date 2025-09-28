@@ -11,9 +11,9 @@ New in this revision:
 - Fitness:
         base = α*CAGR + β*Calmar + γ*Sharpe + δ*TotalReturn
         Calmar is clamped to ±calmar_cap before weighting to avoid runaway ratios.
-    hold_pen = λ_hold * penalty(avg_holding_days outside [min_hold, max_hold])
-    rate_pen = λ_rate * penalty(trade_rate outside [rate_min, rate_max])
-    score = base - hold_pen - rate_pen
+    hold_pen = λ_hold * normalized_penalty(avg_holding_days outside [min_hold, max_hold])
+    rate_pen = λ_rate * normalized_penalty(trade_rate outside [rate_min, rate_max])
+    score = base - min(hold_pen + rate_pen, penalty_cap)
 - All knobs exposed as function args (UI-ready)
 """
 
@@ -48,6 +48,8 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
       - alpha_cagr, beta_calmar, gamma_sharpe, delta_total_return (floats)
       - calmar_cap (float)
       - use_normalized_scoring (bool)
+      - holding_penalty_weight, trade_rate_penalty_weight, penalty_cap (floats)
+      - min_holding_days, max_holding_days, trade_rate_min, trade_rate_max (floats)
     """
     try:
         p = Path(path or "storage/config/ea_fitness.json")
@@ -71,8 +73,19 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         if "use_normalized_scoring" in data:
             v = data["use_normalized_scoring"]
             out["use_normalized_scoring"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
+        if "holding_penalty_weight" in data: out["holding_penalty_weight"] = _getf("holding_penalty_weight")
+        if "trade_rate_penalty_weight" in data: out["trade_rate_penalty_weight"] = _getf("trade_rate_penalty_weight")
+        if "penalty_cap" in data: out["penalty_cap"] = _getf("penalty_cap")
+        if "min_holding_days" in data: out["min_holding_days"] = _getf("min_holding_days")
+        if "max_holding_days" in data: out["max_holding_days"] = _getf("max_holding_days")
+        if "trade_rate_min" in data: out["trade_rate_min"] = _getf("trade_rate_min")
+        if "trade_rate_max" in data: out["trade_rate_max"] = _getf("trade_rate_max")
         # Drop any None-coerced floats
-        for k in ["alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap"]:
+        for k in [
+            "alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap",
+            "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
+            "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
+        ]:
             if k in out and out[k] is None:
                 out.pop(k, None)
         return out
@@ -173,6 +186,7 @@ def _clamped_fitness(
     num_symbols: int,
     years: float,
     calmar_cap: float,
+    penalty_cap: float = 0.50,
     use_normalized_scoring: bool = True,
 ) -> float:
     """
@@ -246,14 +260,20 @@ def _clamped_fitness(
             + (delta_total_return * tr_n)
         )
 
-    hold_pen = holding_penalty_weight * _holding_penalty(avg_hold, min_holding_days, max_holding_days)
+    # ---- Normalized, capped penalties ----------------------------------
+    _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
+    hold_dist = _holding_penalty(avg_hold, min_holding_days, max_holding_days)
+    hold_pen  = holding_penalty_weight * (hold_dist / _bw_hold)
 
     trade_rate = 0.0
     if num_symbols > 0 and years > 0:
         trade_rate = float(trades) / float(num_symbols) / float(years)
-    rate_pen = trade_rate_penalty_weight * _rate_penalty(trade_rate, trade_rate_min, trade_rate_max)
+    _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
+    rate_dist = _rate_penalty(trade_rate, trade_rate_min, trade_rate_max)
+    rate_pen  = trade_rate_penalty_weight * (rate_dist / _bw_rate)
 
-    return float(base - hold_pen - rate_pen)
+    penalty_total = min(hold_pen + rate_pen, float(penalty_cap))
+    return float(base - penalty_total)
 
 
 # --------------------------- Child evaluation ----------------------------
@@ -322,6 +342,7 @@ def evolutionary_search(
     trade_rate_max: float = 50.0,
     trade_rate_penalty_weight: float = 0.5,
     calmar_cap: float = 3.0,
+    penalty_cap: float = 0.50,
     use_normalized_scoring: bool = True,
     # Progress & logging
     progress_cb: Optional[ProgressCb] = None,
@@ -360,6 +381,13 @@ def evolutionary_search(
         delta_total_return = _cfg.get("delta_total_return", delta_total_return)
         calmar_cap = _cfg.get("calmar_cap", calmar_cap)
         use_normalized_scoring = _cfg.get("use_normalized_scoring", use_normalized_scoring)
+        holding_penalty_weight = _cfg.get("holding_penalty_weight", holding_penalty_weight)
+        trade_rate_penalty_weight = _cfg.get("trade_rate_penalty_weight", trade_rate_penalty_weight)
+        penalty_cap = _cfg.get("penalty_cap", penalty_cap)
+        min_holding_days = _cfg.get("min_holding_days", min_holding_days)
+        max_holding_days = _cfg.get("max_holding_days", max_holding_days)
+        trade_rate_min = _cfg.get("trade_rate_min", trade_rate_min)
+        trade_rate_max = _cfg.get("trade_rate_max", trade_rate_max)
         # Emit a one-time breadcrumb so logs show which source set the weights
         logger.log("fitness_config", {
             "source": "storage/config/ea_fitness.json",
@@ -370,6 +398,13 @@ def evolutionary_search(
                 "delta_total_return": delta_total_return,
                 "calmar_cap": calmar_cap,
                 "use_normalized_scoring": use_normalized_scoring,
+                "holding_penalty_weight": holding_penalty_weight,
+                "trade_rate_penalty_weight": trade_rate_penalty_weight,
+                "penalty_cap": penalty_cap,
+                "min_holding_days": min_holding_days,
+                "max_holding_days": max_holding_days,
+                "trade_rate_min": trade_rate_min,
+                "trade_rate_max": trade_rate_max,
             },
         })
 
@@ -462,6 +497,7 @@ def evolutionary_search(
                 num_symbols=num_symbols,
                 years=years,
                 calmar_cap=calmar_cap,
+                penalty_cap=penalty_cap,
                 use_normalized_scoring=use_normalized_scoring,
             )
 
@@ -564,6 +600,13 @@ def evolutionary_search(
                 "delta_total_return": delta_total_return,
                 "calmar_cap": calmar_cap,
                 "use_normalized_scoring": use_normalized_scoring,
+                "holding_penalty_weight": holding_penalty_weight,
+                "trade_rate_penalty_weight": trade_rate_penalty_weight,
+                "penalty_cap": penalty_cap,
+                "min_holding_days": min_holding_days,
+                "max_holding_days": max_holding_days,
+                "trade_rate_min": trade_rate_min,
+                "trade_rate_max": trade_rate_max,
             },
         }
         progress_cb("generation_end", end_payload)
@@ -586,6 +629,13 @@ def evolutionary_search(
             "delta_total_return": delta_total_return,
             "calmar_cap": calmar_cap,
             "use_normalized_scoring": use_normalized_scoring,
+            "holding_penalty_weight": holding_penalty_weight,
+            "trade_rate_penalty_weight": trade_rate_penalty_weight,
+            "penalty_cap": penalty_cap,
+            "min_holding_days": min_holding_days,
+            "max_holding_days": max_holding_days,
+            "trade_rate_min": trade_rate_min,
+            "trade_rate_max": trade_rate_max,
         },
     }
     progress_cb("done", done_payload)
