@@ -78,6 +78,68 @@ def get_cached_ranges(symbols: Iterable[str], timeframe: str = "1D") -> Dict[str
     return out
 
 
+def list_cached_shards(symbols: Iterable[str], timeframe: str = "1D") -> Dict[str, List[Dict[str, str]]]:
+    """
+    Enumerate cached parquet shards for the given symbols/timeframe.
+
+    Returns a mapping suitable for JSON persistence:
+        {
+          "AAPL": [
+             {"provider": "alpaca", "timeframe": "1D", "start": "2023-01-01",
+              "end": "2023-12-31", "path": "alpaca/AAPL/1D/2023-01-01__2023-12-31.parquet"},
+             ...
+          ],
+          ...
+        }
+    Paths are relative to ``get_ohlcv_root()`` so they stay portable across machines.
+    """
+
+    root = get_ohlcv_root()
+    tf = (timeframe or "1D").upper()
+    result: Dict[str, List[Dict[str, str]]] = {}
+
+    for sym in symbols or []:
+        sym_norm = str(sym).strip().upper()
+        if not sym_norm:
+            continue
+
+        shards: List[Dict[str, str]] = []
+        for cache_dir in _cache_dirs_for(sym_norm, timeframe=tf):
+            if not cache_dir.exists():
+                continue
+            try:
+                rel_dir = cache_dir.relative_to(root)
+                provider = rel_dir.parts[0] if rel_dir.parts else ""
+            except ValueError:
+                # If the cache lives outside the root for any reason, fall back to folder name heuristics
+                provider = cache_dir.parts[-3] if len(cache_dir.parts) >= 3 else cache_dir.name
+
+            for file_path in sorted(cache_dir.glob("*.parquet")):
+                span = _parse_cache_span(file_path)
+                if not span:
+                    continue
+                start_ts, end_ts = span
+                try:
+                    rel_path = file_path.relative_to(root)
+                except ValueError:
+                    rel_path = file_path
+                shards.append(
+                    {
+                        "provider": provider,
+                        "timeframe": tf,
+                        "start": start_ts.date().isoformat(),
+                        "end": end_ts.date().isoformat(),
+                        "path": str(rel_path),
+                    }
+                )
+
+        if shards:
+            shards.sort(key=lambda rec: (rec.get("start") or "", rec.get("end") or "", rec.get("path") or ""))
+            result[sym_norm] = shards
+
+    return result
+
+
 # ---------------------------
 # Prefetch + ranges (main)
 # ---------------------------
