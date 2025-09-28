@@ -4,11 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="converted evolutionary.py to use json config and patched loader.py cache issue">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/ea_score_audit.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/ea_score_audit.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/ea_weight_tuner.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/ea_weight_tuner.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/optimization/evolutionary.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/optimization/evolutionary.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -111,15 +108,7 @@
       <workItem from="1758056469773" duration="13190000" />
       <workItem from="1758828289886" duration="3111000" />
       <workItem from="1758996558016" duration="2016000" />
-      <workItem from="1758999746262" duration="7247000" />
-    </task>
-    <task id="LOCAL-00005" summary="engine updates. pre tker page update">
-      <option name="closed" value="true" />
-      <created>1757526354060</created>
-      <option name="number" value="00005" />
-      <option name="presentableId" value="LOCAL-00005" />
-      <option name="project" value="LOCAL" />
-      <updated>1757526354060</updated>
+      <workItem from="1758999746262" duration="8511000" />
     </task>
     <task id="LOCAL-00006" summary="V1 evolutionary tuning">
       <option name="closed" value="true" />
@@ -505,7 +494,15 @@
       <option name="project" value="LOCAL" />
       <updated>1759068242398</updated>
     </task>
-    <option name="localTasksCounter" value="54" />
+    <task id="LOCAL-00054" summary="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes.">
+      <option name="closed" value="true" />
+      <created>1759069870624</created>
+      <option name="number" value="00054" />
+      <option name="presentableId" value="LOCAL-00054" />
+      <option name="project" value="LOCAL" />
+      <updated>1759069870624</updated>
+    </task>
+    <option name="localTasksCounter" value="55" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -523,7 +520,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="sucessfull strategy adapter test" />
     <MESSAGE value="sucessfull strategy adapter test V2" />
     <MESSAGE value="successfull walkforward test" />
     <MESSAGE value="walkforward with artifact detection, test sucess" />
@@ -548,6 +544,7 @@
     <MESSAGE value="md params file created" />
     <MESSAGE value="updated fitness calculation in evolutionary.py with normalized values to address noncorrelation of socres and ROE. improved but still replacing better models with worse performers with higher score" />
     <MESSAGE value="converted evolutionary.py to use json config and patched loader.py cache issue" />
-    <option name="LAST_COMMIT_MESSAGE" value="converted evolutionary.py to use json config and patched loader.py cache issue" />
+    <MESSAGE value="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes." />
+    <option name="LAST_COMMIT_MESSAGE" value="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes." />
   </component>
 </project>
