@@ -423,6 +423,14 @@ def evolutionary_search(
             },
         })
 
+    # One-time session metadata for inspector tooling
+    logger.log("session_meta", {
+        "strategy": strategy_dotted,
+        "tickers": list(tickers) if isinstance(tickers, (list, tuple)) else [str(tickers)],
+        "starting_equity": float(starting_equity),
+        "train_start": str(start),
+        "train_end": str(end),
+    })
     # years used for trade-rate normalization
     def _years(a, b) -> float:
         # support date/datetime/str
@@ -444,6 +452,11 @@ def evolutionary_search(
         gen_trades: List[int] = []
         no_trade_count = 0
         best_gen_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
+
+        # Per-generation penalty/gating trackers (for telemetry)
+        gen_penalties_capped: List[float] = []
+        gen_cap_hits: int = 0
+        gen_gated_zeros: int = 0
 
         # ---- Evaluate population (parallel or single) ----
         results: List[Dict[str, Any]] = []
@@ -583,6 +596,15 @@ def evolutionary_search(
                     "penalty_total_capped": pen_cap,
                 }
 
+            # --- accumulate per-gen telemetry ---------------------------------
+            if fitness_dbg.get("gated_zero", False):
+                gen_gated_zeros += 1
+            else:
+                pen_cap_val = float(fitness_dbg.get("penalty_total_capped", 0.0) or 0.0)
+                gen_penalties_capped.append(pen_cap_val)
+                if pen_cap_val >= float(penalty_cap) - 1e-12:
+                    gen_cap_hits += 1
+
             trades = int(metrics.get("trades", 0) or 0)
             gen_trades.append(trades)
 
@@ -689,6 +711,18 @@ def evolutionary_search(
         avg_trades = (sum(gen_trades) / len(gen_trades)) if gen_trades else 0.0
         pct_no_trades = (no_trade_count / len(gen_trades)) if gen_trades else 0.0
 
+        # Compute per-generation penalty/gating telemetry
+        _n = max(1, len(gen_scores))
+        cap_hit_rate = float(gen_cap_hits) / float(_n)
+        share_gated_zero = float(gen_gated_zeros) / float(_n)
+        if gen_penalties_capped:
+            # safe mean and p95
+            _pen_mean = float(sum(gen_penalties_capped) / len(gen_penalties_capped))
+            _pen_p95 = float(sorted(gen_penalties_capped)[int(0.95 * (len(gen_penalties_capped) - 1))])
+        else:
+            _pen_mean = 0.0
+            _pen_p95 = 0.0
+
         end_payload = {
             "gen": gen,
             "best_score": best_score,
@@ -718,6 +752,12 @@ def evolutionary_search(
                 "trade_rate_max": trade_rate_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
+            },
+            "penalty_stats": {
+                "cap_hit_rate": cap_hit_rate,
+                "share_gated_zero": share_gated_zero,
+                "penalty_mean": _pen_mean,
+                "penalty_p95": _pen_p95,
             },
         }
         progress_cb("generation_end", end_payload)

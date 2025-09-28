@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from src.utils.holdout_chart import init_chart, on_generation_end, set_config  # package path fallback
+from src.utils.training_logger import TrainingLogger
 from src.storage import list_portfolios, load_portfolio, save_strategy_params
 
 # --- Page chrome ---
@@ -683,6 +684,24 @@ if run_btn:
     log_dir = os.path.join("storage", "logs", "ea")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"{ts}_ea.jsonl")
+
+    # Log the holdout (simulation) window so tools can detect train→test boundary
+    try:
+        TrainingLogger(log_file).log("holdout_meta", {
+            "gen": 0,
+            "holdout_start": str(holdout_start),
+            "holdout_end": str(holdout_end),
+            "starting_equity": float(equity),
+            # Include train_end to explicitly mark the boundary in the same log
+            "train_end": str(end),
+            "costs": {
+                "cost_bps": float(base.get("cost_bps", 0.0)),
+            },
+            "source": "StrategyAdapter",
+        })
+    except Exception:
+        # Logging is best-effort; never block the run if the file isn't writable yet
+        pass
 
     # Run EA search (helper updates chart live via on_generation_end)
     try:
