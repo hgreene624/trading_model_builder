@@ -6,7 +6,14 @@
   <component name="ChangeListManager">
     <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="ea train inspector started. EA logger updated with session timeframe data. framework there but not working.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_1_EA_Train_Inspector.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_1_EA_Train_Inspector.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Initial Files/alpaca2fa" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Initial Files/project_scaffold_min_clean.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Initial Files/starter_impl_v1.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/indexes.json" beforeDir="false" afterPath="$PROJECT_DIR$/data/indexes.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/4_Ticker_Selector_and_Tuning.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/4_Ticker_Selector_and_Tuning.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/data/universe.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/data/universe.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/storage.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/storage.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_index_catalog.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_index_catalog.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -51,30 +58,30 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;scoring-refactor&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.general&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
+    "git-widget-placeholder": "#17 on codex/refactor-portfolio-page-for…ality",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "preferences.general",
+    "vue.rearranger.settings.migration": "true"
   }
-}</component>
+}]]></component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/data/indexes" />
+      <recent name="$PROJECT_DIR$/data" />
+      <recent name="$PROJECT_DIR$" />
       <recent name="$PROJECT_DIR$/Pages_UNUSED" />
       <recent name="$PROJECT_DIR$/src/utils" />
-      <recent name="$PROJECT_DIR$" />
-      <recent name="$PROJECT_DIR$/data" />
-      <recent name="$PROJECT_DIR$/my-trading-app" />
     </key>
   </component>
   <component name="SharedIndexes">
@@ -111,14 +118,6 @@
       <workItem from="1758996558016" duration="2016000" />
       <workItem from="1758999746262" duration="14204000" />
       <workItem from="1759077063615" duration="2294000" />
-    </task>
-    <task id="LOCAL-00010" summary="&#10;- Checkbox to toggle risk-parity vs equal weights.&#10;- Compute weights from daily stddev of returns over sim range.&#10;- Keep per-ticker strategy selection + portfolio params fallback.">
-      <option name="closed" value="true" />
-      <created>1757533497798</created>
-      <option name="number" value="00010" />
-      <option name="presentableId" value="LOCAL-00010" />
-      <option name="project" value="LOCAL" />
-      <updated>1757533497798</updated>
     </task>
     <task id="LOCAL-00011" summary="individual ticker graphs in simulation results with buy and sell markers">
       <option name="closed" value="true" />
@@ -504,7 +503,15 @@
       <option name="project" value="LOCAL" />
       <updated>1759078579041</updated>
     </task>
-    <option name="localTasksCounter" value="59" />
+    <task id="LOCAL-00059" summary="added AGENTS.md at root">
+      <option name="closed" value="true" />
+      <created>1759105938749</created>
+      <option name="number" value="00059" />
+      <option name="presentableId" value="LOCAL-00059" />
+      <option name="project" value="LOCAL" />
+      <updated>1759105938749</updated>
+    </task>
+    <option name="localTasksCounter" value="60" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -522,7 +529,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
     <MESSAGE value="refactor storage and fix portfolio page error" />
     <MESSAGE value="fixed portfolio storage and loading in portfolios page" />
     <MESSAGE value="fixed portfolio loading in strategy adapter. problem loading historical when training" />
@@ -547,6 +553,7 @@
     <MESSAGE value="pre big change to evolutionary.py" />
     <MESSAGE value="changed scoring to verify engine use of penalty caps. zero penalty test" />
     <MESSAGE value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
-    <option name="LAST_COMMIT_MESSAGE" value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
+    <MESSAGE value="added AGENTS.md at root" />
+    <option name="LAST_COMMIT_MESSAGE" value="added AGENTS.md at root" />
   </component>
 </project>
