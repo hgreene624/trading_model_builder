@@ -4,6 +4,7 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 # Storage + data helpers from your project
 from src.storage import (
@@ -12,7 +13,11 @@ from src.storage import (
     save_portfolio,
 )
 from src.data.loader import get_ohlcv
-from src.data.portfolio_prefetch import now_utc_iso
+from src.data.portfolio_prefetch import (
+    load_cached_window,
+    now_utc_iso,
+    prefetch_and_ranges,
+)
 
 # -----------------------
 # Page config / Title
@@ -133,6 +138,10 @@ def _load_index_df(index_key: str | None) -> pd.DataFrame:
     df = pd.DataFrame()
     if index_key:
         payload = load_index_members(index_key)
+        if isinstance(payload, dict):
+            ss["_pf_index_payload"] = payload
+        else:
+            ss.pop("_pf_index_payload", None)
         # Common shapes:
         # { "members": [{"symbol":...,"name":...,"sector":...}, ...] }
         # { "symbols": ["AAPL","MSFT", ...] }
@@ -153,6 +162,8 @@ def _load_index_df(index_key: str | None) -> pd.DataFrame:
                 df = pd.DataFrame(payload)
             except Exception:
                 df = pd.DataFrame()
+    else:
+        ss.pop("_pf_index_payload", None)
 
     # 2) fallback if nothing in storage or malformed
     if df.empty:
@@ -185,6 +196,20 @@ index_key = st.sidebar.selectbox(
     options=(available_indexes or ["<built-in sample>"]),
     index=0,
 )
+
+index_meta_payload = ss.get("_pf_index_payload") if index_key != "<built-in sample>" else None
+if isinstance(index_meta_payload, dict):
+    source_meta = index_meta_payload.get("meta", {})
+    total = len(index_meta_payload.get("symbols") or [])
+    source_bits = []
+    if total:
+        source_bits.append(f"{total} tickers")
+    if source_meta.get("source_type"):
+        source_bits.append(str(source_meta["source_type"]))
+    if source_meta.get("source_path"):
+        source_bits.append(Path(source_meta["source_path"]).name)
+    if source_bits:
+        st.sidebar.caption(" • ".join(source_bits))
 
 # Core page controls
 col_top1, col_top2, col_top3 = st.columns([1, 1, 1])
@@ -266,37 +291,54 @@ if st.button("📉 Fetch OHLCV & compute liquidity", type="primary"):
         st.warning("No tickers in the working universe after filters/cap.")
         st.stop()
 
-    # Prefetch + compute liquidity + build per-symbol ranges inline
-    per_ranges: dict[str, dict[str, str]] = {}
+    priors_start_dt = _to_dt(priors_start)
+    priors_end_dt = _to_dt(priors_end)
+
+    with st.spinner("Prefetching OHLCV shards to cache…"):
+        per_ranges = prefetch_and_ranges(
+            tickers,
+            priors_start_dt,
+            priors_end_dt,
+            timeframe="1D",
+        )
+
     liq_rows: list[dict] = []
     prog = st.progress(0.0)
+    failures: list[str] = []
     for i, sym in enumerate(tickers, start=1):
         try:
-            # Warm cache (and RAM on repeat) and return bars
-            bars = get_ohlcv(sym, _to_dt(priors_start), _to_dt(priors_end), "1D")
+            bars = load_cached_window(sym, priors_start_dt, priors_end_dt, timeframe="1D")
+            if bars.empty:
+                # Fallback to direct fetch (and cache) if cache miss after prefetch
+                bars = get_ohlcv(sym, priors_start_dt, priors_end_dt, "1D")
 
-            # Liquidity
+            if bars.empty:
+                raise RuntimeError("no OHLCV returned")
+
             med_close = float(bars["close"].median())
             med_dvol = float((bars["close"] * bars["volume"]).median())
             liq_rows.append(
                 {"symbol": sym, "median_close_priors": med_close, "median_dollar_vol_priors": med_dvol}
             )
 
-            # Coverage range for this symbol
-            _add_range_from_bars(per_ranges, sym, bars)
+            # If we fetched bars directly, update ranges inline as well.
+            if sym not in per_ranges:
+                _add_range_from_bars(per_ranges, sym, bars)
         except Exception as e:
-            st.write(f"[liquidity] {sym}: {e!r}")
+            failures.append(f"{sym}: {e!r}")
         finally:
             prog.progress(i / len(tickers))
     prog.empty()
 
-    # Persist ranges for saving into portfolio meta
+    if failures:
+        with st.expander("Symbols with liquidity fetch issues", expanded=False):
+            for msg in failures:
+                st.write(msg)
+
     ss["pf_per_ranges"] = per_ranges
 
-    # Upsert liquidity columns without merging (no overlap)
     meta_filt_capped = _upsert_liquidity_cols(meta_filt_capped, liq_rows)
 
-    # Store in session so filters below operate on enriched data
     ss["universe_enriched"] = meta_filt_capped
 
 # Use enriched if available, otherwise fall back to capped

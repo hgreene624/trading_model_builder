@@ -42,6 +42,28 @@ def _cache_dirs_for(symbol: str, timeframe: str = "1D") -> List[Path]:
     ]
 
 
+def _ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of df with a UTC DatetimeIndex and sorted rows."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    out = df.copy()
+    idx = out.index
+    if not isinstance(idx, pd.DatetimeIndex):
+        out.index = pd.to_datetime(idx, utc=True, errors="coerce")
+    else:
+        if idx.tz is None:
+            out.index = idx.tz_localize("UTC")
+        else:
+            out.index = idx.tz_convert("UTC")
+
+    out = out.sort_index()
+    keep = [c for c in ("open", "high", "low", "close", "volume") if c in out.columns]
+    if keep:
+        out = out[keep]
+    return out
+
+
 def _parse_cache_span(path: Path) -> Optional[Tuple[pd.Timestamp, pd.Timestamp]]:
     m = _CACHE_FILE_RE.search(path.name)
     if not m:
@@ -66,6 +88,63 @@ def get_cached_symbol_range(symbol: str, timeframe: str = "1D") -> SymbolRange:
     if not mins or not maxs:
         return SymbolRange(symbol=symbol.upper(), start=None, end=None)
     return SymbolRange(symbol=symbol.upper(), start=min(mins), end=max(maxs))
+
+
+def load_cached_window(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    timeframe: str = "1D",
+) -> pd.DataFrame:
+    """
+    Assemble cached OHLCV shards for the requested [symbol, timeframe] window.
+
+    Returns a normalized frame (open/high/low/close/volume, UTC index) sliced to
+    the requested bounds. If no cache coverage exists, returns an empty frame.
+    """
+
+    if not symbol:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    if start_ts.tz is None:
+        start_ts = start_ts.tz_localize("UTC")
+    else:
+        start_ts = start_ts.tz_convert("UTC")
+    if end_ts.tz is None:
+        end_ts = end_ts.tz_localize("UTC")
+    else:
+        end_ts = end_ts.tz_convert("UTC")
+
+    shards: list[pd.DataFrame] = []
+    for cache_dir in _cache_dirs_for(symbol, timeframe):
+        if not cache_dir.exists():
+            continue
+        for shard_path in sorted(cache_dir.glob("*.parquet")):
+            span = _parse_cache_span(shard_path)
+            if not span:
+                continue
+            shard_start, shard_end = span
+            if shard_end < start_ts or shard_start > end_ts:
+                continue
+            try:
+                raw = pd.read_parquet(shard_path)
+            except Exception as exc:  # pragma: no cover - corrupt shard
+                print(f"[portfolio_prefetch] failed to read cache shard {shard_path}: {exc!r}")
+                continue
+            norm = _ensure_utc_index(raw)
+            if norm.empty:
+                continue
+            shards.append(norm)
+
+    if not shards:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    combined = pd.concat(shards).sort_index()
+    combined = combined.loc[(combined.index >= start_ts) & (combined.index <= end_ts)]
+    combined = combined[~combined.index.duplicated(keep="last")]
+    return combined
 
 
 def get_cached_ranges(symbols: Iterable[str], timeframe: str = "1D") -> Dict[str, SymbolRange]:
