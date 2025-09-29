@@ -4,6 +4,7 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 # Storage + data helpers from your project
 from src.storage import (
@@ -133,6 +134,10 @@ def _load_index_df(index_key: str | None) -> pd.DataFrame:
     df = pd.DataFrame()
     if index_key:
         payload = load_index_members(index_key)
+        if isinstance(payload, dict):
+            ss["_pf_index_payload"] = payload
+        else:
+            ss.pop("_pf_index_payload", None)
         # Common shapes:
         # { "members": [{"symbol":...,"name":...,"sector":...}, ...] }
         # { "symbols": ["AAPL","MSFT", ...] }
@@ -153,6 +158,8 @@ def _load_index_df(index_key: str | None) -> pd.DataFrame:
                 df = pd.DataFrame(payload)
             except Exception:
                 df = pd.DataFrame()
+    else:
+        ss.pop("_pf_index_payload", None)
 
     # 2) fallback if nothing in storage or malformed
     if df.empty:
@@ -185,6 +192,20 @@ index_key = st.sidebar.selectbox(
     options=(available_indexes or ["<built-in sample>"]),
     index=0,
 )
+
+index_meta_payload = ss.get("_pf_index_payload") if index_key != "<built-in sample>" else None
+if isinstance(index_meta_payload, dict):
+    source_meta = index_meta_payload.get("meta", {})
+    total = len(index_meta_payload.get("symbols") or [])
+    source_bits = []
+    if total:
+        source_bits.append(f"{total} tickers")
+    if source_meta.get("source_type"):
+        source_bits.append(str(source_meta["source_type"]))
+    if source_meta.get("source_path"):
+        source_bits.append(Path(source_meta["source_path"]).name)
+    if source_bits:
+        st.sidebar.caption(" • ".join(source_bits))
 
 # Core page controls
 col_top1, col_top2, col_top3 = st.columns([1, 1, 1])

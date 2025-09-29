@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
@@ -287,9 +287,181 @@ def load_training_log(path_or_portfolio: str, filename: Optional[str] = None) ->
 # Optional index helpers
 # -----------------------------------------------------------------------------
 
+def _index_dirs() -> List[Path]:
+    """Return candidate directories that may contain index membership files."""
+    dirs = [
+        _ensure_dir(get_data_dir() / "indexes"),
+        Path("storage") / "indexes",
+        Path("storage") / "index",  # legacy typo guard
+        Path("storage") / "universe",
+    ]
+    out = []
+    for d in dirs:
+        if d.exists() and d.is_dir():
+            out.append(d)
+    return out
+
+
+def _normalize_index_symbol(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    s = s.upper().replace(".", "-")
+    return s
+
+
+def _normalize_index_rows(seq: Any) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not isinstance(seq, (list, tuple, set)):
+        if isinstance(seq, dict):
+            iterable = list(seq.values())
+        else:
+            return rows
+    else:
+        iterable = list(seq)
+
+    seen: Dict[str, Dict[str, Any]] = {}
+    for item in iterable:
+        row: Dict[str, Any]
+        symbol: Optional[str] = None
+        if isinstance(item, dict):
+            row = dict(item)
+            for key in ("symbol", "ticker", "code", "secid", "Symbol", "Ticker"):
+                if key in row and symbol is None:
+                    symbol = _normalize_index_symbol(row[key])
+            if symbol is None and len(row) == 1:
+                symbol = _normalize_index_symbol(next(iter(row.values())))
+        else:
+            symbol = _normalize_index_symbol(item)
+            row = {"symbol": symbol} if symbol else {}
+
+        if not symbol:
+            continue
+        row["symbol"] = symbol
+        if symbol not in seen:
+            seen[symbol] = row
+            rows.append(row)
+    return rows
+
+
+def _coerce_index_payload(payload: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    meta: Dict[str, Any] = {}
+
+    if isinstance(payload, dict):
+        for key in ("members", "rows", "symbols", "tickers", "data"):
+            block = payload.get(key)
+            if isinstance(block, (list, tuple, set, dict)):
+                rows = _normalize_index_rows(block)
+                if rows:
+                    break
+        if not rows and all(isinstance(v, (dict, str)) for v in payload.values()):
+            constructed = []
+            for sym_key, val in payload.items():
+                if isinstance(val, dict):
+                    row = dict(val)
+                    row.setdefault("symbol", sym_key)
+                    constructed.append(row)
+                else:
+                    constructed.append({"symbol": val})
+            rows = _normalize_index_rows(constructed)
+
+        meta = {
+            k: v
+            for k, v in payload.items()
+            if k not in {"members", "rows", "symbols", "tickers", "data"}
+        }
+    elif isinstance(payload, (list, tuple, set)):
+        rows = _normalize_index_rows(payload)
+
+    return rows, meta
+
+
+def _register_index_entry(
+    entries: Dict[str, Dict[str, Any]],
+    label: str,
+    info: Dict[str, Any],
+) -> None:
+    base = str(label).strip() or info.get("fallback_label") or "Unnamed"
+    candidate = base
+    counter = 2
+    while candidate in entries:
+        candidate = f"{base} ({counter})"
+        counter += 1
+    info = dict(info)
+    info["label"] = candidate
+    entries[candidate] = info
+
+
+def _discover_index_catalog() -> Dict[str, Dict[str, Any]]:
+    catalog: Dict[str, Dict[str, Any]] = {}
+
+    # Aggregate files (single JSON containing many indexes)
+    aggregate_files = [
+        get_data_dir() / "indexes.json",
+        Path("storage") / "indexes.json",
+    ]
+    for agg in aggregate_files:
+        if not agg.exists():
+            continue
+        payload = _read_json(agg) or {}
+        if not isinstance(payload, dict):
+            continue
+        raw_indexes: Dict[str, Any] = {}
+        if isinstance(payload.get("indexes"), dict):
+            raw_indexes = payload["indexes"]
+        else:
+            raw_indexes = {
+                k: v
+                for k, v in payload.items()
+                if isinstance(v, (list, dict))
+            }
+        for name, raw in raw_indexes.items():
+            if not isinstance(raw, (list, dict)):
+                continue
+            _register_index_entry(
+                catalog,
+                str(name),
+                {
+                    "type": "aggregate",
+                    "path": agg,
+                    "key": str(name),
+                },
+            )
+
+    # Individual files per universe
+    for d in _index_dirs():
+        for path in sorted(d.glob("*.json")):
+            payload = _read_json(path) or {}
+            label = None
+            if isinstance(payload, dict):
+                label = (
+                    payload.get("name")
+                    or payload.get("label")
+                    or payload.get("index")
+                    or payload.get("title")
+                )
+            if not label:
+                label = path.stem
+            entry_type = "universe_cache" if d.name == "universe" else "file"
+            _register_index_entry(
+                catalog,
+                str(label),
+                {
+                    "type": entry_type,
+                    "path": path,
+                },
+            )
+
+    return catalog
+
+
 def list_index_cache() -> List[str]:
-    d = _ensure_dir(get_data_dir() / "indexes")
-    return sorted(p.name for p in d.glob("*.json"))
+    catalog = _discover_index_catalog()
+    return sorted(catalog.keys(), key=lambda s: s.lower())
+
 
 def save_index_members(index_key: str, payload: Dict[str, Any]) -> str:
     index_key = _clean_filename(index_key)
@@ -297,11 +469,60 @@ def save_index_members(index_key: str, payload: Dict[str, Any]) -> str:
     path = d / f"{index_key}.json"
     return _write_json_atomic(path, payload)
 
+
 def load_index_members(index_key: str) -> Optional[Dict[str, Any]]:
-    index_key = _clean_filename(index_key)
-    d = _ensure_dir(get_data_dir() / "indexes")
-    path = d / f"{index_key}.json"
-    return _read_json(path)
+    catalog = _discover_index_catalog()
+    entry = catalog.get(index_key)
+    if entry is None:
+        # Fallback: try to resolve by sanitized filename stem (legacy callers)
+        key_stem = _clean_filename(index_key).replace(".json", "")
+        for info in catalog.values():
+            path = info.get("path")
+            if isinstance(path, Path) and path.stem == key_stem:
+                entry = info
+                break
+    if entry is None:
+        return None
+
+    source_type = entry.get("type")
+    path = entry.get("path")
+    raw_payload: Any
+
+    if source_type == "aggregate":
+        payload = _read_json(path) or {}
+        raw_indexes = payload.get("indexes") if isinstance(payload, dict) else None
+        if isinstance(raw_indexes, dict) and entry.get("key") in raw_indexes:
+            raw_payload = raw_indexes[entry["key"]]
+        elif isinstance(payload, dict) and entry.get("key") in payload:
+            raw_payload = payload[entry["key"]]
+        else:
+            raw_payload = None
+    else:
+        raw_payload = _read_json(path)
+
+    rows, meta = _coerce_index_payload(raw_payload)
+    if not rows and isinstance(raw_payload, dict):
+        # last resort try treating the payload itself as rows
+        fallback_rows, fallback_meta = _coerce_index_payload(raw_payload.get("rows"))
+        if fallback_rows:
+            rows = fallback_rows
+            meta.update(fallback_meta)
+
+    symbols = [row["symbol"] for row in rows]
+    meta = dict(meta or {})
+    if path:
+        meta.setdefault("source_path", str(path))
+    if source_type:
+        meta.setdefault("source_type", source_type)
+    if entry.get("key"):
+        meta.setdefault("source_key", entry["key"])
+
+    return {
+        "name": entry.get("label", index_key),
+        "symbols": symbols,
+        "members": rows,
+        "meta": meta,
+    }
 
 # -----------------------------------------------------------------------------
 # Legacy simulations (kept as-is)

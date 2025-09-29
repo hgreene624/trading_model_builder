@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "updated_at": "2024-01-15",
+  "indexes": {
+    "S&P 100 Sample": {
+      "description": "Large-cap bellwethers sampled from the S&P 100 constituents.",
+      "symbols": [
+        "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK.B",
+        "JPM", "UNH", "XOM", "V", "MA", "JNJ", "PG", "AVGO", "HD", "MRK",
+        "PEP", "COST", "ABBV", "CSCO", "KO", "ADBE", "CRM", "NFLX", "BAC",
+        "ABT", "ACN", "LIN"
+      ]
+    },
+    "Nasdaq Growth 50": {
+      "description": "High growth technology and communication leaders from the Nasdaq-100.",
+      "symbols": [
+        "AAPL", "MSFT", "AMZN", "NVDA", "META", "GOOGL", "GOOG", "TSLA", "PEP",
+        "AVGO", "COST", "ADBE", "CSCO", "AMD", "QCOM", "TXN", "INTC", "AMAT",
+        "LRCX", "ADI"
+      ]
+    },
+    "Dividend Achievers": {
+      "description": "U.S. dividend growers spanning staples, industrials, and technology.",
+      "symbols": [
+        "PG", "KO", "MCD", "PEP", "JNJ", "WMT", "HD", "LOW", "TGT", "COST",
+        "TXN", "NEE", "CL", "GIS", "HON", "CAT", "LMT", "UPS", "MSFT", "AAPL"
+      ]
+    }
+  }
+}
