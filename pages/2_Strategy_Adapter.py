@@ -349,15 +349,23 @@ with left:
         train_days = coverage_total_days - holdout_days
 
     train_start_ts = coverage_start_ts
-    if holdout_days > 0:
-        holdout_start_ts = coverage_end_ts - pd.Timedelta(days=holdout_days - 1)
-        train_end_ts = holdout_start_ts - pd.Timedelta(days=1)
-    else:
-        holdout_start_ts = coverage_end_ts
-        train_end_ts = coverage_end_ts
+    # Recompute contiguous boundaries from the coverage start
+    train_days = max(1, min(train_days, coverage_total_days))
+    train_end_candidate = train_start_ts + pd.Timedelta(days=train_days - 1)
+    if train_end_candidate > coverage_end_ts:
+        train_end_candidate = coverage_end_ts
 
-    if train_end_ts < train_start_ts:
-        train_end_ts = train_start_ts
+    holdout_start_ts = min(coverage_end_ts, train_end_candidate + pd.Timedelta(days=1))
+    train_end_from_holdout_ts = holdout_start_ts - pd.Timedelta(days=1)
+    if train_end_from_holdout_ts < train_start_ts:
+        train_end_from_holdout_ts = train_start_ts
+    train_end_ts = min(train_end_candidate, train_end_from_holdout_ts)
+
+    # Re-evaluate holdout start after clamping the training window
+    holdout_start_ts = min(coverage_end_ts, train_end_ts + pd.Timedelta(days=1))
+
+    train_days = max(1, int((train_end_ts - train_start_ts).days) + 1)
+    holdout_days = max(0, int((coverage_end_ts - holdout_start_ts).days) + 1)
 
     train_start_dt = train_start_ts.to_pydatetime()
     train_end_dt = train_end_ts.to_pydatetime()
@@ -672,9 +680,11 @@ if run_btn:
         return dt.astimezone(timezone.utc)
 
     start = _ensure_utc(train_start_dt)
-    end = _ensure_utc(train_end_dt)
     holdout_start = _ensure_utc(holdout_start_dt)
     holdout_end = _ensure_utc(holdout_end_dt)
+    end = min(_ensure_utc(train_end_dt), holdout_start - timedelta(days=1))
+    if end < start:
+        end = start
 
     st.session_state["adapter_holdout_status"] = (
         "info",
