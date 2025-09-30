@@ -332,7 +332,6 @@ def _plot_leaders_through_gen(
 
     fig.add_vline(x=pd.to_datetime(train_end), line_width=2, line_dash="dot", line_color="#888")
     fig.update_layout(
-        title=f"Leaders up to Gen {upto_gen} (best-by-return per gen | train + test)",
         xaxis_title="Date", yaxis_title="Equity",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         height=420,
