@@ -11,7 +11,9 @@ import pandas as pd
 import streamlit as st
 
 from src.utils.holdout_chart import init_chart, on_generation_end, set_config  # package path fallback
-from src.storage import list_portfolios, load_portfolio, save_strategy_params
+from src.utils.training_logger import TrainingLogger
+from src.data.portfolio_prefetch import intersection_range
+from src.storage import append_to_portfolio, list_portfolios, load_portfolio, save_strategy_params
 
 # --- Page chrome ---
 st.set_page_config(page_title="Strategy Adapter", layout="wide")
@@ -31,6 +33,42 @@ def _ss_get_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
     if key not in st.session_state or not isinstance(st.session_state[key], dict):
         st.session_state[key] = dict(default)
     return st.session_state[key]
+
+
+def _as_utc_timestamp(value) -> pd.Timestamp | None:
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if ts.tzinfo is None:
+        try:
+            return ts.tz_localize("UTC")
+        except Exception:
+            return None
+    try:
+        return ts.tz_convert("UTC")
+    except Exception:
+        return None
+
+
+def _extract_daily_shards(meta_entry: Any) -> Dict[str, List[Dict[str, Any]]]:
+    if not isinstance(meta_entry, dict):
+        return {}
+
+    # Common shapes: {"1D": {...}}, {"timeframes": {"1D": {...}}}, or {"AAPL": [...]}
+    if "timeframes" in meta_entry and isinstance(meta_entry["timeframes"], dict):
+        meta_entry = meta_entry["timeframes"]
+
+    for key in ("1D", "1d", "DAILY", "daily"):
+        if key in meta_entry and isinstance(meta_entry[key], dict):
+            return meta_entry[key]
+
+    # Fallback: assume already symbol → [shards]
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for sym, shards in meta_entry.items():
+        if isinstance(shards, list):
+            out[str(sym).strip().upper()] = [dict(rec) for rec in shards if isinstance(rec, dict)]
+    return out
 
 
 def _write_kv_table(d: Dict[str, Any], title: str = ""):
@@ -183,6 +221,21 @@ def _filter_params_for_strategy(strategy_dotted: str, params: Dict[str, Any]) ->
 
 
 # ---------- LEFT SIDEBAR-LIKE COLUMN: configuration ----------
+per_symbol_ranges: Dict[str, Dict[str, Any]] = {}
+data_shards_daily: Dict[str, List[Dict[str, Any]]] = {}
+data_cache_root: str | None = None
+coverage_start_ts: pd.Timestamp | None = None
+coverage_end_ts: pd.Timestamp | None = None
+coverage_total_days: int = 0
+train_start_dt: datetime | None = None
+train_end_dt: datetime | None = None
+holdout_start_dt: datetime | None = None
+holdout_end_dt: datetime | None = None
+train_days: int = 0
+holdout_days: int = 0
+train_fraction_actual: float = 0.7
+holdout_fraction_actual: float = 0.3
+
 left, right = st.columns([1.05, 1.55], gap="large")
 
 with left:
@@ -234,6 +287,100 @@ with left:
         st.stop()
 
     st.info(f"Selected **{len(tickers)}** symbols: {', '.join(tickers[:12])}{'…' if len(tickers) > 12 else ''}")
+
+    portfolio_meta = obj.get("meta") if isinstance(obj, dict) else {}
+    per_symbol_ranges = portfolio_meta.get("per_symbol_ranges") or {}
+    data_cache_root = portfolio_meta.get("data_cache_root")
+    data_shards_daily = _extract_daily_shards(portfolio_meta.get("data_shards"))
+
+    coverage_start_iso, coverage_end_iso = intersection_range(per_symbol_ranges)
+    if (not coverage_start_iso or not coverage_end_iso) and isinstance(portfolio_meta.get("windows"), dict):
+        priors = portfolio_meta.get("windows", {}).get("priors")
+        if isinstance(priors, (list, tuple)) and len(priors) == 2:
+            coverage_start_iso = coverage_start_iso or priors[0]
+            coverage_end_iso = coverage_end_iso or priors[1]
+
+    coverage_start_ts = _as_utc_timestamp(coverage_start_iso)
+    coverage_end_ts = _as_utc_timestamp(coverage_end_iso)
+    coverage_note = None
+    if coverage_start_ts is None or coverage_end_ts is None or coverage_end_ts <= coverage_start_ts:
+        coverage_note = "Portfolio metadata lacked overlapping coverage; defaulting to the last 365 days."
+        coverage_end_ts = pd.Timestamp(_utc_now())
+        coverage_start_ts = coverage_end_ts - pd.Timedelta(days=365)
+
+    coverage_total_days = max(1, int((coverage_end_ts - coverage_start_ts).days) + 1)
+    default_train_pct = int(st.session_state.get("adapter_train_pct") or 70)
+    default_train_pct = min(max(default_train_pct, 50), 95)
+
+    st.markdown("**Data coverage & split**")
+    st.caption(
+        f"Common coverage across {len(tickers)} symbols: {coverage_start_ts.date().isoformat()} → {coverage_end_ts.date().isoformat()} "
+        f"({coverage_total_days} days)."
+    )
+    if coverage_note:
+        st.info(coverage_note)
+
+    shard_total_count = sum(len(v) for v in data_shards_daily.values())
+    if shard_total_count:
+        shard_msg = (
+            f"Tracked cache shards: {shard_total_count} files across {len(data_shards_daily)} symbols."
+        )
+        if data_cache_root:
+            shard_msg += f" Root: {data_cache_root}"
+        st.caption(shard_msg)
+
+    train_pct_ui = st.slider(
+        "Training share (%)",
+        min_value=50,
+        max_value=95,
+        value=int(default_train_pct),
+        step=5,
+        help="Percent of the available coverage to dedicate to training. The remainder is reserved for holdout/testing.",
+    )
+    st.session_state["adapter_train_pct"] = int(train_pct_ui)
+    train_fraction = float(train_pct_ui) / 100.0
+
+    max_train_days = max(1, coverage_total_days - 1) if coverage_total_days > 1 else 1
+    proposed_train_days = int(round(coverage_total_days * train_fraction))
+    train_days = min(max_train_days, max(1, proposed_train_days))
+    holdout_days = coverage_total_days - train_days
+    if coverage_total_days > 1 and holdout_days < 1:
+        holdout_days = 1
+        train_days = coverage_total_days - holdout_days
+
+    train_start_ts = coverage_start_ts
+    # Recompute contiguous boundaries from the coverage start
+    train_days = max(1, min(train_days, coverage_total_days))
+    train_end_candidate = train_start_ts + pd.Timedelta(days=train_days - 1)
+    if train_end_candidate > coverage_end_ts:
+        train_end_candidate = coverage_end_ts
+
+    holdout_start_ts = min(coverage_end_ts, train_end_candidate + pd.Timedelta(days=1))
+    train_end_from_holdout_ts = holdout_start_ts - pd.Timedelta(days=1)
+    if train_end_from_holdout_ts < train_start_ts:
+        train_end_from_holdout_ts = train_start_ts
+    train_end_ts = min(train_end_candidate, train_end_from_holdout_ts)
+
+    # Re-evaluate holdout start after clamping the training window
+    holdout_start_ts = min(coverage_end_ts, train_end_ts + pd.Timedelta(days=1))
+
+    train_days = max(1, int((train_end_ts - train_start_ts).days) + 1)
+    holdout_days = max(0, int((coverage_end_ts - holdout_start_ts).days) + 1)
+
+    train_start_dt = train_start_ts.to_pydatetime()
+    train_end_dt = train_end_ts.to_pydatetime()
+    holdout_start_dt = holdout_start_ts.to_pydatetime()
+    holdout_end_dt = coverage_end_ts.to_pydatetime()
+
+    train_fraction_actual = train_days / coverage_total_days if coverage_total_days else 1.0
+    holdout_fraction_actual = holdout_days / coverage_total_days if coverage_total_days else 0.0
+
+    st.caption(
+        f"Train: {train_start_dt.date().isoformat()} → {train_end_dt.date().isoformat()} "
+        f"({train_days} days, {train_fraction_actual * 100:.1f}%). "
+        f"Test: {holdout_start_dt.date().isoformat()} → {holdout_end_dt.date().isoformat()} "
+        f"({holdout_days} days, {holdout_fraction_actual * 100:.1f}%)."
+    )
 
     # Strategy module (kept as before)
     strategy_dotted = st.selectbox("Strategy", ["src.models.atr_breakout"], index=0)
@@ -523,13 +670,26 @@ if run_btn:
     best_score_placeholder.metric("Best score", "—")
     best_params_placeholder.info("Waiting for evaluations…")
 
-    end = _utc_now()
-    start = end - timedelta(days=365)
+    if not all([train_start_dt, train_end_dt, holdout_start_dt, holdout_end_dt]):
+        st.error("Unable to resolve training/holdout windows from portfolio metadata. Refresh the page or rebuild the portfolio.")
+        st.stop()
 
-    # ---- Initialize holdout chart (blank at start). The helper will update per improving generation. ----
-    holdout_span = max(30, min(180, (end - start).days // 3 or 90))
-    holdout_end = start
-    holdout_start = holdout_end - timedelta(days=int(holdout_span))
+    def _ensure_utc(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    start = _ensure_utc(train_start_dt)
+    holdout_start = _ensure_utc(holdout_start_dt)
+    holdout_end = _ensure_utc(holdout_end_dt)
+    end = min(_ensure_utc(train_end_dt), holdout_start - timedelta(days=1))
+    if end < start:
+        end = start
+
+    st.session_state["adapter_holdout_status"] = (
+        "info",
+        f"Testing on holdout window {holdout_start.date().isoformat()} → {holdout_end.date().isoformat()}",
+    )
 
     def _hc_engine(params, data, starting_equity):
         series = _portfolio_equity_curve(
@@ -684,6 +844,46 @@ if run_btn:
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"{ts}_ea.jsonl")
 
+    coverage_start_iso = coverage_start_ts.date().isoformat() if coverage_start_ts is not None else None
+    coverage_end_iso = coverage_end_ts.date().isoformat() if coverage_end_ts is not None else None
+
+    # Log the holdout (simulation) window so tools can detect train→test boundary
+    try:
+        TrainingLogger(log_file).log(
+            "holdout_meta",
+            {
+                "gen": 0,
+                "portfolio": port_name,
+                "tickers": list(tickers),
+                "holdout_start": str(holdout_start),
+                "holdout_end": str(holdout_end),
+                "starting_equity": float(equity),
+                "train_start": str(start),
+                "train_end": str(end),
+                "train_days": int(train_days),
+                "test_days": int(holdout_days),
+                "train_fraction": float(train_fraction_actual),
+                "train_share_pct": round(train_fraction_actual * 100.0, 3),
+                "test_fraction": float(holdout_fraction_actual),
+                "test_share_pct": round(holdout_fraction_actual * 100.0, 3),
+                "coverage": {
+                    "start": coverage_start_iso,
+                    "end": coverage_end_iso,
+                    "days": int(coverage_total_days),
+                },
+                "per_symbol_ranges": per_symbol_ranges,
+                "data_cache_root": data_cache_root,
+                "data_shards": data_shards_daily,
+                "costs": {
+                    "cost_bps": float(base.get("cost_bps", 0.0)),
+                },
+                "source": "StrategyAdapter",
+            },
+        )
+    except Exception:
+        # Logging is best-effort; never block the run if the file isn't writable yet
+        pass
+
     # Run EA search (helper updates chart live via on_generation_end)
     try:
         top = evo.evolutionary_search(
@@ -727,6 +927,37 @@ if run_btn:
 
     st.session_state["ea_log_file"] = log_file
     st.success(f"EA complete. Best score={best_score:.3f}.")
+
+    st.session_state["adapter_holdout_status"] = (
+        "success",
+        f"Holdout window {holdout_start.date().isoformat()} → {holdout_end.date().isoformat()} "
+        f"({int(holdout_days)} days, {holdout_fraction_actual * 100:.1f}% of coverage) logged to {os.path.basename(log_file)}.",
+    )
+
+    latest_training_meta = {
+        "latest_training": {
+            "train_start": start.date().isoformat(),
+            "train_end": end.date().isoformat(),
+            "holdout_start": holdout_start.date().isoformat(),
+            "holdout_end": holdout_end.date().isoformat(),
+            "train_fraction": float(train_fraction_actual),
+            "test_fraction": float(holdout_fraction_actual),
+            "train_share_pct": round(train_fraction_actual * 100.0, 3),
+            "test_share_pct": round(holdout_fraction_actual * 100.0, 3),
+            "train_days": int(train_days),
+            "test_days": int(holdout_days),
+            "coverage_start": coverage_start_iso,
+            "coverage_end": coverage_end_iso,
+            "coverage_days": int(coverage_total_days),
+            "data_cache_root": data_cache_root,
+            "ea_log_file": log_file,
+            "updated_at": _utc_now().isoformat(),
+        }
+    }
+    try:
+        append_to_portfolio(port_name, tickers, meta_update=latest_training_meta)
+    except Exception:
+        pass
 
 
 

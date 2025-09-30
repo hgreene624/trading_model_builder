@@ -4,9 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="working save es parmas button">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="ea train inspector started. EA logger updated with session timeframe data. framework there but not working.">
+      <change afterPath="$PROJECT_DIR$/scripts/repro_env_reset.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/alpaca_trader.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/alpaca_trader.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_1_EA_Train_Inspector.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/3_EA_Train_Inspector.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -23,7 +26,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="local-storage-RAM-cache" />
+        <entry key="$PROJECT_DIR$" value="codex/update-layout-of-ea-evaluations-and-graphs" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -58,7 +61,7 @@
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "codex/update-layout-of-ea-evaluations-and-graphs",
+    "git-widget-placeholder": "#17 on codex/refactor-portfolio-page-for…ality",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -70,9 +73,9 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/Pages_UNUSED" />
       <recent name="$PROJECT_DIR$/src/utils" />
       <recent name="$PROJECT_DIR$" />
-      <recent name="$PROJECT_DIR$/Pages_UNUSED" />
       <recent name="$PROJECT_DIR$/data" />
       <recent name="$PROJECT_DIR$/my-trading-app" />
     </key>
@@ -109,70 +112,8 @@
       <workItem from="1758056469773" duration="13190000" />
       <workItem from="1758828289886" duration="3111000" />
       <workItem from="1758996558016" duration="2016000" />
-    </task>
-    <task id="LOCAL-00002" summary="Working V1 framework. No evolution algo">
-      <option name="closed" value="true" />
-      <created>1757524485314</created>
-      <option name="number" value="00002" />
-      <option name="presentableId" value="LOCAL-00002" />
-      <option name="project" value="LOCAL" />
-      <updated>1757524485314</updated>
-    </task>
-    <task id="LOCAL-00003" summary="Working V1 framework. No evolution algo">
-      <option name="closed" value="true" />
-      <created>1757524603313</created>
-      <option name="number" value="00003" />
-      <option name="presentableId" value="LOCAL-00003" />
-      <option name="project" value="LOCAL" />
-      <updated>1757524603313</updated>
-    </task>
-    <task id="LOCAL-00004" summary="Working V1 framework. No evolution algo">
-      <option name="closed" value="true" />
-      <created>1757525043412</created>
-      <option name="number" value="00004" />
-      <option name="presentableId" value="LOCAL-00004" />
-      <option name="project" value="LOCAL" />
-      <updated>1757525043412</updated>
-    </task>
-    <task id="LOCAL-00005" summary="engine updates. pre tker page update">
-      <option name="closed" value="true" />
-      <created>1757526354060</created>
-      <option name="number" value="00005" />
-      <option name="presentableId" value="LOCAL-00005" />
-      <option name="project" value="LOCAL" />
-      <updated>1757526354060</updated>
-    </task>
-    <task id="LOCAL-00006" summary="V1 evolutionary tuning">
-      <option name="closed" value="true" />
-      <created>1757528975498</created>
-      <option name="number" value="00006" />
-      <option name="presentableId" value="LOCAL-00006" />
-      <option name="project" value="LOCAL" />
-      <updated>1757528975499</updated>
-    </task>
-    <task id="LOCAL-00007" summary="working param and model profiles">
-      <option name="closed" value="true" />
-      <created>1757530257452</created>
-      <option name="number" value="00007" />
-      <option name="presentableId" value="LOCAL-00007" />
-      <option name="project" value="LOCAL" />
-      <updated>1757530257452</updated>
-    </task>
-    <task id="LOCAL-00008" summary="updated with addtional model params and working profile selectors">
-      <option name="closed" value="true" />
-      <created>1757531803682</created>
-      <option name="number" value="00008" />
-      <option name="presentableId" value="LOCAL-00008" />
-      <option name="project" value="LOCAL" />
-      <updated>1757531803682</updated>
-    </task>
-    <task id="LOCAL-00009" summary="added universe and ticker dropdowns from json - still not performing well enough, need more aggressive strategy">
-      <option name="closed" value="true" />
-      <created>1757532285448</created>
-      <option name="number" value="00009" />
-      <option name="presentableId" value="LOCAL-00009" />
-      <option name="project" value="LOCAL" />
-      <updated>1757532285448</updated>
+      <workItem from="1758999746262" duration="14204000" />
+      <workItem from="1759077063615" duration="2294000" />
     </task>
     <task id="LOCAL-00010" summary="&#10;- Checkbox to toggle risk-parity vs equal weights.&#10;- Compute weights from daily stddev of returns over sim range.&#10;- Keep per-ticker strategy selection + portfolio params fallback.">
       <option name="closed" value="true" />
@@ -502,7 +443,71 @@
       <option name="project" value="LOCAL" />
       <updated>1758998079850</updated>
     </task>
-    <option name="localTasksCounter" value="51" />
+    <task id="LOCAL-00051" summary="md params file created">
+      <option name="closed" value="true" />
+      <created>1759000464009</created>
+      <option name="number" value="00051" />
+      <option name="presentableId" value="LOCAL-00051" />
+      <option name="project" value="LOCAL" />
+      <updated>1759000464010</updated>
+    </task>
+    <task id="LOCAL-00052" summary="updated fitness calculation in evolutionary.py with normalized values to address noncorrelation of socres and ROE. improved but still replacing better models with worse performers with higher score">
+      <option name="closed" value="true" />
+      <created>1759001422709</created>
+      <option name="number" value="00052" />
+      <option name="presentableId" value="LOCAL-00052" />
+      <option name="project" value="LOCAL" />
+      <updated>1759001422709</updated>
+    </task>
+    <task id="LOCAL-00053" summary="converted evolutionary.py to use json config and patched loader.py cache issue">
+      <option name="closed" value="true" />
+      <created>1759068242398</created>
+      <option name="number" value="00053" />
+      <option name="presentableId" value="LOCAL-00053" />
+      <option name="project" value="LOCAL" />
+      <updated>1759068242398</updated>
+    </task>
+    <task id="LOCAL-00054" summary="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes.">
+      <option name="closed" value="true" />
+      <created>1759069870624</created>
+      <option name="number" value="00054" />
+      <option name="presentableId" value="LOCAL-00054" />
+      <option name="project" value="LOCAL" />
+      <updated>1759069870624</updated>
+    </task>
+    <task id="LOCAL-00055" summary="pre big change to evolutionary.py">
+      <option name="closed" value="true" />
+      <created>1759071199297</created>
+      <option name="number" value="00055" />
+      <option name="presentableId" value="LOCAL-00055" />
+      <option name="project" value="LOCAL" />
+      <updated>1759071199297</updated>
+    </task>
+    <task id="LOCAL-00056" summary="changed scoring to verify engine use of penalty caps. zero penalty test">
+      <option name="closed" value="true" />
+      <created>1759073713128</created>
+      <option name="number" value="00056" />
+      <option name="presentableId" value="LOCAL-00056" />
+      <option name="project" value="LOCAL" />
+      <updated>1759073713128</updated>
+    </task>
+    <task id="LOCAL-00057" summary="changed scoring to verify engine use of penalty caps. zero penalty test">
+      <option name="closed" value="true" />
+      <created>1759074710167</created>
+      <option name="number" value="00057" />
+      <option name="presentableId" value="LOCAL-00057" />
+      <option name="project" value="LOCAL" />
+      <updated>1759074710167</updated>
+    </task>
+    <task id="LOCAL-00058" summary="ea train inspector started. EA logger updated with session timeframe data. framework there but not working.">
+      <option name="closed" value="true" />
+      <created>1759078579041</created>
+      <option name="number" value="00058" />
+      <option name="presentableId" value="LOCAL-00058" />
+      <option name="project" value="LOCAL" />
+      <updated>1759078579041</updated>
+    </task>
+    <option name="localTasksCounter" value="59" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -520,13 +525,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="working Strategy Adapter page. with help tips" />
-    <MESSAGE value="multi core training and expsed trade rate preferance vars" />
-    <MESSAGE value="data pipeline validated, with test. requirements updated. starting test for strategy adapter" />
-    <MESSAGE value="sucessfull strategy adapter test" />
-    <MESSAGE value="sucessfull strategy adapter test V2" />
-    <MESSAGE value="successfull walkforward test" />
-    <MESSAGE value="walkforward with artifact detection, test sucess" />
     <MESSAGE value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
     <MESSAGE value="refactor storage and fix portfolio page error" />
     <MESSAGE value="fixed portfolio storage and loading in portfolios page" />
@@ -545,6 +543,13 @@
     <MESSAGE value="gen 0 showing up. still converging on no trades" />
     <MESSAGE value="refactored strategy adapter to remove walkforward into seperate page. added save load feature for ea params" />
     <MESSAGE value="working save es parmas button" />
-    <option name="LAST_COMMIT_MESSAGE" value="working save es parmas button" />
+    <MESSAGE value="md params file created" />
+    <MESSAGE value="updated fitness calculation in evolutionary.py with normalized values to address noncorrelation of socres and ROE. improved but still replacing better models with worse performers with higher score" />
+    <MESSAGE value="converted evolutionary.py to use json config and patched loader.py cache issue" />
+    <MESSAGE value="added holding days and trade min max penalties in ea weight params config. updated helper scripts to integrate. worse resutls so far. also noticed porfolios isnt loading full universes." />
+    <MESSAGE value="pre big change to evolutionary.py" />
+    <MESSAGE value="changed scoring to verify engine use of penalty caps. zero penalty test" />
+    <MESSAGE value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
+    <option name="LAST_COMMIT_MESSAGE" value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
   </component>
 </project>

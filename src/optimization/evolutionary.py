@@ -11,9 +11,9 @@ New in this revision:
 - Fitness:
         base = α*CAGR + β*Calmar + γ*Sharpe + δ*TotalReturn
         Calmar is clamped to ±calmar_cap before weighting to avoid runaway ratios.
-    hold_pen = λ_hold * penalty(avg_holding_days outside [min_hold, max_hold])
-    rate_pen = λ_rate * penalty(trade_rate outside [rate_min, rate_max])
-    score = base - hold_pen - rate_pen
+    hold_pen = λ_hold * normalized_penalty(avg_holding_days outside [min_hold, max_hold])
+    rate_pen = λ_rate * normalized_penalty(trade_rate outside [rate_min, rate_max])
+    score = base - min(hold_pen + rate_pen, penalty_cap)
 - All knobs exposed as function args (UI-ready)
 """
 
@@ -29,11 +29,75 @@ from src.models.general_trainer import train_general_model
 from src.utils.training_logger import TrainingLogger
 from src.utils.progress import ProgressCallback, console_progress
 
+import json
+import os
+
 import sys
 from pathlib import Path
 ROOT = str(Path(__file__).resolve().parents[2])  # project root
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# ---- Fitness config (JSON) ----------------------------------------------
+
+def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load fitness weight configuration from JSON. Returns {} if file missing or malformed.
+    Default location: storage/config/ea_fitness.json
+    Recognized keys:
+      - alpha_cagr, beta_calmar, gamma_sharpe, delta_total_return (floats)
+      - calmar_cap (float)
+      - use_normalized_scoring (bool)
+      - holding_penalty_weight, trade_rate_penalty_weight, penalty_cap (floats)
+      - min_holding_days, max_holding_days, trade_rate_min, trade_rate_max (floats)
+      - rate_penalize_upper (bool), elite_by_return_frac (float)
+    """
+    try:
+        p = Path(path or "storage/config/ea_fitness.json")
+        if not p.exists():
+            return {}
+        data = json.loads(p.read_text())
+        if not isinstance(data, dict):
+            return {}
+        out: Dict[str, Any] = {}
+        # Copy only known keys with safe coercion
+        def _getf(k: str):
+            try:
+                return float(data[k])
+            except Exception:
+                return None
+        if "alpha_cagr" in data: out["alpha_cagr"] = _getf("alpha_cagr")
+        if "beta_calmar" in data: out["beta_calmar"] = _getf("beta_calmar")
+        if "gamma_sharpe" in data: out["gamma_sharpe"] = _getf("gamma_sharpe")
+        if "delta_total_return" in data: out["delta_total_return"] = _getf("delta_total_return")
+        if "calmar_cap" in data: out["calmar_cap"] = _getf("calmar_cap")
+        if "use_normalized_scoring" in data:
+            v = data["use_normalized_scoring"]
+            out["use_normalized_scoring"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
+        if "holding_penalty_weight" in data: out["holding_penalty_weight"] = _getf("holding_penalty_weight")
+        if "trade_rate_penalty_weight" in data: out["trade_rate_penalty_weight"] = _getf("trade_rate_penalty_weight")
+        if "penalty_cap" in data: out["penalty_cap"] = _getf("penalty_cap")
+        if "min_holding_days" in data: out["min_holding_days"] = _getf("min_holding_days")
+        if "max_holding_days" in data: out["max_holding_days"] = _getf("max_holding_days")
+        if "trade_rate_min" in data: out["trade_rate_min"] = _getf("trade_rate_min")
+        if "trade_rate_max" in data: out["trade_rate_max"] = _getf("trade_rate_max")
+        # new optional keys
+        if "elite_by_return_frac" in data: out["elite_by_return_frac"] = _getf("elite_by_return_frac")
+        if "rate_penalize_upper" in data:
+            v = data["rate_penalize_upper"]
+            out["rate_penalize_upper"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
+        # Drop any None-coerced floats
+        for k in [
+            "alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap",
+            "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
+            "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
+            "elite_by_return_frac",
+        ]:
+            if k in out and out[k] is None:
+                out.pop(k, None)
+        return out
+    except Exception:
+        return {}
 
 import multiprocessing as mp
 try:
@@ -92,13 +156,14 @@ def _holding_penalty(avg_hold_days: float, lo: float, hi: float) -> float:
     return float(avg_hold_days - hi)
 
 
-def _rate_penalty(trade_rate: float, lo: float, hi: float) -> float:
-    """Linear penalty outside [lo, hi] for trades per symbol per year."""
+def _rate_penalty(trade_rate: float, lo: float, hi: float, penalize_upper: bool = True) -> float:
+    """Linear penalty outside [lo, hi] for trades per symbol per year.
+    If penalize_upper is False, only penalize values below `lo`."""
     if lo <= trade_rate <= hi:
         return 0.0
     if trade_rate < lo:
         return float(lo - trade_rate)
-    return float(trade_rate - hi)
+    return float(trade_rate - hi) if penalize_upper else 0.0
 
 
 # ------------------------------ Fitness ----------------------------------
@@ -129,6 +194,9 @@ def _clamped_fitness(
     num_symbols: int,
     years: float,
     calmar_cap: float,
+    penalty_cap: float = 0.50,
+    rate_penalize_upper: bool = True,
+    use_normalized_scoring: bool = True,
 ) -> float:
     """
     Robust fitness:
@@ -169,21 +237,52 @@ def _clamped_fitness(
     if calmar_cap > 0:
         calmar = max(-calmar_cap, min(calmar, calmar_cap))
 
-    base = (
-        (alpha_cagr * cagr)
-        + (beta_calmar * calmar)
-        + (gamma_sharpe * sharpe)
-        + (delta_total_return * total_return)
-    )
+    # ---- Scoring (legacy vs normalized) ---------------------------------
+    if not use_normalized_scoring:
+        # Legacy behavior: raw weighted sum with Calmar clamped
+        base = (
+            (alpha_cagr * cagr)
+            + (beta_calmar * calmar)
+            + (gamma_sharpe * sharpe)
+            + (delta_total_return * total_return)
+        )
+    else:
+        # Normalized scoring: map metrics to comparable 0..1 ranges to avoid any
+        # single term (e.g., Calmar/Sharpe) overwhelming absolute growth metrics.
+        def _clip01(x: float) -> float:
+            return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
 
-    hold_pen = holding_penalty_weight * _holding_penalty(avg_hold, min_holding_days, max_holding_days)
+        # Conservative caps; adjust later if you know your universe differs.
+        # total_return: 0..50% → 0..1
+        tr_n = _clip01((total_return - 0.0) / 0.50)
+        # CAGR: 0..30% → 0..1
+        cagr_n = _clip01((cagr - 0.0) / 0.30)
+        # Sharpe: 0..3 → 0..1 (negatives clipped to 0)
+        sh_n = _clip01((sharpe - 0.0) / 3.0)
+        # Calmar: 0..calmar_cap → 0..1 (already clamped to ±cap above; use positive band)
+        cm_n = _clip01(max(0.0, calmar) / max(1e-9, calmar_cap))
+
+        base = (
+            (alpha_cagr * cagr_n)
+            + (beta_calmar * cm_n)
+            + (gamma_sharpe * sh_n)
+            + (delta_total_return * tr_n)
+        )
+
+    # ---- Normalized, capped penalties ----------------------------------
+    _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
+    hold_dist = _holding_penalty(avg_hold, min_holding_days, max_holding_days)
+    hold_pen  = holding_penalty_weight * (hold_dist / _bw_hold)
 
     trade_rate = 0.0
     if num_symbols > 0 and years > 0:
         trade_rate = float(trades) / float(num_symbols) / float(years)
-    rate_pen = trade_rate_penalty_weight * _rate_penalty(trade_rate, trade_rate_min, trade_rate_max)
+    _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
+    rate_dist = _rate_penalty(trade_rate, trade_rate_min, trade_rate_max, rate_penalize_upper)
+    rate_pen  = trade_rate_penalty_weight * (rate_dist / _bw_rate)
 
-    return float(base - hold_pen - rate_pen)
+    penalty_total = min(hold_pen + rate_pen, float(penalty_cap))
+    return float(base - penalty_total)
 
 
 # --------------------------- Child evaluation ----------------------------
@@ -252,6 +351,10 @@ def evolutionary_search(
     trade_rate_max: float = 50.0,
     trade_rate_penalty_weight: float = 0.5,
     calmar_cap: float = 3.0,
+    penalty_cap: float = 0.50,
+    rate_penalize_upper: bool = True,
+    elite_by_return_frac: float = 0.10,
+    use_normalized_scoring: bool = True,
     # Progress & logging
     progress_cb: Optional[ProgressCb] = None,
     log_file: str = "training.log",
@@ -278,7 +381,56 @@ def evolutionary_search(
     population = [random_param(param_space) for _ in range(pop_size)]
     scored: List[Tuple[Dict[str, Any], float]] = []
     t0 = time.time()
+    best_run_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
 
+    # Load fitness weights from JSON config (single source of truth)
+    _cfg = _load_fitness_config_json(None)
+    if _cfg:
+        alpha_cagr = _cfg.get("alpha_cagr", alpha_cagr)
+        beta_calmar = _cfg.get("beta_calmar", beta_calmar)
+        gamma_sharpe = _cfg.get("gamma_sharpe", gamma_sharpe)
+        delta_total_return = _cfg.get("delta_total_return", delta_total_return)
+        calmar_cap = _cfg.get("calmar_cap", calmar_cap)
+        use_normalized_scoring = _cfg.get("use_normalized_scoring", use_normalized_scoring)
+        holding_penalty_weight = _cfg.get("holding_penalty_weight", holding_penalty_weight)
+        trade_rate_penalty_weight = _cfg.get("trade_rate_penalty_weight", trade_rate_penalty_weight)
+        penalty_cap = _cfg.get("penalty_cap", penalty_cap)
+        min_holding_days = _cfg.get("min_holding_days", min_holding_days)
+        max_holding_days = _cfg.get("max_holding_days", max_holding_days)
+        trade_rate_min = _cfg.get("trade_rate_min", trade_rate_min)
+        trade_rate_max = _cfg.get("trade_rate_max", trade_rate_max)
+        rate_penalize_upper = _cfg.get("rate_penalize_upper", rate_penalize_upper)
+        elite_by_return_frac = _cfg.get("elite_by_return_frac", elite_by_return_frac)
+        # Emit a one-time breadcrumb so logs show which source set the weights
+        logger.log("fitness_config", {
+            "source": "storage/config/ea_fitness.json",
+            "fitness_weights": {
+                "alpha_cagr": alpha_cagr,
+                "beta_calmar": beta_calmar,
+                "gamma_sharpe": gamma_sharpe,
+                "delta_total_return": delta_total_return,
+                "calmar_cap": calmar_cap,
+                "use_normalized_scoring": use_normalized_scoring,
+                "holding_penalty_weight": holding_penalty_weight,
+                "trade_rate_penalty_weight": trade_rate_penalty_weight,
+                "penalty_cap": penalty_cap,
+                "min_holding_days": min_holding_days,
+                "max_holding_days": max_holding_days,
+                "trade_rate_min": trade_rate_min,
+                "trade_rate_max": trade_rate_max,
+                "rate_penalize_upper": rate_penalize_upper,
+                "elite_by_return_frac": elite_by_return_frac,
+            },
+        })
+
+    # One-time session metadata for inspector tooling
+    logger.log("session_meta", {
+        "strategy": strategy_dotted,
+        "tickers": list(tickers) if isinstance(tickers, (list, tuple)) else [str(tickers)],
+        "starting_equity": float(starting_equity),
+        "train_start": str(start),
+        "train_end": str(end),
+    })
     # years used for trade-rate normalization
     def _years(a, b) -> float:
         # support date/datetime/str
@@ -296,9 +448,15 @@ def evolutionary_search(
         progress_cb("generation_start", {"gen": gen, "pop_size": len(population)})
         logger.log("generation_start", {"gen": gen, "pop_size": len(population)})
 
-        gen_scores: List[Tuple[Dict[str, Any], float]] = []
+        gen_scores: List[Tuple[Dict[str, Any], float, float]] = []
         gen_trades: List[int] = []
         no_trade_count = 0
+        best_gen_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
+
+        # Per-generation penalty/gating trackers (for telemetry)
+        gen_penalties_capped: List[float] = []
+        gen_cap_hits: int = 0
+        gen_gated_zeros: int = 0
 
         # ---- Evaluate population (parallel or single) ----
         results: List[Dict[str, Any]] = []
@@ -346,31 +504,118 @@ def evolutionary_search(
                 elapsed = rec.get("elapsed_sec", 0.0)
                 loader_file = rec.get("loader_file")
 
-            # compute fitness
-            score = _clamped_fitness(
-                metrics,
-                min_trades=min_trades,
-                min_avg_holding_days_gate=min_avg_holding_days_gate,
-                require_hold_days=require_hold_days,
-                eps_mdd=eps_mdd,
-                eps_sharpe=eps_sharpe,
-                alpha_cagr=alpha_cagr,
-                beta_calmar=beta_calmar,
-                gamma_sharpe=gamma_sharpe,
-                delta_total_return=delta_total_return,
-                min_holding_days=min_holding_days,
-                max_holding_days=max_holding_days,
-                holding_penalty_weight=holding_penalty_weight,
-                trade_rate_min=trade_rate_min,
-                trade_rate_max=trade_rate_max,
-                trade_rate_penalty_weight=trade_rate_penalty_weight,
-                num_symbols=num_symbols,
-                years=years,
-                calmar_cap=calmar_cap,
+            # --- fitness with debug details (mirrors _clamped_fitness) ----
+            trades = int(metrics.get("trades", 0) or 0)
+            avg_hold = float(metrics.get("avg_holding_days", 0.0) or 0.0)
+            gated_zero = (
+                trades < min_trades
+                or avg_hold < float(min_avg_holding_days_gate)
+                or (require_hold_days and avg_hold <= 0.0)
             )
+            if gated_zero:
+                score = 0.0
+                fitness_dbg = {
+                    "gated_zero": True,
+                    "base_norm": 0.0,
+                    "trade_rate": 0.0,
+                    "hold_dist": 0.0,
+                    "rate_dist": 0.0,
+                    "hold_pen": 0.0,
+                    "rate_pen": 0.0,
+                    "penalty_total_raw": 0.0,
+                    "penalty_total_capped": 0.0,
+                }
+            else:
+                # metrics & guards
+                cagr = float(metrics.get("cagr", 0.0) or 0.0)
+                calmar = float(metrics.get("calmar", 0.0) or 0.0)
+                mdd = float(abs(metrics.get("max_drawdown", 0.0) or 0.0))
+                if mdd < eps_mdd:
+                    calmar = 0.0
+                sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+                if abs(sharpe) < eps_sharpe:
+                    sharpe = 0.0
+                total_return = float(metrics.get("total_return", 0.0) or 0.0)
+
+                # normalization (engine style)
+                def _clip01(x: float) -> float:
+                    return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+                tr_n = _clip01(total_return / 0.50)  # 0..50% → 0..1
+                cagr_n = _clip01(cagr / 0.30)        # 0..30% → 0..1
+                sh_n = _clip01(sharpe / 3.0)         # 0..3   → 0..1 (negatives clip to 0)
+                if calmar_cap > 0:
+                    calmar = max(-calmar_cap, min(calmar, calmar_cap))
+                cm_n = _clip01(max(0.0, calmar) / max(1e-9, calmar_cap))
+
+                base_norm = (
+                    (alpha_cagr * cagr_n)
+                    + (beta_calmar * cm_n)
+                    + (gamma_sharpe * sh_n)
+                    + (delta_total_return * tr_n)
+                )
+
+                # penalties (normalized distances + cap)
+                _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
+                hold_dist = 0.0
+                if not (min_holding_days <= avg_hold <= max_holding_days):
+                    hold_dist = (min_holding_days - avg_hold) if avg_hold < min_holding_days else (avg_hold - max_holding_days)
+                hold_pen = holding_penalty_weight * (hold_dist / _bw_hold)
+
+                trade_rate = 0.0
+                if num_symbols > 0 and years > 0:
+                    trade_rate = float(trades) / float(num_symbols) / float(years)
+                _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
+                if trade_rate < trade_rate_min:
+                    rate_dist = (trade_rate_min - trade_rate)
+                elif rate_penalize_upper and trade_rate > trade_rate_max:
+                    rate_dist = (trade_rate - trade_rate_max)
+                else:
+                    rate_dist = 0.0
+                rate_pen = trade_rate_penalty_weight * (rate_dist / _bw_rate)
+
+                pen_raw = hold_pen + rate_pen
+                pen_cap = min(pen_raw, float(penalty_cap))
+
+                score = float(base_norm - pen_cap) if use_normalized_scoring else float(
+                    (alpha_cagr * cagr)
+                    + (beta_calmar * calmar)
+                    + (gamma_sharpe * sharpe)
+                    + (delta_total_return * total_return)
+                    - pen_cap
+                )
+
+                fitness_dbg = {
+                    "gated_zero": False,
+                    "base_norm": base_norm,
+                    "trade_rate": trade_rate,
+                    "hold_dist": hold_dist,
+                    "rate_dist": rate_dist,
+                    "hold_pen": hold_pen,
+                    "rate_pen": rate_pen,
+                    "penalty_total_raw": pen_raw,
+                    "penalty_total_capped": pen_cap,
+                }
+
+            # --- accumulate per-gen telemetry ---------------------------------
+            if fitness_dbg.get("gated_zero", False):
+                gen_gated_zeros += 1
+            else:
+                pen_cap_val = float(fitness_dbg.get("penalty_total_capped", 0.0) or 0.0)
+                gen_penalties_capped.append(pen_cap_val)
+                if pen_cap_val >= float(penalty_cap) - 1e-12:
+                    gen_cap_hits += 1
 
             trades = int(metrics.get("trades", 0) or 0)
             gen_trades.append(trades)
+
+            ret = float(metrics.get("total_return", 0.0) or 0.0)
+
+            # Track best-by-return for this generation
+            if (best_gen_return_rec is None) or (ret > best_gen_return_rec[1]):
+                best_gen_return_rec = (params, ret, score)
+            # Track best-by-return across the whole run
+            if (best_run_return_rec is None) or (ret > best_run_return_rec[1]):
+                best_run_return_rec = (params, ret, score)
 
             payload = {
                 "gen": gen,
@@ -380,6 +625,7 @@ def evolutionary_search(
                 "metrics": metrics,
                 "elapsed_sec": elapsed,
                 "loader_file": loader_file,
+                "fitness_debug": fitness_dbg,
             }
             progress_cb("individual_evaluated", payload)
             logger.log("individual_evaluated", payload)
@@ -390,11 +636,12 @@ def evolutionary_search(
                     logger.log("degenerate_fitness", payload)
                 no_trade_count += (1 if trades == 0 else 0)
 
-            gen_scores.append((params, score))
+            gen_scores.append((params, score, ret))
 
         # ---- Selection & breeding ----
-        gen_scores.sort(key=lambda x: x[1], reverse=True)
-        scored.extend(gen_scores)
+        # Sort primarily by score, then tie-break by total_return
+        gen_scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        scored.extend([(p, s) for (p, s, _ret) in gen_scores])
 
         elite_n = max(1, int(pop_size * elite_frac))
         inject_n = max(0, int(pop_size * random_inject_frac))
@@ -403,18 +650,44 @@ def evolutionary_search(
             inject_n = max(0, pop_size - elite_n)
             breed_n = pop_size - elite_n - inject_n
 
-        survivors: List[Dict[str, Any]] = []
-        for p, s in gen_scores:
-            if s > 0:
-                survivors.append(p)
-            if len(survivors) == elite_n:
-                break
+        # Mixed elites: by score and by total_return to reduce oscillation
+        elite_by_return_n = max(0, min(elite_n, int(round(elite_n * elite_by_return_frac))))
+        elite_by_score_n = max(0, elite_n - elite_by_return_n)
 
-        # pad if too few survivors (keep population viable)
-        idx = 0
-        while len(survivors) < elite_n and idx < len(gen_scores):
-            survivors.append(gen_scores[idx][0])
-            idx += 1
+        survivors: List[Dict[str, Any]] = []
+        seen = set()
+
+        # 1) take top by score (positive scores only)
+        for p, s, _r in gen_scores:
+            if elite_by_score_n <= 0:
+                break
+            if s <= 0:
+                continue
+            key = json.dumps(p, sort_keys=True)
+            if key in seen:
+                continue
+            survivors.append(p); seen.add(key)
+            elite_by_score_n -= 1
+
+        # 2) take top by return (regardless of score) until quota met
+        by_return = sorted(gen_scores, key=lambda x: x[2], reverse=True)
+        for p, s, _r in by_return:
+            if elite_by_return_n <= 0:
+                break
+            key = json.dumps(p, sort_keys=True)
+            if key in seen:
+                continue
+            survivors.append(p); seen.add(key)
+            elite_by_return_n -= 1
+
+        # 3) pad with remaining best by score to reach elite_n
+        for p, s, _r in gen_scores:
+            if len(survivors) >= elite_n:
+                break
+            key = json.dumps(p, sort_keys=True)
+            if key in seen:
+                continue
+            survivors.append(p); seen.add(key)
 
         # breed children
         children: List[Dict[str, Any]] = []
@@ -433,10 +706,22 @@ def evolutionary_search(
         if len(population) > pop_size:
             population = population[:pop_size]
 
-        avg_score = (sum(s for _, s in gen_scores) / len(gen_scores)) if gen_scores else 0.0
+        avg_score = (sum(s for _, s, _ in gen_scores) / len(gen_scores)) if gen_scores else 0.0
         best_score = gen_scores[0][1] if gen_scores else 0.0
         avg_trades = (sum(gen_trades) / len(gen_trades)) if gen_trades else 0.0
         pct_no_trades = (no_trade_count / len(gen_trades)) if gen_trades else 0.0
+
+        # Compute per-generation penalty/gating telemetry
+        _n = max(1, len(gen_scores))
+        cap_hit_rate = float(gen_cap_hits) / float(_n)
+        share_gated_zero = float(gen_gated_zeros) / float(_n)
+        if gen_penalties_capped:
+            # safe mean and p95
+            _pen_mean = float(sum(gen_penalties_capped) / len(gen_penalties_capped))
+            _pen_p95 = float(sorted(gen_penalties_capped)[int(0.95 * (len(gen_penalties_capped) - 1))])
+        else:
+            _pen_mean = 0.0
+            _pen_p95 = 0.0
 
         end_payload = {
             "gen": gen,
@@ -445,6 +730,9 @@ def evolutionary_search(
             "avg_trades": avg_trades,
             "pct_no_trades": pct_no_trades,
             "top_params": gen_scores[0][0] if gen_scores else {},
+            "top_by_return_params": (best_gen_return_rec[0] if best_gen_return_rec else {}),
+            "best_return": (best_gen_return_rec[1] if best_gen_return_rec else 0.0),
+            "best_return_score": (best_gen_return_rec[2] if best_gen_return_rec else 0.0),
             "elite_n": elite_n,
             "breed_n": breed_n,
             "inject_n": inject_n,
@@ -454,6 +742,22 @@ def evolutionary_search(
                 "gamma_sharpe": gamma_sharpe,
                 "delta_total_return": delta_total_return,
                 "calmar_cap": calmar_cap,
+                "use_normalized_scoring": use_normalized_scoring,
+                "holding_penalty_weight": holding_penalty_weight,
+                "trade_rate_penalty_weight": trade_rate_penalty_weight,
+                "penalty_cap": penalty_cap,
+                "min_holding_days": min_holding_days,
+                "max_holding_days": max_holding_days,
+                "trade_rate_min": trade_rate_min,
+                "trade_rate_max": trade_rate_max,
+                "rate_penalize_upper": rate_penalize_upper,
+                "elite_by_return_frac": elite_by_return_frac,
+            },
+            "penalty_stats": {
+                "cap_hit_rate": cap_hit_rate,
+                "share_gated_zero": share_gated_zero,
+                "penalty_mean": _pen_mean,
+                "penalty_p95": _pen_p95,
             },
         }
         progress_cb("generation_end", end_payload)
@@ -466,12 +770,25 @@ def evolutionary_search(
         "elapsed_sec": elapsed_total,
         "best": best[0],
         "score": best[1],
+        "best_by_return": (best_run_return_rec[0] if best_run_return_rec else {}),
+        "best_by_return_value": (best_run_return_rec[1] if best_run_return_rec else 0.0),
+        "best_by_return_score": (best_run_return_rec[2] if best_run_return_rec else 0.0),
         "fitness_weights": {
             "alpha_cagr": alpha_cagr,
             "beta_calmar": beta_calmar,
             "gamma_sharpe": gamma_sharpe,
             "delta_total_return": delta_total_return,
             "calmar_cap": calmar_cap,
+            "use_normalized_scoring": use_normalized_scoring,
+            "holding_penalty_weight": holding_penalty_weight,
+            "trade_rate_penalty_weight": trade_rate_penalty_weight,
+            "penalty_cap": penalty_cap,
+            "min_holding_days": min_holding_days,
+            "max_holding_days": max_holding_days,
+            "trade_rate_min": trade_rate_min,
+            "trade_rate_max": trade_rate_max,
+            "rate_penalize_upper": rate_penalize_upper,
+            "elite_by_return_frac": elite_by_return_frac,
         },
     }
     progress_cb("done", done_payload)
