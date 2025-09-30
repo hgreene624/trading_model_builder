@@ -15,6 +15,17 @@ import warnings
 LOG_DIR = Path("storage/logs/ea")
 DEFAULT_PAGE_TITLE = "EA Train/Test Inspector"
 
+# --- UI hardening: prevent button label wrapping globally ---
+st.markdown(
+    """
+    <style>
+    div.stButton > button { white-space: nowrap; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 # ---------- small debug buffer ----------
 def _dbg(msg: str):
     try:
@@ -23,6 +34,16 @@ def _dbg(msg: str):
         pass
 
 # ---------- helpers ----------
+
+# --- display-only helper ---
+def _ymd(x) -> str:
+    """Return YYYY-MM-DD for display only; do not mutate the original value."""
+    if x is None or x == "":
+        return ""
+    try:
+        return pd.to_datetime(x, utc=True).strftime("%Y-%m-%d")
+    except Exception:
+        return str(x)
 
 def _latest_log_file(dirpath: Path) -> Optional[Path]:
     if not dirpath.exists():
@@ -365,8 +386,18 @@ def main():
 
     with c1:
         st.markdown("**Training window**")
-        train_start = st.text_input("Train start (ISO)", value=str(train_start) if train_start else "")
-        train_end = st.text_input("Train end (ISO)", value=str(train_end) if train_end else "")
+        st.text_input(
+            "Train start",
+            value=_ymd(train_start) if train_start else "",
+            key="ea_disp_train_start",
+            disabled=True,
+        )
+        st.text_input(
+            "Train end",
+            value=_ymd(train_end) if train_end else "",
+            key="ea_disp_train_end",
+            disabled=True,
+        )
 
     with c2:
         st.markdown("**Test window**")
@@ -377,9 +408,24 @@ def main():
                 default_test_start = (pd.to_datetime(train_end) + pd.Timedelta(days=1)).date().isoformat()
             except Exception:
                 default_test_start = ""
-        test_start = st.text_input("Test start (ISO)", value=str(default_test_start) if default_test_start else "")
+        # set underlying variables (full ISO) and show compact display fields
+        test_start = str(default_test_start) if default_test_start else ""
         default_test_end = hmeta.get("holdout_end")
-        test_end = st.text_input("Test end (ISO)", value=str(default_test_end) if default_test_end else "")
+        test_end = str(default_test_end) if default_test_end else ""
+
+        st.text_input(
+            "Test start",
+            value=_ymd(test_start) if test_start else "",
+            key="ea_disp_test_start",
+            disabled=True,
+        )
+        st.text_input(
+            "Test end",
+            value=_ymd(test_end) if test_end else "",
+            key="ea_disp_test_end",
+            disabled=True,
+        )
+
         # Ensure empty user inputs fall back to holdout metadata when possible
         if not test_start:
             test_start = str(default_test_start) if default_test_start else ""
@@ -395,11 +441,18 @@ def main():
         max_gen = int(eval_df["gen"].max()) if not eval_df.empty else 0
         if "ea_inspect_gen" not in st.session_state:
             st.session_state.ea_inspect_gen = 0
-        cols = st.columns(3)
-        if cols[0].button("⟵ Prev", use_container_width=True):
-            st.session_state.ea_inspect_gen = max(0, st.session_state.ea_inspect_gen - 1)
-        if cols[2].button("Next ⟶", use_container_width=True):
-            st.session_state.ea_inspect_gen = min(max_gen, st.session_state.ea_inspect_gen + 1)
+
+        # Wider buttons with a thin spacer; labels use non-breaking space to resist weird wraps
+        prev_col, spacer, next_col = st.columns([1, 0.2, 1])
+
+        with prev_col:
+            if st.button("⟵ Prev", key="ea_prev", use_container_width=True):  # note the NBSP between words
+                st.session_state.ea_inspect_gen = max(0, st.session_state.ea_inspect_gen - 1)
+
+        with next_col:
+            if st.button("Next ⟶", key="ea_next", use_container_width=True):
+                st.session_state.ea_inspect_gen = min(max_gen, st.session_state.ea_inspect_gen + 1)
+
         st.caption(f"Max gen in log: {max_gen}")
 
     with c5:
