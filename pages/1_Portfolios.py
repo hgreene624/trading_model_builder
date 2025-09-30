@@ -8,12 +8,13 @@ from pathlib import Path
 
 # Storage + data helpers from your project
 from src.storage import (
+    get_ohlcv_root,
     list_index_cache,
     load_index_members,
     save_portfolio,
 )
 from src.data.loader import get_ohlcv
-from src.data.portfolio_prefetch import now_utc_iso
+from src.data.portfolio_prefetch import list_cached_shards, now_utc_iso
 
 # -----------------------
 # Page config / Title
@@ -314,6 +315,10 @@ if st.button("📉 Fetch OHLCV & compute liquidity", type="primary"):
     # Persist ranges for saving into portfolio meta
     ss["pf_per_ranges"] = per_ranges
 
+    # Capture cached shard metadata (provider, path, start/end) for persistence
+    ss["pf_data_shards"] = list_cached_shards(tickers, timeframe="1D")
+    ss["pf_data_shards_root"] = str(get_ohlcv_root())
+
     # Upsert liquidity columns without merging (no overlap)
     meta_filt_capped = _upsert_liquidity_cols(meta_filt_capped, liq_rows)
 
@@ -390,6 +395,8 @@ meta_payload = {
     "last_prefetch_at": now_utc_iso(),
     # NEW: persist per-symbol coverage from prefetch
     "per_symbol_ranges": ss.get("pf_per_ranges", {}),
+    "data_cache_root": ss.get("pf_data_shards_root") or str(get_ohlcv_root()),
+    "data_shards": {"1D": ss.get("pf_data_shards", {})},
 }
 
 disabled_save = not portfolio_name or not tickers_to_save
