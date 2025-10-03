@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import warnings
 
+from src.utils.tri_panel import render_tri_panel
+
 # ---------- settings ----------
 LOG_DIR = Path("storage/logs/ea")
 DEFAULT_PAGE_TITLE = "EA Train/Test Inspector"
@@ -500,6 +502,46 @@ def main():
         starting_equity=starting_equity,
     )
     st.plotly_chart(fig2, use_container_width=True)
+
+    strategy_curve_for_tri = pd.Series(dtype=float)
+    try:
+        current_gen = int(st.session_state.ea_inspect_gen)
+        gen_slice = eval_df[eval_df["gen"] == current_gen]
+        if not gen_slice.empty and "total_return" in gen_slice.columns:
+            best_row = gen_slice.loc[gen_slice["total_return"].idxmax()]
+            params = _row_params(best_row)
+            ec_train = run_equity_curve(
+                strategy,
+                tickers,
+                train_start,
+                train_end,
+                starting_equity,
+                params,
+            )
+            end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
+            ec_test = run_equity_curve(
+                strategy,
+                tickers,
+                test_start,
+                test_end,
+                end_equity,
+                params,
+            )
+            ec = pd.concat([ec_train, ec_test], ignore_index=True)
+            if not ec.empty and {"date", "equity"}.issubset(ec.columns):
+                ec = ec.copy()
+                ec["date"] = pd.to_datetime(ec["date"], errors="coerce")
+                ec = ec.dropna(subset=["date", "equity"])
+                if not ec.empty:
+                    ec = ec.sort_values("date")
+                    try:
+                        strategy_curve_for_tri = ec.set_index("date")["equity"].astype(float)
+                    except Exception:
+                        strategy_curve_for_tri = pd.Series(dtype=float)
+    except Exception:
+        strategy_curve_for_tri = pd.Series(dtype=float)
+
+    render_tri_panel(strategy_curve_for_tri)
 
     # Debug trace from the equity provider
     with st.expander("Debug: equity provider trace", expanded=False):
