@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 try:
     from src.storage import load_price_history  # type: ignore
@@ -14,10 +17,12 @@ except Exception:  # pragma: no cover - loader optional in some envs
 
 def _normalize_curve(series: pd.Series) -> Optional[pd.Series]:
     if series is None:
+        logger.debug("normalize_curve received None series")
         return None
     try:
         s = series.dropna().astype(float)
     except Exception:
+        logger.exception("normalize_curve failed to coerce series to float")
         return None
     if s.empty:
         return None
@@ -25,6 +30,7 @@ def _normalize_curve(series: pd.Series) -> Optional[pd.Series]:
         try:
             s.index = pd.to_datetime(s.index)
         except Exception:
+            logger.exception("normalize_curve failed to convert index to datetime")
             return None
     s = s.sort_index()
     s = s[s > 0]
@@ -34,15 +40,18 @@ def _normalize_curve(series: pd.Series) -> Optional[pd.Series]:
     if first == 0:
         s = s[s > 0]
         if s.empty:
+            logger.debug("normalize_curve filtered out non-positive values")
             return None
         first = s.iloc[0]
     if first <= 0:
+        logger.debug("normalize_curve first value non-positive", extra={"first": first})
         return None
     return s / float(first)
 
 
 def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> Optional[pd.Series]:
     if load_price_history is None:
+        logger.warning("tri_panel load_price_history unavailable")
         return None
     try:
         kwargs = {"timeframe": "1D"}
@@ -53,16 +62,21 @@ def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp])
         try:
             df = load_price_history("SPY", **kwargs)
         except TypeError:
+            logger.debug("tri_panel fallback load_price_history signature" , extra={"kwargs": kwargs})
             df = load_price_history("SPY", timeframe="1D")
     except Exception:
+        logger.exception("tri_panel failed while loading SPY history")
         return None
     if df is None:
+        logger.warning("tri_panel load_price_history returned None")
         return None
     try:
         spy_df = df.copy()
     except Exception:
+        logger.exception("tri_panel failed to copy SPY dataframe")
         return None
     if spy_df is None or len(spy_df) == 0:
+        logger.info("tri_panel SPY dataframe empty")
         return None
     cols = {str(c).lower(): c for c in spy_df.columns}
     tri_col = None
@@ -71,12 +85,15 @@ def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp])
             tri_col = cols[cand]
             break
     if tri_col is None:
+        logger.warning("tri_panel could not locate TRI column", extra={"columns": list(spy_df.columns)})
         return None
     try:
         series = spy_df[tri_col].dropna().astype(float)
     except Exception:
+        logger.exception("tri_panel failed to process TRI column", extra={"tri_col": tri_col})
         return None
     if series.empty:
+        logger.info("tri_panel TRI series empty after dropna")
         return None
     if not isinstance(series.index, pd.DatetimeIndex):
         for ts_col in ("date", "datetime", "timestamp"):
@@ -86,72 +103,96 @@ def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp])
                     series.index = idx
                     break
                 except Exception:
+                    logger.exception("tri_panel failed parsing timestamp column", extra={"column": ts_col})
                     continue
     if not isinstance(series.index, pd.DatetimeIndex):
         try:
             series.index = pd.to_datetime(series.index)
         except Exception:
+            logger.exception("tri_panel failed to coerce series index to datetime")
             return None
     series = series.sort_index()
     series = series[series > 0]
     if series.empty:
+        logger.info("tri_panel TRI series empty after filtering positives")
         return None
     return series / float(series.iloc[0])
 
 
 def _compute_cagr(series: pd.Series) -> Optional[float]:
     if series is None or series.empty:
+        logger.debug("tri_panel CAGR requested on empty series")
         return None
     start_value = series.iloc[0]
     end_value = series.iloc[-1]
     if start_value <= 0 or end_value <= 0:
+        logger.debug(
+            "tri_panel CAGR invalid start/end",
+            extra={"start": float(start_value), "end": float(end_value)},
+        )
         return None
     delta = series.index[-1] - series.index[0]
     if not isinstance(delta, pd.Timedelta):
+        logger.debug("tri_panel CAGR delta not timedelta", extra={"type": type(delta).__name__})
         return None
     days = delta.days
     if days <= 0:
+        logger.debug("tri_panel CAGR non-positive days", extra={"days": days})
         return None
     years = days / 365.25
     if years <= 0:
+        logger.debug("tri_panel CAGR non-positive years", extra={"years": years})
         return None
     try:
         return (end_value / start_value) ** (1.0 / years) - 1.0
     except Exception:
+        logger.exception("tri_panel CAGR computation failed")
         return None
 
 
 def _compute_max_dd(series: pd.Series) -> Optional[float]:
     if series is None or series.empty:
+        logger.debug("tri_panel max drawdown on empty series")
         return None
     rolling_max = series.cummax()
     if rolling_max is None or rolling_max.empty:
+        logger.debug("tri_panel rolling max empty")
         return None
     drawdowns = series / rolling_max - 1.0
     if drawdowns is None or drawdowns.empty:
+        logger.debug("tri_panel drawdowns empty")
         return None
     try:
         return float(drawdowns.min())
     except Exception:
+        logger.exception("tri_panel max drawdown computation failed")
         return None
 
 
 def _compute_tracking_stats(strategy: pd.Series, benchmark: pd.Series) -> tuple[Optional[float], Optional[float]]:
     if strategy is None or benchmark is None:
+        logger.debug("tri_panel tracking stats missing input")
         return None, None
     if strategy.empty or benchmark.empty:
+        logger.debug("tri_panel tracking stats empty series")
         return None, None
     returns = pd.concat([strategy.pct_change(), benchmark.pct_change()], axis=1, join="inner")
     returns = returns.dropna()
     if returns.empty:
+        logger.debug("tri_panel tracking stats no overlapping returns")
         return None, None
     returns.columns = ["strategy", "benchmark"]
     active = returns["strategy"] - returns["benchmark"]
     active = active.dropna()
     if active.empty:
+        logger.debug("tri_panel tracking stats active empty")
         return None, None
     std_active = float(active.std(ddof=0))
     if std_active == 0 or math.isnan(std_active):
+        logger.debug(
+            "tri_panel tracking stats zero std",
+            extra={"std": std_active},
+        )
         return None, None
     mean_active = float(active.mean())
     tracking_error = std_active * math.sqrt(252)
@@ -175,6 +216,7 @@ def render_tri_panel(strategy_curve: pd.Series, title: str = "S&P 500 Total-Retu
     with st.expander(f"\u25b8 {title}"):
         strategy_norm = _normalize_curve(strategy_curve)
         if strategy_norm is None or strategy_norm.empty:
+            logger.info("tri_panel no strategy curve available")
             st.info("Strategy equity curve unavailable; cannot compute TRI comparison.")
             return
         spy_norm = _extract_spy_tri(
@@ -182,6 +224,7 @@ def render_tri_panel(strategy_curve: pd.Series, title: str = "S&P 500 Total-Retu
             end=strategy_norm.index.max() if not strategy_norm.empty else None,
         )
         if spy_norm is None or spy_norm.empty:
+            logger.warning("tri_panel SPY normalization failed")
             st.warning("SPY TRI data unavailable (loader missing or returned no data).")
             return
         combined = pd.concat(
@@ -190,6 +233,10 @@ def render_tri_panel(strategy_curve: pd.Series, title: str = "S&P 500 Total-Retu
             join="inner",
         ).dropna()
         if combined.empty or len(combined) < 10:
+            logger.info(
+                "tri_panel insufficient overlap",
+                extra={"rows": int(len(combined))},
+            )
             st.info("Insufficient overlapping history between strategy and SPY (requires at least 10 points).")
             return
         strategy_aligned = combined["Strategy"]

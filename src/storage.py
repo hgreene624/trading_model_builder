@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
@@ -592,6 +593,7 @@ def load_price_history(
     try:
         from src.data.loader import get_ohlcv
     except Exception as exc:  # pragma: no cover - surface loader import errors
+        logger.exception("load_price_history failed to import get_ohlcv")
         raise RuntimeError("load_price_history requires src.data.loader.get_ohlcv") from exc
 
     def _coerce(ts: "datetime | pd.Timestamp | None") -> "datetime | None":
@@ -619,10 +621,27 @@ def load_price_history(
     if start_dt is None:
         start_dt = end_dt - timedelta(days=365 * 3)
 
-    df = get_ohlcv(symbol_norm, start_dt, end_dt, timeframe=timeframe)
+    logger.debug(
+        "load_price_history request",
+        extra={
+            "symbol": symbol_norm,
+            "timeframe": timeframe,
+            "start": start_dt.isoformat() if start_dt else None,
+            "end": end_dt.isoformat() if end_dt else None,
+        },
+    )
+    try:
+        df = get_ohlcv(symbol_norm, start_dt, end_dt, timeframe=timeframe)
+    except Exception:
+        logger.exception(
+            "load_price_history get_ohlcv raised",
+        )
+        raise
     if df is None:
+        logger.warning("load_price_history returned None", extra={"symbol": symbol_norm})
         return df
     if df.empty:
+        logger.info("load_price_history returned empty frame", extra={"symbol": symbol_norm})
         return df
 
     df = df.copy()
@@ -649,6 +668,14 @@ def load_price_history(
     if "adj_close" not in df.columns and "close" in df.columns:
         df["adj_close"] = df["close"]
 
+    logger.debug(
+        "load_price_history normalized columns",
+        extra={
+            "symbol": symbol_norm,
+            "columns": list(df.columns),
+            "rows": int(len(df)),
+        },
+    )
     return df
 
 # ----------------------------------------------------------------------
@@ -697,3 +724,4 @@ def load_strategy_params(portfolio: str, strategy: str, scope: str = "ea") -> Op
         return _read_json(path)
     except Exception:
         return None
+# Logging helper configured near module imports (see top-level logger assignment).
