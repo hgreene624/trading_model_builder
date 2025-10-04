@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 from datetime import datetime
 
+
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     import pandas as pd
 
