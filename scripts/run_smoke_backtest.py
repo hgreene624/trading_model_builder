@@ -293,6 +293,30 @@ def main() -> None:
         for key in counter_keys:
             counters[key] += int(runtime.get(key, 0) or 0)
 
+    cost_inputs_effective = {
+        "atr_k": float(args.atr_k),
+        "min_half_spread_bps": float(args.min_hs_bps),
+        "use_range_impact": bool(args.use_range_impact),
+        "cap_range_impact_bps": float(args.cap_range_impact_bps),
+    }
+    for meta in metadata:  # PH1.2: reflect the actual knobs observed in engine metadata
+        if not isinstance(meta, dict):
+            continue
+        meta_inputs = meta.get("cost_inputs")
+        if not isinstance(meta_inputs, dict):
+            continue
+        for key in cost_inputs_effective:
+            if key not in meta_inputs:
+                continue
+            value = meta_inputs[key]
+            if key == "use_range_impact":
+                cost_inputs_effective[key] = bool(value)
+            else:
+                try:
+                    cost_inputs_effective[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+
     summary = {
         "inputs": {
             "tickers": tickers_requested,
@@ -304,10 +328,10 @@ def main() -> None:
             "reentry_cooldown_days": int(max(0, args.reentry_cooldown_days)),
             "cost_enabled": int(args.cost_enabled),
             "fixed_bps": float(args.fixed_bps),
-            "atr_k": float(args.atr_k),
-            "min_half_spread_bps": float(args.min_hs_bps),
-            "use_range_impact": bool(args.use_range_impact),  # PH1.2
-            "cap_range_impact_bps": float(args.cap_range_impact_bps),  # PH1.2
+            "atr_k": cost_inputs_effective["atr_k"],  # PH1.2
+            "min_half_spread_bps": cost_inputs_effective["min_half_spread_bps"],  # PH1.2
+            "use_range_impact": cost_inputs_effective["use_range_impact"],  # PH1.2
+            "cap_range_impact_bps": cost_inputs_effective["cap_range_impact_bps"],  # PH1.2
             "exec_delay_bars": int(max(0, args.exec_delay_bars)),
             "exec_fill_where": args.exec_fill_where,
             "seed": int(args.seed),
