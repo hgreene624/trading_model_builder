@@ -340,6 +340,12 @@ if st.button("Run Evolutionary Tuning", type="primary", key="btn_ev"):
             prog.progress(100, text="Done")
 
             # Run one final backtest for consistent metrics & equity
+            persist_val = int(best_params.get("persist_n", 1) or 1)
+            if persist_val < 1:
+                persist_val = 1
+            k_buffer = float(best_params.get("k_atr_buffer", 0.0) or 0.0)
+            if k_buffer < 0.0:
+                k_buffer = 0.0
             res_best = backtest_single(
                 symbol,
                 start.isoformat(),
@@ -349,6 +355,8 @@ if st.button("Run Evolutionary Tuning", type="primary", key="btn_ev"):
                 best_params["atr_n"],
                 float(starting_equity),
                 atr_multiple=best_params["atr_multiple"],
+                k_atr_buffer=k_buffer,
+                persist_n=persist_val,
                 risk_per_trade=best_params["risk_per_trade"],
                 allow_fractional=True,
             )
@@ -361,6 +369,8 @@ if st.button("Run Evolutionary Tuning", type="primary", key="btn_ev"):
                 exit_n=int(best_params["exit_n"]),
                 atr_n=int(best_params["atr_n"]),
                 atr_multiple=float(best_params["atr_multiple"]),
+                k_atr_buffer=float(max(0.0, float(best_params.get("k_atr_buffer", 0.0) or 0.0))),
+                persist_n=int(max(1, int(best_params.get("persist_n", 1) or 1))),
                 risk_per_trade=float(best_params["risk_per_trade"]),
                 allow_fractional=True,
                 slippage_bp=5.0,

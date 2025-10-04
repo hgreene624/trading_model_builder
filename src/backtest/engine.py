@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import math
+import logging
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -32,6 +34,10 @@ except Exception:
 # ---- Metrics helper (only type reference; do NOT compute here) ----
 # The trainer will call metrics.compute_core_metrics on the result.
 # from src.backtest.metrics import compute_core_metrics
+try:
+    from src.backtest.metrics import summarize_costs as _summarize_costs  # type: ignore
+except Exception:
+    _summarize_costs = None
 
 # ---------- CONTRACTS ----------
 
@@ -112,12 +118,51 @@ def _env_float(name: str, default: float = 0.0) -> float:
     return _coerce_float(raw, default=default)
 
 
+# ---------- Logging ----------
+
+logger = logging.getLogger("backtest.engine")
+_ENGINE_LOGGER_CONFIGURED = False
+
+
+def _ensure_engine_logger() -> None:
+    """Configure rotating file logging for the engine (idempotent)."""
+
+    global _ENGINE_LOGGER_CONFIGURED
+    log_level_name = str(os.getenv("LOG_LEVEL", "INFO")).upper()
+    log_level = getattr(logging, log_level_name, logging.INFO)
+    logger.setLevel(log_level)
+    if _ENGINE_LOGGER_CONFIGURED:
+        return
+    try:
+        log_dir = os.path.join("storage", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        has_rotating = any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
+        if not has_rotating:
+            root_logger = logging.getLogger()
+            has_rotating = any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers)
+        if not has_rotating:
+            handler = RotatingFileHandler(
+                os.path.join(log_dir, "engine.log"), maxBytes=5 * 1024 * 1024, backupCount=3
+            )
+            handler.setLevel(log_level)
+            handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+            logger.addHandler(handler)
+    except Exception:
+        # Logging is best-effort; failures should not break the engine.
+        pass
+    _ENGINE_LOGGER_CONFIGURED = True
+
+
 @dataclass
 class CostModel:
     commission_bps: float = 0.0
     slippage_bps: float = 0.0
     per_trade_fee: float = 0.0
     enabled: bool = False
+    fixed_bps: float = 0.0
+    atr_k: float = 0.25
+    min_half_spread_bps: float = 1.0
+    mode: str = "simple_spread"
 
     @classmethod
     def from_inputs(
@@ -126,16 +171,30 @@ class CostModel:
         slippage_bps: float = 0.0,
         per_trade_fee: float = 0.0,
         enabled: bool = False,
+        fixed_bps: float | None = None,
+        atr_k: float | None = None,
+        min_half_spread_bps: float | None = None,
+        mode: str | None = None,
     ) -> "CostModel":
         commission_bps = max(0.0, _coerce_float(commission_bps, 0.0))
         slippage_bps = max(0.0, _coerce_float(slippage_bps, 0.0))
         per_trade_fee = max(0.0, _coerce_float(per_trade_fee, 0.0))
         active = enabled or (commission_bps > 0.0 or slippage_bps > 0.0 or per_trade_fee > 0.0)
+        fixed = max(0.0, _coerce_float(fixed_bps, 0.0)) if fixed_bps is not None else 0.0
+        atr_scale = max(0.0, _coerce_float(atr_k, 0.25)) if atr_k is not None else 0.25
+        min_spread = max(0.0, _coerce_float(min_half_spread_bps, 1.0)) if min_half_spread_bps is not None else 1.0
+        mode_clean = str(mode).strip().lower() if mode is not None else "simple_spread"
+        if mode_clean not in {"simple_spread"}:
+            mode_clean = "simple_spread"
         return cls(
             commission_bps=commission_bps,
             slippage_bps=slippage_bps,
             per_trade_fee=per_trade_fee,
             enabled=bool(active),
+            fixed_bps=fixed,
+            atr_k=atr_scale,
+            min_half_spread_bps=min_spread,
+            mode=mode_clean,
         )
 
     def total_bps(self) -> float:
@@ -147,7 +206,32 @@ class CostModel:
             "slippage_bps": float(self.slippage_bps),
             "per_trade_fee": float(self.per_trade_fee),
             "enabled": bool(self.enabled),
+            "fixed_bps": float(self.fixed_bps),
+            "atr_k": float(self.atr_k),
+            "min_half_spread_bps": float(self.min_half_spread_bps),
+            "mode": str(self.mode),
         }
+
+    @classmethod
+    def from_env(cls) -> "CostModel":
+        enabled = _env_flag("COST_ENABLED", False)
+        fixed_bps = max(0.0, _env_float("COST_FIXED_BPS", 0.5))
+        atr_k = max(0.0, _env_float("COST_ATR_K", 0.25))
+        min_half_spread = max(0.0, _env_float("COST_MIN_HS_BPS", 1.0))
+        mode = os.getenv("COST_MODE", "simple_spread")
+        mode = str(mode).strip().lower()
+        if mode not in {"simple_spread"}:
+            mode = "simple_spread"
+        return cls(
+            commission_bps=0.0,
+            slippage_bps=0.0,
+            per_trade_fee=0.0,
+            enabled=bool(enabled),
+            fixed_bps=float(fixed_bps),
+            atr_k=float(atr_k),
+            min_half_spread_bps=float(min_half_spread),
+            mode=mode,
+        )
 
     def compute_fill(
         self,
@@ -195,6 +279,44 @@ class CostModel:
             "commission_bps": float(self.commission_bps),
         }
 
+
+def _estimate_half_spread_bps(bar: Dict[str, Any] | pd.Series) -> float:
+    try:
+        high = _coerce_float(bar.get("high"), 0.0)  # type: ignore[arg-type]
+        low = _coerce_float(bar.get("low"), 0.0)  # type: ignore[arg-type]
+        close = _coerce_float(bar.get("close"), 0.0)  # type: ignore[arg-type]
+    except AttributeError:
+        return 0.0
+    if close <= 0.0 or high <= 0.0 or low <= 0.0:
+        return 0.0
+    spread = max(0.0, high - low)
+    if spread <= 0.0:
+        return 0.0
+    return float(0.5 * spread / close * 10_000.0)
+
+
+def _apply_costs(
+    fill_price: float,
+    qty: float,
+    bar: Dict[str, Any] | pd.Series,
+    atr_pct: float | None,
+    cm: CostModel,
+) -> tuple[float, float, float]:
+    price = _coerce_float(fill_price, 0.0)
+    quantity = _coerce_float(qty, 0.0)
+    if not cm or not getattr(cm, "enabled", False) or quantity == 0.0 or price <= 0.0:
+        return float(price), 0.0, 0.0
+    atr_component = 0.0
+    if atr_pct is not None:
+        atr_component = max(0.0, _coerce_float(atr_pct, 0.0)) * cm.atr_k * 10_000.0
+    half_spread = _estimate_half_spread_bps(bar)
+    slip_bps = max(cm.min_half_spread_bps, half_spread, atr_component)
+    fees_bps = max(0.0, _coerce_float(cm.fixed_bps, 0.0))
+    direction = 1.0 if quantity > 0 else -1.0
+    price_after = price * (1.0 + direction * slip_bps / 10_000.0)
+    return float(price_after), float(slip_bps), float(fees_bps)
+
+
 # ---------- Parameters ----------
 
 @dataclass
@@ -203,6 +325,8 @@ class ATRParams:
     exit_n: int = 10                  # recent low lookback for exit
     atr_n: int = 14
     atr_multiple: float = 2.0         # volatility filter: price > rolling_high - k * ATR
+    k_atr_buffer: float = 0.0         # Phase 1.1: breakout buffer (in ATRs) beyond prior high/low
+    persist_n: int = 1                # Phase 1.1: require N consecutive breakout bars
     tp_multiple: float = 0.0          # optional profit target (in ATRs). 0 disables.
     holding_period_limit: int = 0     # optional max holding days. 0 disables.
     allow_short: bool = False         # optional shorting; default off for simplicity
@@ -249,6 +373,8 @@ def backtest_atr_breakout(
     Defaults preserve the original behaviour (costs off, delay=0).
     """
 
+    _ensure_engine_logger()
+
     extra_params: Dict[str, Any] = {}
     if isinstance(params, dict):
         params_dict = dict(params)
@@ -260,8 +386,22 @@ def backtest_atr_breakout(
     delay_candidate = _coerce_float(getattr(params, "delay_bars", 0), 0.0)
     if delay_bars is not None:
         delay_candidate = _coerce_float(delay_bars, delay_candidate)
+    env_delay_override = os.getenv("EXEC_DELAY_BARS")
+    if env_delay_override is not None:
+        delay_candidate = _coerce_float(env_delay_override, delay_candidate)
     env_delay = _env_float("ATR_EXECUTION_DELAY_BARS", delay_candidate)
     delay_bars = int(max(0, _coerce_float(env_delay, delay_candidate)))
+
+    execution_mode = str(execution).strip().lower()
+    if execution_mode in {"next_open", "open"}:
+        exec_fill_where = "open"
+    else:
+        exec_fill_where = "close"
+    env_exec_where = os.getenv("EXEC_FILL_WHERE")
+    if env_exec_where:
+        env_exec_where = env_exec_where.strip().lower()
+        if env_exec_where in {"open", "close"}:
+            exec_fill_where = env_exec_where
 
     if capture_trades_df is None:
         capture_trades_df = _env_flag("ATR_CAPTURE_TRADES_DF", True)
@@ -302,7 +442,10 @@ def backtest_atr_breakout(
             per_trade_fee=getattr(cost_model, "per_trade_fee", fee_cfg),
             enabled=enable_costs or getattr(cost_model, "enabled", False),
         )
-    enable_costs = bool(cost_model.enabled)
+    phase0_cost_model = CostModel.from_env()
+    if phase0_cost_model.enabled:
+        cost_model.enabled = False
+    enable_costs = bool(cost_model.enabled or phase0_cost_model.enabled)
 
     df = get_ohlcv(symbol, start, end).copy()
     base_meta = {
@@ -312,8 +455,10 @@ def backtest_atr_breakout(
         "params": dict(params.__dict__),
         "extra_params": extra_params,
         "execution": execution,
+        "exec_fill_where": exec_fill_where,
         "delay_bars": delay_bars,
         "cost_model": cost_model.as_dict(),
+        "phase0_cost_model": phase0_cost_model.as_dict(),
         "notes": "ATR breakout long-only reference engine",
     }
 
@@ -351,9 +496,41 @@ def backtest_atr_breakout(
     atr = wilder_atr(df["high"], df["low"], df["close"], n=params.atr_n)
     roll_high = df["close"].rolling(params.breakout_n).max()
     roll_low = df["close"].rolling(params.exit_n).min()
+    prior_high = roll_high.shift(1)
+
+    k_atr_buffer = _coerce_float(getattr(params, "k_atr_buffer", 0.0), 0.0)
+    if k_atr_buffer < 0.0:
+        k_atr_buffer = 0.0
+    persist_candidate = _coerce_float(getattr(params, "persist_n", 1), 1.0)
+    if persist_candidate < 1:
+        persist_candidate = 1.0
+    persist_n = int(persist_candidate) if persist_candidate else 1
+    if persist_n < 1:
+        persist_n = 1
 
     entry_th = roll_high - params.atr_multiple * atr
-    long_signal = df["close"] > entry_th
+    long_base = (df["close"] > entry_th).fillna(False)
+    long_pre_buffer = long_base.copy()
+    buffer_gate = pd.Series(True, index=df.index)
+    if k_atr_buffer > 0.0:
+        buffer_threshold = (prior_high + k_atr_buffer * atr)
+        buffer_gate = (df["close"] > buffer_threshold).fillna(False)
+        long_base = long_base & buffer_gate
+    long_base = long_base.fillna(False)
+    buffer_gate = buffer_gate.fillna(False)
+
+    if persist_n > 1:
+        long_signal_series = (
+            long_base.astype(int)
+            .rolling(window=persist_n, min_periods=persist_n)
+            .sum()
+            .eq(persist_n)
+        )
+        long_signal = long_signal_series.fillna(False).astype(bool)
+    else:
+        long_signal = long_base.astype(bool)
+
+    raw_long_breakout = long_base.astype(bool)
 
     in_pos = False
     entry_idx: Optional[int] = None
@@ -381,6 +558,43 @@ def backtest_atr_breakout(
     index_list = list(df.index)
     n_bars = len(index_list)
 
+    long_streak_counter = 0
+    state_tracking: Dict[str, int] = {
+        "long_streak": 0,
+        "short_streak": 0,
+        "long_streak_max": 0,
+        "entry_count": 0,
+        "exit_count": 0,
+        "blocked_by_buffer": 0,
+        "blocked_by_persistence": 0,
+        "blocked_by_min_hold": 0,
+        "blocked_by_cooldown": 0,
+    }
+    entry_count = 0
+    exit_count = 0
+    blocked_by_buffer = 0
+    blocked_by_persistence = 0
+    blocked_by_min_hold = 0
+    blocked_by_cooldown = 0
+
+    log_per_trade = logger.isEnabledFor(logging.DEBUG) and _env_flag("LOG_TRADES", False)
+    try:
+        log_sample_every = max(1, int(os.getenv("LOG_TRADES_SAMPLE", "1")))
+    except ValueError:
+        log_sample_every = 1
+    try:
+        log_sample_head = max(0, int(os.getenv("LOG_TRADES_HEAD", "0")))
+    except ValueError:
+        log_sample_head = 0
+    trade_log_counter = 0
+
+    def _should_log_trade(counter: int) -> bool:
+        if log_sample_head > 0 and counter <= log_sample_head:
+            return True
+        if log_sample_every <= 1:
+            return True
+        return counter % log_sample_every == 0
+
     def _safe_price(value: Any, fallback: float) -> float:
         out = _coerce_float(value, fallback)
         if out <= 0.0:
@@ -398,9 +612,44 @@ def backtest_atr_breakout(
         day_lo = _safe_price(row.get("low"), price_close)
         day_hi = _safe_price(row.get("high"), price_close)
         price_open = _safe_price(row.get("open"), price_close)
+        atr_val = _coerce_float(atr.iloc[i], 0.0) if i < len(atr) else 0.0
+        atr_pct_current = (atr_val / price_close) if (price_close > 0 and atr_val > 0) else None
 
         exit_trigger: Optional[Dict[str, Any]] = None
         entry_trigger: Optional[Dict[str, Any]] = None
+
+        raw_break_today = bool(raw_long_breakout.iloc[i]) if i < len(raw_long_breakout) else False
+        if raw_break_today:
+            long_streak_counter += 1
+        else:
+            long_streak_counter = 0
+        state_tracking["long_streak"] = long_streak_counter
+        if long_streak_counter > state_tracking.get("long_streak_max", 0):
+            state_tracking["long_streak_max"] = long_streak_counter
+        state_tracking["short_streak"] = 0
+
+        base_without_buffer = bool(long_pre_buffer.iloc[i]) if i < len(long_pre_buffer) else False
+        buffer_pass_today = bool(buffer_gate.iloc[i]) if i < len(buffer_gate) else True
+        long_after_buffer = bool(long_base.iloc[i]) if i < len(long_base) else False
+        signal_today = bool(long_signal.iloc[i]) if i < len(long_signal) else False
+        if (
+            not in_pos
+            and pending_entry is None
+            and k_atr_buffer > 0.0
+            and base_without_buffer
+            and not buffer_pass_today
+        ):
+            blocked_by_buffer += 1
+            state_tracking["blocked_by_buffer"] = blocked_by_buffer
+        if (
+            not in_pos
+            and pending_entry is None
+            and persist_n > 1
+            and long_after_buffer
+            and not signal_today
+        ):
+            blocked_by_persistence += 1
+            state_tracking["blocked_by_persistence"] = blocked_by_persistence
 
         if pending_exit and in_pos:
             if i - pending_exit.get("signal_idx", i) >= delay_bars:
@@ -467,9 +716,9 @@ def backtest_atr_breakout(
             base_price = exit_trigger.get("override_price")
             if base_price is None:
                 if exit_trigger.get("from_pending") and delay_bars > 0:
-                    base_price = price_open
+                    base_price = price_open if exec_fill_where == "open" else price_close
                 else:
-                    base_price = price_close if execution == "close" else price_open
+                    base_price = price_close if exec_fill_where == "close" else price_open
             exit_price = _safe_price(base_price, price_close)
 
             qty = position_qty
@@ -477,8 +726,32 @@ def backtest_atr_breakout(
             cash_gross += proceeds
             cash_net += proceeds
             exit_breakdown = cost_model.compute_fill("long", "exit", exit_price, qty)
+            if phase0_cost_model.enabled:
+                exit_fill_price, exit_slip_bps, exit_fee_bps = _apply_costs(
+                    exit_price, -qty, row, atr_pct_current, phase0_cost_model
+                )
+                slip_cost_exit = abs(exit_fill_price - exit_price) * abs(qty)
+                fee_cost_exit = abs(exit_fee_bps) / 10_000.0 * exit_price * abs(qty)
+                exit_breakdown.update(
+                    {
+                        "fill_price": float(exit_fill_price),
+                        "slippage_bps": float(exit_slip_bps),
+                        "commission_bps": float(exit_fee_bps),
+                        "slippage_cost": float(slip_cost_exit),
+                        "commission_cost": float(fee_cost_exit),
+                        "fee_cost": 0.0,
+                        "total_cost": float(slip_cost_exit + fee_cost_exit),
+                        "price_before": float(exit_price),
+                        "price_after": float(exit_fill_price),
+                    }
+                )
+            else:
+                exit_breakdown.setdefault("price_before", float(exit_price))
+                exit_breakdown.setdefault(
+                    "price_after", float(exit_breakdown.get("fill_price", exit_price))
+                )
             cash_net -= exit_breakdown["total_cost"]
-            exit_fill = exit_breakdown["fill_price"]
+            exit_fill = float(exit_breakdown.get("fill_price", exit_price))
 
             mfe = mae = 0.0
             if entry_idx is not None:
@@ -492,11 +765,28 @@ def backtest_atr_breakout(
             gross_pnl = (exit_price - entry_decision_price) * qty
             entry_cost_total = entry_breakdown.get("total_cost", 0.0)
             net_pnl = gross_pnl - entry_cost_total - exit_breakdown["total_cost"]
-            notional_exit = exit_price * qty
+            notional_exit = exit_fill * qty
             trade_ret = net_pnl / entry_notional if entry_notional else 0.0
             holding_days = 0
             if entry_time is not None:
                 holding_days = (ts - entry_time).days or (i - (entry_idx or i))
+
+            entry_price_before = float(entry_breakdown.get("price_before", entry_decision_price))
+            entry_price_after = float(entry_breakdown.get("price_after", entry_breakdown.get("fill_price", entry_decision_price)))
+            exit_price_before = float(exit_breakdown.get("price_before", exit_price))
+            exit_price_after = float(exit_breakdown.get("price_after", exit_fill))
+            combined_notional = abs(entry_notional) + abs(notional_exit)
+            slip_bps_weighted = 0.0
+            fee_bps_weighted = 0.0
+            if combined_notional > 0:
+                slip_bps_weighted = (
+                    abs(entry_breakdown.get("slippage_bps", 0.0)) * abs(entry_notional)
+                    + abs(exit_breakdown.get("slippage_bps", 0.0)) * abs(notional_exit)
+                ) / combined_notional
+                fee_bps_weighted = (
+                    abs(entry_breakdown.get("commission_bps", 0.0)) * abs(entry_notional)
+                    + abs(exit_breakdown.get("commission_bps", 0.0)) * abs(notional_exit)
+                ) / combined_notional
 
             trade_record = {
                 "entry_time": entry_time,
@@ -526,8 +816,12 @@ def backtest_atr_breakout(
                 "exit_signal_time": exit_trigger.get("signal_time"),
                 "exit_signal_price": float(exit_trigger.get("signal_price")) if exit_trigger.get("signal_price") is not None else None,
                 "quantity": float(qty),
+                "qty": float(qty),
+                "symbol": symbol,
+                "time": ts,
                 "notional_entry": float(entry_notional),
                 "notional_exit": float(notional_exit),
+                "notional": float(abs(entry_notional)),
                 "entry_slippage_cost": float(entry_breakdown.get("slippage_cost", 0.0)),
                 "entry_fee_cost": float(entry_breakdown.get("commission_cost", 0.0)),
                 "entry_fixed_cost": float(entry_breakdown.get("fee_cost", 0.0)),
@@ -538,10 +832,44 @@ def backtest_atr_breakout(
                 "gross_return_pct": float((exit_price / entry_decision_price) - 1.0) if entry_decision_price > 0 else 0.0,
                 "gross_pnl": float(gross_pnl),
                 "net_pnl": float(net_pnl),
+                "entry_price_before": entry_price_before,
+                "entry_price_after": entry_price_after,
+                "exit_price_before": exit_price_before,
+                "exit_price_after": exit_price_after,
+                "price_before": entry_price_before,
+                "price_after": entry_price_after,
+                "slip_bps": float(slip_bps_weighted),
+                "fees_bps": float(fee_bps_weighted),
             }
 
             trades.append(trade_record)
             trade_rows.append(trade_record)
+
+            exit_count += 1
+            state_tracking["exit_count"] = exit_count
+
+            if log_per_trade:
+                trade_log_counter += 1
+                if _should_log_trade(trade_log_counter):
+                    logger.debug(
+                    "%s,%s,%s,qty=%.6f,%.4f->%.4f,slip_bps=%.2f,fees_bps=%.2f,reason=exit,detail=%s,streaks=%s,blocks=%s",
+                    ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                    symbol,
+                    "long",
+                    float(qty),
+                    exit_price_before,
+                    exit_price_after,
+                    float(exit_breakdown.get("slippage_bps", 0.0)),
+                    float(exit_breakdown.get("commission_bps", 0.0)),
+                    exit_trigger.get("reason"),
+                    {"long": state_tracking.get("long_streak", 0), "max": state_tracking.get("long_streak_max", 0)},
+                    {
+                        "buffer": blocked_by_buffer,
+                        "persistence": blocked_by_persistence,
+                        "min_hold": blocked_by_min_hold,
+                        "cooldown": blocked_by_cooldown,
+                    },
+                )
 
             position_qty = 0.0
             in_pos = False
@@ -558,9 +886,9 @@ def backtest_atr_breakout(
             base_price = entry_trigger.get("override_price")
             if base_price is None:
                 if entry_trigger.get("from_pending") and delay_bars > 0:
-                    base_price = price_open
+                    base_price = price_open if exec_fill_where == "open" else price_close
                 else:
-                    base_price = price_close if execution == "close" else price_open
+                    base_price = price_close if exec_fill_where == "close" else price_open
             entry_price = _safe_price(base_price, price_close)
             if entry_price > 0 and cash_gross > 0:
                 qty = cash_gross / entry_price
@@ -572,10 +900,65 @@ def backtest_atr_breakout(
                 cash_gross -= entry_notional
                 cash_net -= entry_notional
                 entry_breakdown = cost_model.compute_fill("long", "entry", entry_decision_price, position_qty)
+                if phase0_cost_model.enabled:
+                    entry_fill_price, entry_slip_bps, entry_fee_bps = _apply_costs(
+                        entry_decision_price, position_qty, row, atr_pct_current, phase0_cost_model
+                    )
+                    slip_cost_entry = abs(entry_fill_price - entry_decision_price) * position_qty
+                    fee_cost_entry = abs(entry_fee_bps) / 10_000.0 * entry_decision_price * position_qty
+                    entry_breakdown.update(
+                        {
+                            "fill_price": float(entry_fill_price),
+                            "slippage_bps": float(entry_slip_bps),
+                            "commission_bps": float(entry_fee_bps),
+                            "slippage_cost": float(slip_cost_entry),
+                            "commission_cost": float(fee_cost_entry),
+                            "fee_cost": 0.0,
+                            "total_cost": float(slip_cost_entry + fee_cost_entry),
+                            "price_before": float(entry_decision_price),
+                            "price_after": float(entry_fill_price),
+                        }
+                    )
+                else:
+                    entry_breakdown.setdefault("price_before", float(entry_decision_price))
+                    entry_breakdown.setdefault(
+                        "price_after", float(entry_breakdown.get("fill_price", entry_decision_price))
+                    )
                 cash_net -= entry_breakdown["total_cost"]
+                entry_notional = entry_breakdown.get("price_after", entry_decision_price) * position_qty
                 entry_signal_time = entry_trigger.get("signal_time")
                 entry_signal_price = entry_trigger.get("signal_price")
                 in_pos = True
+                entry_count += 1
+                state_tracking["entry_count"] = entry_count
+
+                if log_per_trade:
+                    trade_log_counter += 1
+                    if _should_log_trade(trade_log_counter):
+                        entry_price_before = float(entry_breakdown.get("price_before", entry_decision_price))
+                        entry_price_after = float(
+                            entry_breakdown.get(
+                                "price_after", entry_breakdown.get("fill_price", entry_decision_price)
+                            )
+                        )
+                        logger.debug(
+                            "%s,%s,%s,qty=%.6f,%.4f->%.4f,slip_bps=%.2f,fees_bps=%.2f,reason=enter,streaks=%s,blocks=%s",
+                            ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                            symbol,
+                            "long",
+                            float(position_qty),
+                        entry_price_before,
+                        entry_price_after,
+                        float(entry_breakdown.get("slippage_bps", 0.0)),
+                        float(entry_breakdown.get("commission_bps", 0.0)),
+                        {"long": state_tracking.get("long_streak", 0), "max": state_tracking.get("long_streak_max", 0)},
+                        {
+                            "buffer": blocked_by_buffer,
+                            "persistence": blocked_by_persistence,
+                            "min_hold": blocked_by_min_hold,
+                            "cooldown": blocked_by_cooldown,
+                        },
+                    )
 
         current_gross = cash_gross + position_qty * price_close
         current_net = cash_net + position_qty * price_close
@@ -588,62 +971,121 @@ def backtest_atr_breakout(
     daily_returns_net = eq_net.pct_change().fillna(0.0)
     daily_returns_gross = eq_gross.pct_change().fillna(0.0)
 
-    trades_df = pd.DataFrame(trade_rows) if capture_trades_df and trade_rows else pd.DataFrame(trade_rows)
+    trades_df = pd.DataFrame(trade_rows)
+    if capture_trades_df and trade_rows:
+        trades_df = pd.DataFrame(trade_rows)
 
-    total_notional = float(trades_df["notional_entry"].sum() + trades_df.get("notional_exit", pd.Series(dtype=float)).sum()) if not trades_df.empty else 0.0
+    required_float_cols = [
+        "qty",
+        "price_before",
+        "price_after",
+        "notional",
+        "slip_bps",
+        "fees_bps",
+        "notional_entry",
+        "notional_exit",
+    ]
+    for col in required_float_cols:
+        if col not in trades_df.columns:
+            trades_df[col] = pd.Series(dtype=float)
+    if "symbol" not in trades_df.columns:
+        trades_df["symbol"] = pd.Series(dtype="object")
+    if "time" not in trades_df.columns:
+        trades_df["time"] = pd.Series(dtype="datetime64[ns]")
+
+    total_notional = 0.0
+    if not trades_df.empty:
+        total_notional = float(
+            trades_df.get("notional_entry", pd.Series(dtype=float)).abs().sum()
+            + trades_df.get("notional_exit", pd.Series(dtype=float)).abs().sum()
+        )
     start_equity = eq_gross.iloc[0] if len(eq_gross) else float(starting_equity)
-    turnover = (total_notional / start_equity) if start_equity else 0.0
-
-    def _weighted(col: str) -> float:
-        if trades_df.empty or total_notional == 0.0 or col not in trades_df.columns:
-            return 0.0
-        if col.endswith("_bps"):
-            weight = trades_df["notional_entry"]
-            if col.startswith("exit_"):
-                weight = trades_df["notional_exit"]
-            weighted = (trades_df[col] * weight).sum()
-            return float(weighted / weight.sum()) if weight.sum() else 0.0
-        return float(trades_df[col].mean())
+    turnover_ratio = (total_notional / start_equity) if start_equity else 0.0
 
     total_slip_cost = 0.0
     total_fee_cost = 0.0
     if not trades_df.empty:
-        total_slip_cost = float(trades_df["entry_slippage_cost"].sum() + trades_df["exit_slippage_cost"].sum())
-        total_fee_cost = float(trades_df["entry_fee_cost"].sum() + trades_df["exit_fee_cost"].sum() + trades_df["entry_fixed_cost"].sum() + trades_df["exit_fixed_cost"].sum())
+        total_slip_cost = float(
+            trades_df.get("entry_slippage_cost", pd.Series(dtype=float)).sum()
+            + trades_df.get("exit_slippage_cost", pd.Series(dtype=float)).sum()
+        )
+        fee_cols = [
+            trades_df.get("entry_fee_cost", pd.Series(dtype=float)).sum(),
+            trades_df.get("exit_fee_cost", pd.Series(dtype=float)).sum(),
+            trades_df.get("entry_fixed_cost", pd.Series(dtype=float)).sum(),
+            trades_df.get("exit_fixed_cost", pd.Series(dtype=float)).sum(),
+        ]
+        total_fee_cost = float(sum(fee_cols))
 
-    def _cagr(series: pd.Series) -> float:
-        if series is None or len(series) < 2:
-            return 0.0
-        start_val = _coerce_float(series.iloc[0], 0.0)
-        end_val = _coerce_float(series.iloc[-1], 0.0)
-        if not (start_val > 0 and end_val > 0):
-            return 0.0
-        days = (series.index[-1] - series.index[0]).days
-        if days <= 0:
-            return 0.0
-        years = days / 365.25
-        if years <= 0:
-            return 0.0
-        return float((end_val / start_val) ** (1 / years) - 1.0)
+    cost_summary: dict[str, float] = {}
+    base_summary: dict | None = None
+    if _summarize_costs is not None:
+        try:
+            base_summary = _summarize_costs(
+                trades_df if not trades_df.empty else None,
+                eq_gross if len(eq_gross) else None,
+                eq_net if len(eq_net) else None,
+            )
+        except Exception:
+            base_summary = None
+    if base_summary:
+        cost_summary.update({k: float(v) for k, v in base_summary.items()})
+    else:
+        cost_summary.update(
+            {
+                "turnover_gross": float(total_notional),
+                "turnover_avg_daily": 0.0,
+                "slippage_bps_weighted": 0.0,
+                "fees_bps_weighted": 0.0,
+                "pre_cost_cagr": 0.0,
+                "post_cost_cagr": 0.0,
+                "annualized_drag_bps": 0.0,
+            }
+        )
 
-    pre_cagr = _cagr(eq_gross)
-    post_cagr = _cagr(eq_net)
-    annualized_drag = pre_cagr - post_cagr
-
-    cost_summary = {
-        "turnover": float(turnover),
-        "weighted_slippage_bps": float(_weighted("entry_slippage_bps") + _weighted("exit_slippage_bps")),
-        "weighted_fees_bps": float(_weighted("entry_fee_bps") + _weighted("exit_fee_bps")),
-        "pre_cost_cagr": float(pre_cagr),
-        "post_cost_cagr": float(post_cagr),
-        "annualized_drag": float(annualized_drag),
-        "total_slippage_cost": float(total_slip_cost),
-        "total_fee_cost": float(total_fee_cost),
-        "total_cost": float(total_slip_cost + total_fee_cost),
-    }
+    if "pre_cost_cagr" in cost_summary and "post_cost_cagr" in cost_summary:
+        cost_summary["annualized_drag"] = float(cost_summary["pre_cost_cagr"] - cost_summary["post_cost_cagr"])
+    cost_summary["weighted_slippage_bps"] = float(cost_summary.get("slippage_bps_weighted", 0.0))
+    cost_summary["weighted_fees_bps"] = float(cost_summary.get("fees_bps_weighted", 0.0))
+    cost_summary["turnover_gross"] = float(cost_summary.get("turnover_gross", total_notional))
+    cost_summary["turnover_avg_daily"] = float(cost_summary.get("turnover_avg_daily", 0.0))
+    cost_summary["turnover"] = float(turnover_ratio)
+    cost_summary["turnover_ratio"] = float(turnover_ratio)
+    cost_summary["total_slippage_cost"] = float(total_slip_cost)
+    cost_summary["total_fee_cost"] = float(total_fee_cost)
+    cost_summary["total_cost"] = float(total_slip_cost + total_fee_cost)
 
     meta = dict(base_meta)
     meta["costs"] = {"enabled": enable_costs, "summary": cost_summary}
+    meta.setdefault("runtime_counters", {})
+    meta["runtime_counters"].update(
+        {
+            "long_streak": int(state_tracking.get("long_streak", 0)),
+            "long_streak_max": int(state_tracking.get("long_streak_max", 0)),
+            "short_streak": int(state_tracking.get("short_streak", 0)),
+            "entry_count": int(entry_count),
+            "exit_count": int(exit_count),
+            "persist_n": int(persist_n),
+            "k_atr_buffer": float(k_atr_buffer),
+            "blocked_by_buffer": int(blocked_by_buffer),
+            "blocked_by_persistence": int(blocked_by_persistence),
+            "blocked_by_min_hold": int(blocked_by_min_hold),
+            "blocked_by_cooldown": int(blocked_by_cooldown),
+        }
+    )
+
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "run_complete symbol=%s trades=%d entries=%d exits=%d buffer_blocks=%d persistence_blocks=%d delay_bars=%d costs_enabled=%s",
+            symbol,
+            len(trades),
+            int(entry_count),
+            int(exit_count),
+            int(blocked_by_buffer),
+            int(blocked_by_persistence),
+            int(delay_bars),
+            bool(enable_costs),
+        )
 
     return {
         "equity": eq_net,
@@ -654,3 +1096,11 @@ def backtest_atr_breakout(
         "trades_df": trades_df if capture_trades_df else pd.DataFrame(trade_rows),
         "meta": meta,
     }
+
+
+# QA Checklist:
+#   1. Enable Phase-0 costs via `COST_ENABLED=1 COST_FIXED_BPS=0.5 COST_ATR_K=0.25 COST_MIN_HS_BPS=1 streamlit run Home.py`.
+#   2. Test delayed execution with `EXEC_DELAY_BARS=1 EXEC_FILL_WHERE=open streamlit run Home.py`.
+#   3. In the Streamlit app, open Simulate Portfolio and expand "Cost Attribution (post-cost)" to review metrics.
+#   4. Verify the TRI panel test toggle remains available in the EA Train/Test Inspector page.
+#   5. Adjust `k_atr_buffer` and `persist_n` from defaults and confirm turnover/trade counts decline while default settings match legacy results.

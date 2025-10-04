@@ -69,6 +69,8 @@ def backtest_single(
     atr_n: int,
     starting_equity: float,
     atr_multiple: float = 2.0,
+    k_atr_buffer: float = 0.0,
+    persist_n: int = 1,
     tp_multiple: float = 0.0,
     holding_period_limit: int = 0,
     cost_bps: float = 0.0,
@@ -86,6 +88,13 @@ def backtest_single(
         atr_n=int(atr_n),
         atr_multiple=float(atr_multiple),
     )
+    params.k_atr_buffer = float(k_atr_buffer or 0.0)
+    if params.k_atr_buffer < 0.0:
+        params.k_atr_buffer = 0.0
+    persist_clean = int(persist_n or 1)
+    if persist_clean < 1:
+        persist_clean = 1
+    params.persist_n = persist_clean
     params.tp_multiple = float(tp_multiple or 0.0)
     params.holding_period_limit = int(holding_period_limit or 0)
     params.cost_bps = float(cost_bps or 0.0)
