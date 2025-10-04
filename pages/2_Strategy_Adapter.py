@@ -557,23 +557,13 @@ with left:
             )
 
         # Persist back to session config
-        _ea_int_assignments = {
-            "adapter_ea_breakout_range": ("breakout_n_min", "breakout_n_max", int(br_lo), int(br_hi)),
-            "adapter_ea_exit_range": ("exit_n_min", "exit_n_max", int(ex_lo), int(ex_hi)),
-            "adapter_ea_atr_n_range": ("atr_n_min", "atr_n_max", int(atrn_lo), int(atrn_hi)),
-            "adapter_ea_hold_range": ("hold_min", "hold_max", int(hold_lo), int(hold_hi)),
-        }
-        for state_key, (lo_key, hi_key, lo_val, hi_val) in _ea_int_assignments.items():
-            ea_cfg[lo_key], ea_cfg[hi_key] = lo_val, hi_val
-            st.session_state[state_key] = (lo_val, hi_val)
+        ea_cfg["breakout_n_min"], ea_cfg["breakout_n_max"] = int(br_lo), int(br_hi)
+        ea_cfg["exit_n_min"], ea_cfg["exit_n_max"] = int(ex_lo), int(ex_hi)
+        ea_cfg["atr_n_min"], ea_cfg["atr_n_max"] = int(atrn_lo), int(atrn_hi)
+        ea_cfg["hold_min"], ea_cfg["hold_max"] = int(hold_lo), int(hold_hi)
 
-        _ea_float_assignments = {
-            "adapter_ea_atr_multiple_range": ("atr_multiple_min", "atr_multiple_max", float(atrm_lo), float(atrm_hi)),
-            "adapter_ea_tp_multiple_range": ("tp_multiple_min", "tp_multiple_max", float(tpm_lo), float(tpm_hi)),
-        }
-        for state_key, (lo_key, hi_key, lo_val, hi_val) in _ea_float_assignments.items():
-            ea_cfg[lo_key], ea_cfg[hi_key] = lo_val, hi_val
-            st.session_state[state_key] = (lo_val, hi_val)
+        ea_cfg["atr_multiple_min"], ea_cfg["atr_multiple_max"] = float(atrm_lo), float(atrm_hi)
+        ea_cfg["tp_multiple_min"], ea_cfg["tp_multiple_max"] = float(tpm_lo), float(tpm_hi)
 
     with st.expander("Base params", expanded=False):
         base["breakout_n"] = st.number_input("breakout_n", 5, 300, base["breakout_n"], 1,
