@@ -33,6 +33,15 @@ def _normalize_curve(series: pd.Series) -> Optional[pd.Series]:
             logger.exception("normalize_curve failed to convert index to datetime")
             return None
     s = s.sort_index()
+    if isinstance(s.index, pd.DatetimeIndex) and getattr(s.index, "tz", None) is not None:
+        try:
+            s.index = s.index.tz_convert(None)
+        except Exception:
+            try:
+                s.index = s.index.tz_localize(None)
+            except Exception:
+                logger.debug("normalize_curve failed to drop timezone", extra={"tz": str(s.index.tz)})
+                return None
     s = s[s > 0]
     if s.empty:
         return None
@@ -111,6 +120,15 @@ def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp])
         except Exception:
             logger.exception("tri_panel failed to coerce series index to datetime")
             return None
+    if isinstance(series.index, pd.DatetimeIndex) and getattr(series.index, "tz", None) is not None:
+        try:
+            series.index = series.index.tz_convert(None)
+        except Exception:
+            try:
+                series.index = series.index.tz_localize(None)
+            except Exception:
+                logger.debug("tri_panel failed to drop timezone from SPY series", extra={"tz": str(series.index.tz)})
+                return None
     series = series.sort_index()
     series = series[series > 0]
     if series.empty:
@@ -258,6 +276,16 @@ def render_tri_panel(
             axis=1,
             join="inner",
         ).dropna()
+        if isinstance(combined.index, pd.DatetimeIndex) and getattr(combined.index, "tz", None) is not None:
+            try:
+                combined.index = combined.index.tz_convert(None)
+            except Exception:
+                try:
+                    combined.index = combined.index.tz_localize(None)
+                except Exception:
+                    logger.debug("tri_panel failed to drop timezone from combined index", extra={"tz": str(combined.index.tz)})
+                    st.info("Unable to align timezones for TRI comparison.")
+                    return
         if combined.empty or len(combined) < 10:
             logger.info(
                 "tri_panel insufficient overlap",
