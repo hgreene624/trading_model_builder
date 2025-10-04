@@ -160,10 +160,10 @@ class CostModel:
     per_trade_fee: float = 0.0
     enabled: bool = False
     fixed_bps: float = 0.0
-    atr_k: float = 0.05
-    min_half_spread_bps: float = 0.5
-    use_range_impact: bool = False
-    cap_range_impact_bps: float = 10.0
+    atr_k: float = 0.05  # PH1.2: ATR-linked slippage scale
+    min_half_spread_bps: float = 0.5  # PH1.2: floor on half-spread proxy
+    use_range_impact: bool = False  # PH1.2: toggle for range-based impact
+    cap_range_impact_bps: float = 10.0  # PH1.2: clamp range impact if enabled
     mode: str = "simple_spread"
 
     @classmethod
@@ -185,18 +185,20 @@ class CostModel:
         per_trade_fee = max(0.0, _coerce_float(per_trade_fee, 0.0))
         active = enabled or (commission_bps > 0.0 or slippage_bps > 0.0 or per_trade_fee > 0.0)
         fixed = max(0.0, _coerce_float(fixed_bps, 0.0)) if fixed_bps is not None else 0.0
-        atr_scale = max(0.0, _coerce_float(atr_k, 0.05)) if atr_k is not None else 0.05
+        atr_scale = (
+            max(0.0, _coerce_float(atr_k, 0.05)) if atr_k is not None else 0.05
+        )  # PH1.2
         min_spread = (
             max(0.0, _coerce_float(min_half_spread_bps, 0.5))
             if min_half_spread_bps is not None
             else 0.5
-        )
-        range_impact = bool(use_range_impact) if use_range_impact is not None else False
+        )  # PH1.2
+        range_impact = bool(use_range_impact) if use_range_impact is not None else False  # PH1.2
         cap_range = (
             max(0.0, _coerce_float(cap_range_impact_bps, 10.0))
             if cap_range_impact_bps is not None
             else 10.0
-        )
+        )  # PH1.2
         mode_clean = str(mode).strip().lower() if mode is not None else "simple_spread"
         if mode_clean not in {"simple_spread"}:
             mode_clean = "simple_spread"
@@ -234,10 +236,10 @@ class CostModel:
     def from_env(cls) -> "CostModel":
         enabled = _env_flag("COST_ENABLED", True)
         fixed_bps = max(0.0, _env_float("COST_FIXED_BPS", 0.5))
-        atr_k = max(0.0, _env_float("COST_ATR_K", 0.05))
-        min_half_spread = max(0.0, _env_float("COST_MIN_HS_BPS", 0.5))
-        use_range_impact = _env_flag("COST_USE_RANGE_IMPACT", False)
-        cap_range_impact_bps = max(0.0, _env_float("CAP_RANGE_IMPACT_BPS", 10.0))
+        atr_k = max(0.0, _env_float("COST_ATR_K", 0.05))  # PH1.2
+        min_half_spread = max(0.0, _env_float("COST_MIN_HS_BPS", 0.5))  # PH1.2
+        use_range_impact = _env_flag("COST_USE_RANGE_IMPACT", False)  # PH1.2
+        cap_range_impact_bps = max(0.0, _env_float("CAP_RANGE_IMPACT_BPS", 10.0))  # PH1.2
         mode = os.getenv("COST_MODE", "simple_spread")
         mode = str(mode).strip().lower()
         if mode not in {"simple_spread"}:
@@ -248,10 +250,10 @@ class CostModel:
             per_trade_fee=0.0,
             enabled=bool(enabled),
             fixed_bps=float(fixed_bps),
-            atr_k=float(atr_k),
-            min_half_spread_bps=float(min_half_spread),
-            use_range_impact=bool(use_range_impact),
-            cap_range_impact_bps=float(cap_range_impact_bps),
+            atr_k=float(atr_k),  # PH1.2
+            min_half_spread_bps=float(min_half_spread),  # PH1.2
+            use_range_impact=bool(use_range_impact),  # PH1.2
+            cap_range_impact_bps=float(cap_range_impact_bps),  # PH1.2
             mode=mode,
         )
 
@@ -306,7 +308,7 @@ def _estimate_half_spread_bps(bar: Dict[str, Any] | pd.Series, cm: CostModel | N
     if cm is None:
         return 0.0
     if not getattr(cm, "use_range_impact", False):
-        return float(getattr(cm, "min_half_spread_bps", 0.0))
+        return float(getattr(cm, "min_half_spread_bps", 0.0))  # PH1.2
     try:
         high = _coerce_float(bar.get("high", 0.0), 0.0)  # type: ignore[arg-type]
         low = _coerce_float(bar.get("low", 0.0), 0.0)  # type: ignore[arg-type]
@@ -318,11 +320,11 @@ def _estimate_half_spread_bps(bar: Dict[str, Any] | pd.Series, cm: CostModel | N
     spread = max(0.0, high - low)
     if spread <= 0.0:
         return float(cm.min_half_spread_bps)
-    rng_bps = 0.5 * spread / max(1e-12, close) * 10_000.0
-    cap = max(0.0, _coerce_float(getattr(cm, "cap_range_impact_bps", 0.0), 0.0))
+    rng_bps = 0.5 * spread / max(1e-12, close) * 10_000.0  # PH1.2
+    cap = max(0.0, _coerce_float(getattr(cm, "cap_range_impact_bps", 10.0), 10.0))  # PH1.2
     if cap <= 0.0:
         return float(rng_bps)
-    return float(min(rng_bps, cap))
+    return float(min(rng_bps, cap))  # PH1.2
 
 
 def _apply_costs(
@@ -339,9 +341,9 @@ def _apply_costs(
     atr_value = 0.0
     if atr_pct is not None:
         atr_value = max(0.0, _coerce_float(atr_pct, 0.0))
-    base_bps = atr_value * cm.atr_k * 10_000.0
-    half_spread = _estimate_half_spread_bps(bar, cm)
-    slip_bps = max(base_bps, half_spread, cm.min_half_spread_bps)
+    base_bps = atr_value * cm.atr_k * 10_000.0  # PH1.2
+    half_spread = _estimate_half_spread_bps(bar, cm)  # PH1.2
+    slip_bps = max(base_bps, half_spread, cm.min_half_spread_bps)  # PH1.2
     fees_bps = max(0.0, _coerce_float(cm.fixed_bps, 0.0))
     direction = 1.0 if quantity > 0 else -1.0
     price_after = price * (1.0 + direction * slip_bps / 10_000.0)
@@ -1088,6 +1090,15 @@ def backtest_atr_breakout(
 
     meta = dict(base_meta)
     meta["costs"] = {"enabled": enable_costs, "summary": cost_summary}
+    effective_cost_model = (
+        phase0_cost_model if getattr(phase0_cost_model, "enabled", False) else cost_model
+    )  # PH1.2
+    meta["cost_inputs"] = {  # PH1.2: surface effective cost knobs for downstream logging
+        "atr_k": float(getattr(effective_cost_model, "atr_k", 0.0)),
+        "min_half_spread_bps": float(getattr(effective_cost_model, "min_half_spread_bps", 0.0)),
+        "use_range_impact": bool(getattr(effective_cost_model, "use_range_impact", False)),
+        "cap_range_impact_bps": float(getattr(effective_cost_model, "cap_range_impact_bps", 10.0)),
+    }
     meta.setdefault("runtime_counters", {})
     meta["runtime_counters"].update(
         {
