@@ -1,7 +1,6 @@
 # pages/5_EA_Train_Test_Inspector.py
 from __future__ import annotations
 
-import html
 import json
 import math
 from pathlib import Path
@@ -20,39 +19,12 @@ LOG_DIR = Path("storage/logs/ea")
 DEFAULT_PAGE_TITLE = "EA Train/Test Inspector"
 SHOW_COST_KPIS = True
 
+
 # --- UI hardening: prevent button label wrapping globally ---
 st.markdown(
     """
     <style>
     div.stButton > button { white-space: nowrap; }
-    .cost-kpi-chip {
-        background: rgba(49, 51, 63, 0.05);
-        border: 1px solid rgba(49, 51, 63, 0.15);
-        border-radius: 12px;
-        padding: 0.75rem 1rem;
-        min-width: 140px;
-        box-sizing: border-box;
-    }
-    .stApp.dark .cost-kpi-chip {
-        background: rgba(250, 250, 250, 0.08);
-        border-color: rgba(250, 250, 250, 0.15);
-    }
-    .cost-kpi-label {
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-        color: rgba(49, 51, 63, 0.7);
-        margin-bottom: 0.35rem;
-    }
-    .stApp.dark .cost-kpi-label {
-        color: rgba(250, 250, 250, 0.65);
-    }
-    .cost-kpi-value {
-        font-size: 1.35rem;
-        font-weight: 600;
-        color: inherit;
-        line-height: 1.2;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -251,10 +223,64 @@ _COST_KPI_TOOLTIPS = {
 }
 
 
-def _render_cost_kpis(best_row: Optional[pd.Series]) -> None:
-    if not SHOW_COST_KPIS or best_row is None:
-        return
+def _format_percent(value: float, digits: int = 0) -> Optional[str]:
+    try:
+        fval = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(fval) or pd.isna(fval):
+        return None
+    scaled = fval * 100.0 if abs(fval) <= 1.0 else fval
+    return f"{scaled:.{digits}f}%"
 
+
+def _format_float(value: float, digits: int = 2) -> Optional[str]:
+    try:
+        fval = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(fval) or pd.isna(fval):
+        return None
+    return f"{fval:.{digits}f}"
+
+
+def _format_int(value: float) -> Optional[str]:
+    try:
+        fval = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(fval) or pd.isna(fval):
+        return None
+    return f"{int(round(fval)):,}"
+
+
+def _collect_performance_metric_rows(best_row: pd.Series) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+
+    def _append(label: str, keys: List[str], formatter) -> None:
+        val = _first_float(best_row, keys)
+        if val is None:
+            return
+        formatted = formatter(val)
+        if not formatted:
+            return
+        rows.append({"Metric": label, "Value": formatted})
+
+    _append("Sharpe (post-cost)", ["sharpe_post_cost", "sharpe_post", "sharpe_net"], lambda v: _format_float(v, 2))
+    _append("Sharpe (pre-cost)", ["sharpe_pre_cost", "sharpe_pre", "sharpe_gross", "sharpe_before_cost"], lambda v: _format_float(v, 2))
+    _append("CAGR (post-cost)", ["post_cost_cagr", "cagr_post", "cagr_net"], lambda v: _format_percent(v, 1))
+    _append("CAGR (pre-cost)", ["pre_cost_cagr", "cagr_pre", "cagr_gross", "cagr"], lambda v: _format_percent(v, 1))
+    _append("Max Drawdown %", ["max_drawdown", "max_dd", "max_drawdown_pct"], lambda v: _format_percent(v, 1))
+    _append("Win Rate %", ["win_rate", "winrate", "pct_winners"], lambda v: _format_percent(v, 0))
+    _append("Expectancy", ["expectancy"], lambda v: _format_float(v, 2))
+    _append("Edge Ratio", ["edge_ratio"], lambda v: _format_float(v, 2))
+    _append("Profit Factor", ["profit_factor"], lambda v: _format_float(v, 2))
+    _append("Trades", ["num_trades", "trades"], _format_int)
+
+    return rows
+
+
+def _collect_cost_metric_rows(best_row: pd.Series) -> List[Dict[str, str]]:
     alpha_ratio = _alpha_retention_ratio(best_row)
     drag_bps = _first_float(best_row, ["annualized_drag_bps", "annualized_drag"])
     if drag_bps is not None and "annualized_drag" in best_row and "annualized_drag_bps" not in best_row:
@@ -269,77 +295,77 @@ def _render_cost_kpis(best_row: Optional[pd.Series]) -> None:
     )
     turnover_ratio = _first_float(best_row, ["turnover_ratio", "turnover"])
 
-    if drag_bps is not None:
-        drag_display = f"{drag_bps:.0f} bps/yr"
-    else:
-        drag_display = "—"
-
-    if slip_bps is not None:
-        slip_fmt = f"{slip_bps:.1f}" if abs(slip_bps) < 10 else f"{slip_bps:.0f}"
-        slip_display = f"{slip_fmt} bps"
-    else:
-        slip_display = "—"
-
-    if turnover_ratio is not None:
-        turnover_display = f"{turnover_ratio:.2f}×/yr"
-    else:
-        turnover_display = "—"
-
-    cost_per_turnover = None
     if (
         drag_bps is not None
         and turnover_ratio is not None
         and abs(turnover_ratio) > 1e-12
     ):
         cost_per_turnover = drag_bps / turnover_ratio
+    else:
+        cost_per_turnover = None
 
-    cost_display = (
-        f"{cost_per_turnover:.0f} bps/1×" if cost_per_turnover is not None else "—"
-    )
+    rows: List[Dict[str, str]] = []
 
-    kpis = [
-        (
-            "Alpha Retention %",
-            f"{alpha_ratio * 100:.0f}%" if alpha_ratio is not None else "—",
-        ),
-        (
-            "Annualized Drag (bps/yr)",
-            drag_display,
-        ),
-        (
-            "Weighted Slippage (bps)",
-            slip_display,
-        ),
-        (
-            "Turnover (×/yr)",
-            turnover_display,
-        ),
-        (
-            "Cost per Turnover (bps per 1×)",
-            cost_display,
-        ),
-    ]
+    def _add_row(label: str, value: Optional[str]) -> None:
+        rows.append(
+            {
+                "Metric": label,
+                "Value": value if value is not None else "—",
+                "Guidance": _COST_KPI_TOOLTIPS.get(label, ""),
+            }
+        )
 
-    if not any(val != "—" for _label, val in kpis):
+    alpha_display = _format_percent(alpha_ratio, 0) if alpha_ratio is not None else None
+    drag_display = f"{drag_bps:.0f} bps/yr" if drag_bps is not None else None
+    if slip_bps is not None:
+        slip_fmt = f"{slip_bps:.1f}" if abs(slip_bps) < 10 else f"{slip_bps:.0f}"
+        slip_display = f"{slip_fmt} bps"
+    else:
+        slip_display = None
+    turnover_display = f"{turnover_ratio:.2f}×/yr" if turnover_ratio is not None else None
+    cost_display = f"{cost_per_turnover:.0f} bps/1×" if cost_per_turnover is not None else None
+
+    _add_row("Alpha Retention %", alpha_display)
+    _add_row("Annualized Drag (bps/yr)", drag_display)
+    _add_row("Weighted Slippage (bps)", slip_display)
+    _add_row("Turnover (×/yr)", turnover_display)
+    _add_row("Cost per Turnover (bps per 1×)", cost_display)
+
+    if all(row["Value"] == "—" for row in rows):
+        return []
+
+    return rows
+
+
+def _render_metric_dashboard(best_row: Optional[pd.Series]) -> None:
+    if best_row is None:
         return
 
-    st.markdown("#### Costs Impact")
-    cols = st.columns(len(kpis))
-    for col, (label, value) in zip(cols, kpis):
-        tooltip = _COST_KPI_TOOLTIPS.get(label, "")
-        safe_label = html.escape(label)
-        safe_value = html.escape(value)
-        safe_tooltip = html.escape(tooltip)
-        with col:
-            st.markdown(
-                f"""
-                <div class="cost-kpi-chip" title="{safe_tooltip}">
-                    <div class="cost-kpi-label">{safe_label}</div>
-                    <div class="cost-kpi-value">{safe_value}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    perf_rows = _collect_performance_metric_rows(best_row)
+    cost_rows: List[Dict[str, str]] = []
+    if SHOW_COST_KPIS:
+        cost_rows = _collect_cost_metric_rows(best_row)
+
+    col_count = int(bool(perf_rows)) + int(bool(cost_rows))
+    if col_count == 0:
+        return
+
+    st.markdown("#### Metrics Dashboard")
+    cols = st.columns(col_count)
+    idx = 0
+
+    if perf_rows:
+        perf_df = pd.DataFrame(perf_rows).set_index("Metric")
+        with cols[idx]:
+            st.markdown("**Performance Metrics**")
+            st.table(perf_df)
+        idx += 1
+
+    if cost_rows:
+        cost_df = pd.DataFrame(cost_rows).set_index("Metric")
+        with cols[idx]:
+            st.markdown("**Costs Impact**")
+            st.table(cost_df)
 
 # ---------- equity provider ----------
 
@@ -682,8 +708,7 @@ def main():
         current_gen = None
 
     best_row = _best_row_for_gen(eval_df, current_gen)
-    if SHOW_COST_KPIS:
-        _render_cost_kpis(best_row)
+    _render_metric_dashboard(best_row)
 
     # safety
     if not train_start or not train_end:
