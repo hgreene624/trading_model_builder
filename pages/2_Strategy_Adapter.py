@@ -440,35 +440,36 @@ with left:
 
         st.caption("Parameter search bounds")
 
+        def _normalize_range(raw, caster, fallback):
+            try:
+                lo_val, hi_val = raw
+            except Exception:
+                return fallback
+            try:
+                lo_cast = caster(lo_val)
+                hi_cast = caster(hi_val)
+            except Exception:
+                return fallback
+            if lo_cast > hi_cast:
+                lo_cast, hi_cast = hi_cast, lo_cast
+            return lo_cast, hi_cast
 
-        # Streamlit reruns the script on every interaction. When users drag one
-        # slider handle, the other sliders briefly render using the *previous*
-        # EA bounds stored in `ea_cfg`. Because we also shrink the track width to
-        # those bounds, the new handle position can fall outside the temporary
-        # limits and Streamlit will snap it back to the older defaults. Pull the
-        # pending widget state into the config before computing the padded
-        # domains so that every rerun sees the latest values.
-        _pending_slider_state = {
-            "breakout_n range": ("breakout_n_min", "breakout_n_max", int),
-            "exit_n range": ("exit_n_min", "exit_n_max", int),
-            "atr_n range": ("atr_n_min", "atr_n_max", int),
-            "holding_period_limit range": ("hold_min", "hold_max", int),
-            "atr_multiple range": ("atr_multiple_min", "atr_multiple_max", float),
-            "tp_multiple range": ("tp_multiple_min", "tp_multiple_max", float),
+        _ea_slider_specs = {
+            "adapter_ea_breakout_range": ("breakout_n range", "breakout_n_min", "breakout_n_max", int),
+            "adapter_ea_exit_range": ("exit_n range", "exit_n_min", "exit_n_max", int),
+            "adapter_ea_atr_n_range": ("atr_n range", "atr_n_min", "atr_n_max", int),
+            "adapter_ea_hold_range": ("holding_period_limit range", "hold_min", "hold_max", int),
+            "adapter_ea_atr_multiple_range": ("atr_multiple range", "atr_multiple_min", "atr_multiple_max", float),
+            "adapter_ea_tp_multiple_range": ("tp_multiple range", "tp_multiple_min", "tp_multiple_max", float),
         }
-        for widget_key, (lo_key, hi_key, caster) in _pending_slider_state.items():
-            if widget_key not in st.session_state:
-                continue
-            try:
-                lo_val, hi_val = st.session_state[widget_key]
-            except Exception:
-                continue
-            try:
-                ea_cfg[lo_key] = caster(lo_val)
-                ea_cfg[hi_key] = caster(hi_val)
-            except Exception:
-                # Fall back to the stored config if casting fails (e.g. weird state)
-                continue
+
+        _ea_slider_values: dict[str, tuple[int | float, int | float]] = {}
+        for state_key, (_, lo_key, hi_key, caster) in _ea_slider_specs.items():
+            default_val = (caster(ea_cfg[lo_key]), caster(ea_cfg[hi_key]))
+            normalized = _normalize_range(st.session_state.get(state_key, default_val), caster, default_val)
+            st.session_state[state_key] = normalized
+            _ea_slider_values[state_key] = normalized
+            ea_cfg[lo_key], ea_cfg[hi_key] = normalized
 
         # Dynamically tighten slider track to the configured bounds (better UX)
         def _pad_int_range(lo: int, hi: int, pad_ratio: float = 0.25, hard_lo: int = 1, hard_hi: int = 600) -> tuple[
@@ -497,54 +498,82 @@ with left:
         # ---- INT ranges via sliders ----
         c1, c2 = st.columns(2)
         with c1:
+            br_lo, br_hi = _ea_slider_values["adapter_ea_breakout_range"]
             br_lo, br_hi = st.slider(
                 "breakout_n range",
                 min_value=_br_min, max_value=_br_max,
-                value=(int(ea_cfg["breakout_n_min"]), int(ea_cfg["breakout_n_max"])),
+                value=(int(br_lo), int(br_hi)),
                 step=1,
-                help="Bars for the entry breakout lookback.")
+                help="Bars for the entry breakout lookback.",
+                key="adapter_ea_breakout_range",
+            )
+            ex_lo, ex_hi = _ea_slider_values["adapter_ea_exit_range"]
             ex_lo, ex_hi = st.slider(
                 "exit_n range",
                 min_value=_ex_min, max_value=_ex_max,
-                value=(int(ea_cfg["exit_n_min"]), int(ea_cfg["exit_n_max"])),
+                value=(int(ex_lo), int(ex_hi)),
                 step=1,
-                help="Bars for exit/stop lookback.")
+                help="Bars for exit/stop lookback.",
+                key="adapter_ea_exit_range",
+            )
+            atrn_lo, atrn_hi = _ea_slider_values["adapter_ea_atr_n_range"]
             atrn_lo, atrn_hi = st.slider(
                 "atr_n range",
                 min_value=_atrn_min, max_value=_atrn_max,
-                value=(int(ea_cfg["atr_n_min"]), int(ea_cfg["atr_n_max"])),
+                value=(int(atrn_lo), int(atrn_hi)),
                 step=1,
-                help="ATR window length.")
+                help="ATR window length.",
+                key="adapter_ea_atr_n_range",
+            )
+            hold_lo, hold_hi = _ea_slider_values["adapter_ea_hold_range"]
             hold_lo, hold_hi = st.slider(
                 "holding_period_limit range",
                 min_value=_hold_min, max_value=_hold_max,
-                value=(int(ea_cfg["hold_min"]), int(ea_cfg["hold_max"])),
+                value=(int(hold_lo), int(hold_hi)),
                 step=1,
-                help="Max bars a trade may be held.")
+                help="Max bars a trade may be held.",
+                key="adapter_ea_hold_range",
+            )
 
         # ---- FLOAT ranges via sliders ----
         with c2:
+            atrm_lo, atrm_hi = _ea_slider_values["adapter_ea_atr_multiple_range"]
             atrm_lo, atrm_hi = st.slider(
                 "atr_multiple range",
                 min_value=_atrm_min, max_value=_atrm_max,
-                value=(float(ea_cfg["atr_multiple_min"]), float(ea_cfg["atr_multiple_max"])),
+                value=(float(atrm_lo), float(atrm_hi)),
                 step=0.05,
-                help="Stop distance as multiple of ATR.")
+                help="Stop distance as multiple of ATR.",
+                key="adapter_ea_atr_multiple_range",
+            )
+            tpm_lo, tpm_hi = _ea_slider_values["adapter_ea_tp_multiple_range"]
             tpm_lo, tpm_hi = st.slider(
                 "tp_multiple range",
                 min_value=_tpm_min, max_value=_tpm_max,
-                value=(float(ea_cfg["tp_multiple_min"]), float(ea_cfg["tp_multiple_max"])),
+                value=(float(tpm_lo), float(tpm_hi)),
                 step=0.05,
-                help="Take-profit multiple.")
+                help="Take-profit multiple.",
+                key="adapter_ea_tp_multiple_range",
+            )
 
         # Persist back to session config
-        ea_cfg["breakout_n_min"], ea_cfg["breakout_n_max"] = int(br_lo), int(br_hi)
-        ea_cfg["exit_n_min"], ea_cfg["exit_n_max"] = int(ex_lo), int(ex_hi)
-        ea_cfg["atr_n_min"], ea_cfg["atr_n_max"] = int(atrn_lo), int(atrn_hi)
-        ea_cfg["hold_min"], ea_cfg["hold_max"] = int(hold_lo), int(hold_hi)
+        _ea_int_assignments = {
+            "adapter_ea_breakout_range": ("breakout_n_min", "breakout_n_max", int(br_lo), int(br_hi)),
+            "adapter_ea_exit_range": ("exit_n_min", "exit_n_max", int(ex_lo), int(ex_hi)),
+            "adapter_ea_atr_n_range": ("atr_n_min", "atr_n_max", int(atrn_lo), int(atrn_hi)),
+            "adapter_ea_hold_range": ("hold_min", "hold_max", int(hold_lo), int(hold_hi)),
+        }
+        for state_key, (lo_key, hi_key, lo_val, hi_val) in _ea_int_assignments.items():
+            ea_cfg[lo_key], ea_cfg[hi_key] = lo_val, hi_val
+            st.session_state[state_key] = (lo_val, hi_val)
 
-        ea_cfg["atr_multiple_min"], ea_cfg["atr_multiple_max"] = float(atrm_lo), float(atrm_hi)
-        ea_cfg["tp_multiple_min"], ea_cfg["tp_multiple_max"] = float(tpm_lo), float(tpm_hi)
+        _ea_float_assignments = {
+            "adapter_ea_atr_multiple_range": ("atr_multiple_min", "atr_multiple_max", float(atrm_lo), float(atrm_hi)),
+            "adapter_ea_tp_multiple_range": ("tp_multiple_min", "tp_multiple_max", float(tpm_lo), float(tpm_hi)),
+        }
+        for state_key, (lo_key, hi_key, lo_val, hi_val) in _ea_float_assignments.items():
+            ea_cfg[lo_key], ea_cfg[hi_key] = lo_val, hi_val
+            st.session_state[state_key] = (lo_val, hi_val)
 
     with st.expander("Base params", expanded=False):
         base["breakout_n"] = st.number_input("breakout_n", 5, 300, base["breakout_n"], 1,
