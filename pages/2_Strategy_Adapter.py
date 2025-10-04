@@ -220,7 +220,7 @@ def _filter_params_for_strategy(strategy_dotted: str, params: Dict[str, Any]) ->
         return {k: params[k] for k in safe if k in params}
 
 
-# ---------- LEFT SIDEBAR-LIKE COLUMN: configuration ----------
+# ---------- TOP-TO-BOTTOM CONFIGURATION FLOW ----------
 per_symbol_ranges: Dict[str, Dict[str, Any]] = {}
 data_shards_daily: Dict[str, List[Dict[str, Any]]] = {}
 data_cache_root: str | None = None
@@ -236,288 +236,240 @@ holdout_days: int = 0
 train_fraction_actual: float = 0.7
 holdout_fraction_actual: float = 0.3
 
-left, right = st.columns([1.05, 1.55], gap="large")
+st.subheader("1️⃣ Portfolio & Data Setup")
 
-with left:
-    st.subheader("Portfolio & Strategy")
+# Portfolio selection (saved portfolios only for EA runs)
+tickers: List[str] = []
+try:
+    portfolios = sorted(list_portfolios())
+except Exception as e:
+    st.warning(f"Could not list portfolios: {e}")
+    portfolios = []
 
-    # Portfolio selection
-    # Use src.storage to list/load saved portfolios; fall back to manual CSV entry.
-    tickers: List[str] = []
-    try:
-        portfolios = sorted(list_portfolios())
-    except Exception as e:
-        st.warning(f"Could not list portfolios: {e}")
-        portfolios = []
+if not portfolios:
+    st.error("No saved portfolios found. Create one on the Portfolios page first.")
+    st.stop()
 
-    # ---- Portfolio selection (EA uses saved portfolios only) ----
-    tickers: List[str] = []
-    try:
-        portfolios = sorted(list_portfolios())
-    except Exception as e:
-        st.warning(f"Could not list portfolios: {e}")
-        portfolios = []
+default_idx = portfolios.index("Default") if "Default" in portfolios else 0
+port_name = st.selectbox(
+    "Portfolio",
+    options=portfolios,
+    index=default_idx,
+    help="EA runs over the selected portfolio's symbols.",
+)
 
-    if not portfolios:
-        st.error("No saved portfolios found. Create one on the Portfolios page first.")
-        st.stop()
+try:
+    obj = load_portfolio(port_name)
+    if isinstance(obj, dict):
+        raw = obj.get("tickers") or obj.get("symbols") or obj.get("items") or obj.get("data") or []
+    else:
+        raw = obj
+    tickers = _normalize_symbols(raw)
+except Exception as e:
+    st.error(f"Failed to load portfolio '{port_name}': {e}")
+    st.stop()
 
-    default_idx = portfolios.index("Default") if "Default" in portfolios else 0
-    port_name = st.selectbox(
-        "Portfolio",
-        options=portfolios,
-        index=default_idx,
-        help="EA runs over the selected portfolio's symbols."
+if not tickers:
+    st.warning("No tickers selected. Add tickers or choose a different portfolio.")
+    st.stop()
+
+st.info(
+    f"Selected **{len(tickers)}** symbols: {', '.join(tickers[:12])}{'…' if len(tickers) > 12 else ''}"
+)
+
+portfolio_meta = obj.get("meta") if isinstance(obj, dict) else {}
+per_symbol_ranges = portfolio_meta.get("per_symbol_ranges") or {}
+data_cache_root = portfolio_meta.get("data_cache_root")
+data_shards_daily = _extract_daily_shards(portfolio_meta.get("data_shards"))
+
+coverage_start_iso, coverage_end_iso = intersection_range(per_symbol_ranges)
+if (not coverage_start_iso or not coverage_end_iso) and isinstance(portfolio_meta.get("windows"), dict):
+    priors = portfolio_meta.get("windows", {}).get("priors")
+    if isinstance(priors, (list, tuple)) and len(priors) == 2:
+        coverage_start_iso = coverage_start_iso or priors[0]
+        coverage_end_iso = coverage_end_iso or priors[1]
+
+coverage_start_ts = _as_utc_timestamp(coverage_start_iso)
+coverage_end_ts = _as_utc_timestamp(coverage_end_iso)
+coverage_note = None
+if coverage_start_ts is None or coverage_end_ts is None or coverage_end_ts <= coverage_start_ts:
+    coverage_note = "Portfolio metadata lacked overlapping coverage; defaulting to the last 365 days."
+    coverage_end_ts = pd.Timestamp(_utc_now())
+    coverage_start_ts = coverage_end_ts - pd.Timedelta(days=365)
+
+coverage_total_days = max(1, int((coverage_end_ts - coverage_start_ts).days) + 1)
+default_train_pct = int(st.session_state.get("adapter_train_pct") or 70)
+default_train_pct = min(max(default_train_pct, 50), 95)
+
+summary_cols = st.columns(4)
+summary_cols[0].metric("Coverage start", coverage_start_ts.date().isoformat())
+summary_cols[1].metric("Coverage end", coverage_end_ts.date().isoformat())
+summary_cols[2].metric("Total days", coverage_total_days)
+summary_cols[3].metric("Symbols", len(tickers))
+
+st.caption(
+    f"Common coverage across {len(tickers)} symbols spans {coverage_total_days} days."
+)
+
+if coverage_note:
+    st.info(coverage_note)
+
+shard_total_count = sum(len(v) for v in data_shards_daily.values())
+if shard_total_count:
+    shard_msg = f"Tracked cache shards: {shard_total_count} files across {len(data_shards_daily)} symbols."
+    if data_cache_root:
+        shard_msg += f" Root: {data_cache_root}"
+    st.caption(shard_msg)
+
+train_pct_ui = st.slider(
+    "Training share (%)",
+    min_value=50,
+    max_value=95,
+    value=int(default_train_pct),
+    step=5,
+    help="Percent of the available coverage to dedicate to training. The remainder is reserved for holdout/testing.",
+)
+st.session_state["adapter_train_pct"] = int(train_pct_ui)
+train_fraction = float(train_pct_ui) / 100.0
+
+max_train_days = max(1, coverage_total_days - 1) if coverage_total_days > 1 else 1
+proposed_train_days = int(round(coverage_total_days * train_fraction))
+train_days = min(max_train_days, max(1, proposed_train_days))
+holdout_days = coverage_total_days - train_days
+if coverage_total_days > 1 and holdout_days < 1:
+    holdout_days = 1
+    train_days = coverage_total_days - holdout_days
+
+train_start_ts = coverage_start_ts
+train_days = max(1, min(train_days, coverage_total_days))
+train_end_candidate = train_start_ts + pd.Timedelta(days=train_days - 1)
+if train_end_candidate > coverage_end_ts:
+    train_end_candidate = coverage_end_ts
+
+holdout_start_ts = min(coverage_end_ts, train_end_candidate + pd.Timedelta(days=1))
+train_end_from_holdout_ts = holdout_start_ts - pd.Timedelta(days=1)
+if train_end_from_holdout_ts < train_start_ts:
+    train_end_from_holdout_ts = train_start_ts
+train_end_ts = min(train_end_candidate, train_end_from_holdout_ts)
+
+holdout_start_ts = min(coverage_end_ts, train_end_ts + pd.Timedelta(days=1))
+
+train_days = max(1, int((train_end_ts - train_start_ts).days) + 1)
+holdout_days = max(0, int((coverage_end_ts - holdout_start_ts).days) + 1)
+
+train_start_dt = train_start_ts.to_pydatetime()
+train_end_dt = train_end_ts.to_pydatetime()
+holdout_start_dt = holdout_start_ts.to_pydatetime()
+holdout_end_dt = coverage_end_ts.to_pydatetime()
+
+train_fraction_actual = train_days / coverage_total_days if coverage_total_days else 1.0
+holdout_fraction_actual = holdout_days / coverage_total_days if coverage_total_days else 0.0
+
+timing_cols = st.columns(3)
+timing_cols[0].metric("Train window", f"{train_start_dt.date().isoformat()} → {train_end_dt.date().isoformat()}")
+timing_cols[1].metric("Train days", f"{train_days} ({train_fraction_actual * 100:.1f}%)")
+timing_cols[2].metric("Holdout days", f"{holdout_days} ({holdout_fraction_actual * 100:.1f}%)")
+
+st.divider()
+st.subheader("2️⃣ Strategy & Search Controls")
+
+strategy_dotted = st.selectbox(
+    "Strategy",
+    ["src.models.atr_breakout"],
+    index=0,
+    help="Select the strategy module to adapt.",
+)
+
+base = _ss_get_dict(
+    "adapter_base_params",
+    {
+        "breakout_n": 70,
+        "exit_n": 16,
+        "atr_n": 8,
+        "atr_multiple": 2.20,
+        "tp_multiple": 1.78,
+        "holding_period_limit": 20,
+        "risk_per_trade": 0.005,
+        "use_trend_filter": False,
+        "sma_fast": 20,
+        "sma_slow": 50,
+        "sma_long": 200,
+        "long_slope_len": 20,
+        "cost_bps": 1.0,
+        "execution": "close",
+    },
+)
+
+ea_cfg = _ss_get_dict(
+    "ea_cfg",
+    {
+        "generations": 12,
+        "pop_size": 100,
+        "min_trades": 12,
+        "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
+        "breakout_n_min": 8,
+        "breakout_n_max": 80,
+        "exit_n_min": 4,
+        "exit_n_max": 40,
+        "atr_n_min": 7,
+        "atr_n_max": 35,
+        "atr_multiple_min": 0.8,
+        "atr_multiple_max": 4.0,
+        "tp_multiple_min": 0.8,
+        "tp_multiple_max": 4.0,
+        "hold_min": 5,
+        "hold_max": 60,
+    },
+)
+
+with st.expander("Evolutionary search (EA) controls", expanded=True):
+    st.markdown("**Search behaviour**")
+    search_cols = st.columns(3)
+    with search_cols[0]:
+        ea_cfg["generations"] = st.number_input("Generations", 1, 200, int(ea_cfg["generations"]), 1)
+    with search_cols[1]:
+        ea_cfg["pop_size"] = st.number_input("Population", 2, 400, int(ea_cfg["pop_size"]), 1)
+    with search_cols[2]:
+        ea_cfg["min_trades"] = st.number_input("Min trades (gate)", 0, 200, int(ea_cfg["min_trades"]), 1)
+
+    st.markdown("**Parallelism**")
+    ea_cfg["n_jobs"] = st.number_input(
+        "Jobs (EA)",
+        1,
+        max(1, (os.cpu_count() or 2)),
+        int(ea_cfg["n_jobs"]),
+        1,
+        help="Worker processes dedicated to the evolutionary search.",
     )
 
-    try:
-        obj = load_portfolio(port_name)
-        # Accept either a plain list of symbols or a dict that contains them
-        if isinstance(obj, dict):
-            raw = obj.get("tickers") or obj.get("symbols") or obj.get("items") or obj.get("data") or []
-        else:
-            raw = obj
-        tickers = _normalize_symbols(raw)
-    except Exception as e:
-        st.error(f"Failed to load portfolio '{port_name}': {e}")
-        st.stop()
+    st.markdown("**Parameter bounds**")
+    bounds_cols = st.columns(3)
+    with bounds_cols[0]:
+        bnm_lo = st.number_input("breakout_n min", 1, 400, int(ea_cfg["breakout_n_min"]), 1)
+        bnm_hi = st.number_input("breakout_n max", bnm_lo, 400, int(ea_cfg["breakout_n_max"]), 1)
+        enm_lo = st.number_input("exit_n min", 1, 400, int(ea_cfg["exit_n_min"]), 1)
+        enm_hi = st.number_input("exit_n max", enm_lo, 400, int(ea_cfg["exit_n_max"]), 1)
+    with bounds_cols[1]:
+        atm_lo = st.number_input("atr_n min", 1, 200, int(ea_cfg["atr_n_min"]), 1)
+        atm_hi = st.number_input("atr_n max", atm_lo, 200, int(ea_cfg["atr_n_max"]), 1)
+        atm_mul_lo = st.number_input("atr_multiple min", 0.1, 20.0, float(ea_cfg["atr_multiple_min"]), 0.1)
+        atm_mul_hi = st.number_input("atr_multiple max", atm_mul_lo, 20.0, float(ea_cfg["atr_multiple_max"]), 0.1)
+    with bounds_cols[2]:
+        tpm_lo = st.number_input("tp_multiple min", 0.1, 20.0, float(ea_cfg["tp_multiple_min"]), 0.1)
+        tpm_hi = st.number_input("tp_multiple max", tpm_lo, 20.0, float(ea_cfg["tp_multiple_max"]), 0.1)
+        hold_lo = st.number_input("hold min", 1, 600, int(ea_cfg["hold_min"]), 1)
+        hold_hi = st.number_input("hold max", hold_lo, 600, int(ea_cfg["hold_max"]), 1)
 
-    if not tickers:
-        st.warning("No tickers selected. Add tickers or choose a portfolio.")
-        st.stop()
+    ea_cfg["breakout_n_min"], ea_cfg["breakout_n_max"] = int(bnm_lo), int(bnm_hi)
+    ea_cfg["exit_n_min"], ea_cfg["exit_n_max"] = int(enm_lo), int(enm_hi)
+    ea_cfg["atr_n_min"], ea_cfg["atr_n_max"] = int(atm_lo), int(atm_hi)
+    ea_cfg["atr_multiple_min"], ea_cfg["atr_multiple_max"] = float(atm_mul_lo), float(atm_mul_hi)
+    ea_cfg["tp_multiple_min"], ea_cfg["tp_multiple_max"] = float(tpm_lo), float(tpm_hi)
+    ea_cfg["hold_min"], ea_cfg["hold_max"] = int(hold_lo), int(hold_hi)
 
-    st.info(f"Selected **{len(tickers)}** symbols: {', '.join(tickers[:12])}{'…' if len(tickers) > 12 else ''}")
-
-    portfolio_meta = obj.get("meta") if isinstance(obj, dict) else {}
-    per_symbol_ranges = portfolio_meta.get("per_symbol_ranges") or {}
-    data_cache_root = portfolio_meta.get("data_cache_root")
-    data_shards_daily = _extract_daily_shards(portfolio_meta.get("data_shards"))
-
-    coverage_start_iso, coverage_end_iso = intersection_range(per_symbol_ranges)
-    if (not coverage_start_iso or not coverage_end_iso) and isinstance(portfolio_meta.get("windows"), dict):
-        priors = portfolio_meta.get("windows", {}).get("priors")
-        if isinstance(priors, (list, tuple)) and len(priors) == 2:
-            coverage_start_iso = coverage_start_iso or priors[0]
-            coverage_end_iso = coverage_end_iso or priors[1]
-
-    coverage_start_ts = _as_utc_timestamp(coverage_start_iso)
-    coverage_end_ts = _as_utc_timestamp(coverage_end_iso)
-    coverage_note = None
-    if coverage_start_ts is None or coverage_end_ts is None or coverage_end_ts <= coverage_start_ts:
-        coverage_note = "Portfolio metadata lacked overlapping coverage; defaulting to the last 365 days."
-        coverage_end_ts = pd.Timestamp(_utc_now())
-        coverage_start_ts = coverage_end_ts - pd.Timedelta(days=365)
-
-    coverage_total_days = max(1, int((coverage_end_ts - coverage_start_ts).days) + 1)
-    default_train_pct = int(st.session_state.get("adapter_train_pct") or 70)
-    default_train_pct = min(max(default_train_pct, 50), 95)
-
-    st.markdown("**Data coverage & split**")
-    st.caption(
-        f"Common coverage across {len(tickers)} symbols: {coverage_start_ts.date().isoformat()} → {coverage_end_ts.date().isoformat()} "
-        f"({coverage_total_days} days)."
-    )
-    if coverage_note:
-        st.info(coverage_note)
-
-    shard_total_count = sum(len(v) for v in data_shards_daily.values())
-    if shard_total_count:
-        shard_msg = (
-            f"Tracked cache shards: {shard_total_count} files across {len(data_shards_daily)} symbols."
-        )
-        if data_cache_root:
-            shard_msg += f" Root: {data_cache_root}"
-        st.caption(shard_msg)
-
-    train_pct_ui = st.slider(
-        "Training share (%)",
-        min_value=50,
-        max_value=95,
-        value=int(default_train_pct),
-        step=5,
-        help="Percent of the available coverage to dedicate to training. The remainder is reserved for holdout/testing.",
-    )
-    st.session_state["adapter_train_pct"] = int(train_pct_ui)
-    train_fraction = float(train_pct_ui) / 100.0
-
-    max_train_days = max(1, coverage_total_days - 1) if coverage_total_days > 1 else 1
-    proposed_train_days = int(round(coverage_total_days * train_fraction))
-    train_days = min(max_train_days, max(1, proposed_train_days))
-    holdout_days = coverage_total_days - train_days
-    if coverage_total_days > 1 and holdout_days < 1:
-        holdout_days = 1
-        train_days = coverage_total_days - holdout_days
-
-    train_start_ts = coverage_start_ts
-    # Recompute contiguous boundaries from the coverage start
-    train_days = max(1, min(train_days, coverage_total_days))
-    train_end_candidate = train_start_ts + pd.Timedelta(days=train_days - 1)
-    if train_end_candidate > coverage_end_ts:
-        train_end_candidate = coverage_end_ts
-
-    holdout_start_ts = min(coverage_end_ts, train_end_candidate + pd.Timedelta(days=1))
-    train_end_from_holdout_ts = holdout_start_ts - pd.Timedelta(days=1)
-    if train_end_from_holdout_ts < train_start_ts:
-        train_end_from_holdout_ts = train_start_ts
-    train_end_ts = min(train_end_candidate, train_end_from_holdout_ts)
-
-    # Re-evaluate holdout start after clamping the training window
-    holdout_start_ts = min(coverage_end_ts, train_end_ts + pd.Timedelta(days=1))
-
-    train_days = max(1, int((train_end_ts - train_start_ts).days) + 1)
-    holdout_days = max(0, int((coverage_end_ts - holdout_start_ts).days) + 1)
-
-    train_start_dt = train_start_ts.to_pydatetime()
-    train_end_dt = train_end_ts.to_pydatetime()
-    holdout_start_dt = holdout_start_ts.to_pydatetime()
-    holdout_end_dt = coverage_end_ts.to_pydatetime()
-
-    train_fraction_actual = train_days / coverage_total_days if coverage_total_days else 1.0
-    holdout_fraction_actual = holdout_days / coverage_total_days if coverage_total_days else 0.0
-
-    st.caption(
-        f"Train: {train_start_dt.date().isoformat()} → {train_end_dt.date().isoformat()} "
-        f"({train_days} days, {train_fraction_actual * 100:.1f}%). "
-        f"Test: {holdout_start_dt.date().isoformat()} → {holdout_end_dt.date().isoformat()} "
-        f"({holdout_days} days, {holdout_fraction_actual * 100:.1f}%)."
-    )
-
-    # Strategy module (kept as before)
-    strategy_dotted = st.selectbox("Strategy", ["src.models.atr_breakout"], index=0)
-
-    # Base params (kept as before)
-    st.caption("Base parameters passed to the strategy’s run_strategy().")
-    base = _ss_get_dict(
-        "adapter_base_params",
-        {
-            "breakout_n": 70,
-            "exit_n": 16,
-            "atr_n": 8,
-            "atr_multiple": 2.20,
-            "tp_multiple": 1.78,
-            "holding_period_limit": 20,
-            # extras (the strategy ignores unknowns; we keep them for future work)
-            "risk_per_trade": 0.005,
-            "use_trend_filter": False,
-            "sma_fast": 20,
-            "sma_slow": 50,
-            "sma_long": 200,
-            "long_slope_len": 20,
-            "cost_bps": 1.0,
-            "execution": "close",
-        },
-    )
-
-    # === EA (Base model) knobs & param bounds ===
-    ea_cfg = _ss_get_dict(
-        "ea_cfg",
-        {
-            # search controls
-            "generations": 12,
-            "pop_size": 100,
-            "min_trades": 12,
-            "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
-            # param bounds (inclusive ints; floats as (min, max))
-            "breakout_n_min": 8, "breakout_n_max": 80,
-            "exit_n_min": 4, "exit_n_max": 40,
-            "atr_n_min": 7, "atr_n_max": 35,
-            "atr_multiple_min": 0.8, "atr_multiple_max": 4.0,
-            "tp_multiple_min": 0.8, "tp_multiple_max": 4.0,
-            "hold_min": 5, "hold_max": 60,
-        },
-    )
-
-    with st.expander("EA (Base model) — search knobs & bounds", expanded=False):
-        col0, col1, col2, col3 = st.columns(4)
-        with col0:
-            ea_cfg["generations"] = st.number_input("Generations", 1, 200, int(ea_cfg["generations"]), 1)
-        with col1:
-            ea_cfg["pop_size"] = st.number_input("Population", 2, 400, int(ea_cfg["pop_size"]), 1)
-        with col2:
-            ea_cfg["min_trades"] = st.number_input("Min trades (gate)", 0, 200, int(ea_cfg["min_trades"]), 1)
-        with col3:
-            ea_cfg["n_jobs"] = st.number_input("Jobs (EA)", 1, max(1, (os.cpu_count() or 2)), int(ea_cfg["n_jobs"]), 1)
-
-        st.caption("Parameter search bounds")
-
-
-        # Dynamically tighten slider track to the configured bounds (better UX)
-        def _pad_int_range(lo: int, hi: int, pad_ratio: float = 0.25, hard_lo: int = 1, hard_hi: int = 600) -> tuple[
-            int, int]:
-            span = max(1, hi - lo)
-            pad = max(1, int(span * pad_ratio))
-            return max(hard_lo, lo - pad), min(hard_hi, hi + pad)
-
-
-        def _pad_float_range(lo: float, hi: float, pad_ratio: float = 0.25, hard_lo: float = 0.05,
-                             hard_hi: float = 50.0) -> tuple[float, float]:
-            span = max(1e-9, hi - lo)
-            pad = span * pad_ratio
-            return max(hard_lo, lo - pad), min(hard_hi, hi + pad)
-
-
-        # Compute padded domains for each param based on current bounds
-        _br_min, _br_max = _pad_int_range(int(ea_cfg["breakout_n_min"]), int(ea_cfg["breakout_n_max"]))
-        _ex_min, _ex_max = _pad_int_range(int(ea_cfg["exit_n_min"]), int(ea_cfg["exit_n_max"]))
-        _atrn_min, _atrn_max = _pad_int_range(int(ea_cfg["atr_n_min"]), int(ea_cfg["atr_n_max"]))
-        _hold_min, _hold_max = _pad_int_range(int(ea_cfg["hold_min"]), int(ea_cfg["hold_max"]))
-
-        _atrm_min, _atrm_max = _pad_float_range(float(ea_cfg["atr_multiple_min"]), float(ea_cfg["atr_multiple_max"]))
-        _tpm_min, _tpm_max = _pad_float_range(float(ea_cfg["tp_multiple_min"]), float(ea_cfg["tp_multiple_max"]))
-
-        # ---- INT ranges via sliders ----
-        c1, c2 = st.columns(2)
-        with c1:
-            br_lo, br_hi = st.slider(
-                "breakout_n range",
-                min_value=_br_min, max_value=_br_max,
-                value=(int(ea_cfg["breakout_n_min"]), int(ea_cfg["breakout_n_max"])),
-                step=1,
-                help="Bars for the entry breakout lookback.")
-            ex_lo, ex_hi = st.slider(
-                "exit_n range",
-                min_value=_ex_min, max_value=_ex_max,
-                value=(int(ea_cfg["exit_n_min"]), int(ea_cfg["exit_n_max"])),
-                step=1,
-                help="Bars for exit/stop lookback.")
-            atrn_lo, atrn_hi = st.slider(
-                "atr_n range",
-                min_value=_atrn_min, max_value=_atrn_max,
-                value=(int(ea_cfg["atr_n_min"]), int(ea_cfg["atr_n_max"])),
-                step=1,
-                help="ATR window length.")
-            hold_lo, hold_hi = st.slider(
-                "holding_period_limit range",
-                min_value=_hold_min, max_value=_hold_max,
-                value=(int(ea_cfg["hold_min"]), int(ea_cfg["hold_max"])),
-                step=1,
-                help="Max bars a trade may be held.")
-
-        # ---- FLOAT ranges via sliders ----
-        with c2:
-            atrm_lo, atrm_hi = st.slider(
-                "atr_multiple range",
-                min_value=_atrm_min, max_value=_atrm_max,
-                value=(float(ea_cfg["atr_multiple_min"]), float(ea_cfg["atr_multiple_max"])),
-                step=0.05,
-                help="Stop distance as multiple of ATR.")
-            tpm_lo, tpm_hi = st.slider(
-                "tp_multiple range",
-                min_value=_tpm_min, max_value=_tpm_max,
-                value=(float(ea_cfg["tp_multiple_min"]), float(ea_cfg["tp_multiple_max"])),
-                step=0.05,
-                help="Take-profit multiple.")
-
-        # Persist back to session config
-        ea_cfg["breakout_n_min"], ea_cfg["breakout_n_max"] = int(br_lo), int(br_hi)
-        ea_cfg["exit_n_min"], ea_cfg["exit_n_max"] = int(ex_lo), int(ex_hi)
-        ea_cfg["atr_n_min"], ea_cfg["atr_n_max"] = int(atrn_lo), int(atrn_hi)
-        ea_cfg["hold_min"], ea_cfg["hold_max"] = int(hold_lo), int(hold_hi)
-
-        ea_cfg["atr_multiple_min"], ea_cfg["atr_multiple_max"] = float(atrm_lo), float(atrm_hi)
-        ea_cfg["tp_multiple_min"], ea_cfg["tp_multiple_max"] = float(tpm_lo), float(tpm_hi)
-
-    with st.expander("Base params", expanded=False):
+with st.expander("Strategy parameter defaults (optional)", expanded=False):
+    base_cols = st.columns(2)
+    with base_cols[0]:
         base["breakout_n"] = st.number_input("breakout_n", 5, 300, base["breakout_n"], 1,
                                              help="Lookback used for breakout entry signal.")
         base["exit_n"] = st.number_input("exit_n", 4, 300, base["exit_n"], 1,
@@ -529,11 +481,13 @@ with left:
                                               help="Take-profit multiple (vs ATR or entry logic).")
         base["holding_period_limit"] = st.number_input("holding_period_limit", 1, 400, base["holding_period_limit"], 1,
                                                        help="Max bars to hold a position.")
-        # Keep the extras so future strategies/UI can reuse
-        base["risk_per_trade"] = st.number_input("risk_per_trade", 0.0005, 0.05, float(base["risk_per_trade"]), 0.0005,
-                                                 format="%.4f", help="Fraction of equity risked per trade.")
-        base["use_trend_filter"] = st.checkbox("use_trend_filter", value=bool(base["use_trend_filter"]),
-                                               help="Optional trend filter gate.")
+    with base_cols[1]:
+        base["risk_per_trade"] = st.number_input(
+            "risk_per_trade", 0.0005, 0.05, float(base["risk_per_trade"]), 0.0005,
+            format="%.4f", help="Fraction of equity risked per trade.")
+        base["use_trend_filter"] = st.checkbox(
+            "use_trend_filter", value=bool(base["use_trend_filter"]),
+            help="Optional trend filter gate.")
         base["sma_fast"] = st.number_input("sma_fast", 5, 100, base["sma_fast"], 1,
                                            help="Fast MA length (if trend filter used).")
         base["sma_slow"] = st.number_input("sma_slow", 10, 200, base["sma_slow"], 1,
@@ -547,81 +501,76 @@ with left:
         base["execution"] = st.selectbox("Execution", ["close"], index=0,
                                          help="Execution price proxy used in backtest.")
 
-    # General training knobs
+with st.expander("Advanced run settings", expanded=False):
     folds = st.number_input("CV folds", 2, 10, 4, 1, help="Cross-validation splits for the base model trainer.")
     equity = st.number_input("Starting equity ($)", 1000.0, 1_000_000.0, 10_000.0, 100.0,
                              help="Starting equity for per-symbol runs.")
     min_trades = st.number_input("Min trades (valid)", 0, 200, 2, 1,
                                  help="Minimum total trades needed for a run to be considered valid.")
-
-    # Parallelism controls (kept visible near the top)
     max_procs = os.cpu_count() or 8
     n_jobs = st.slider("Jobs (processes)", 1, max(1, max_procs - 1), min(8, max(1, max_procs - 1)))
 
-    st.caption("Tip: If Alpaca SIP limits or YF rate limits bite, reduce Jobs to 1–4.")
+st.caption("Tip: If Alpaca SIP limits or YF rate limits bite, reduce Jobs to 1–4.")
 
-# ---------- RIGHT COLUMN: actions + results ----------
-with right:
-    # ------------------------ BASE TRAINING ------------------------
-    st.subheader("Train Base Model")
-    run_btn = st.button(
-        "🚀 Train (portfolio)",
-        type="primary",
-        help="Runs the portfolio-level base trainer with the config on the left.",
-        width="stretch",
+st.divider()
+st.subheader("3️⃣ Train & Monitor")
+
+run_btn = st.button(
+    "🚀 Train (portfolio)",
+    type="primary",
+    help="Runs the portfolio-level base trainer with the configuration above.",
+    use_container_width=True,
+)
+
+st.markdown("### Live evaluations")
+st.caption("Recent EA evaluations (rolling window)")
+eval_table_placeholder = st.empty()
+
+st.markdown("### Best candidate so far")
+best_score_col, best_params_col = st.columns([1, 1.8], gap="large")
+with best_score_col:
+    best_score_placeholder = st.empty()
+with best_params_col:
+    best_params_placeholder = st.empty()
+
+st.markdown("### Holdout equity (outside training window)")
+holdout_chart_placeholder = st.empty()
+holdout_status_placeholder = st.empty()
+
+st.markdown("### Generation summary")
+gen_summary_placeholder = st.empty()
+
+# --- Pull any previous run artifacts back into the UI ---
+live_rows_state = st.session_state.get("adapter_live_rows") or []
+if live_rows_state:
+    eval_table_placeholder.dataframe(pd.DataFrame(live_rows_state), width="stretch", height=380)
+else:
+    eval_table_placeholder.info("No evaluations yet. Run the EA to populate this table.")
+
+best_tracker_state = st.session_state.get("adapter_best_tracker") or {}
+best_score_val = best_tracker_state.get("score")
+best_delta_val = best_tracker_state.get("delta")
+if isinstance(best_score_val, (int, float)) and best_score_val not in (float("-inf"), float("inf")):
+    best_score_placeholder.metric(
+        "Best score",
+        f"{best_score_val:.3f}",
+        delta=None if best_delta_val is None else f"{best_delta_val:+.3f}",
     )
+else:
+    best_score_placeholder.metric("Best score", "—")
 
-    st.divider()
-    st.subheader("Results")
+best_params_state = best_tracker_state.get("params") or {}
+if best_params_state:
+    df_params_state = pd.DataFrame(
+        {"param": list(best_params_state.keys()), "value": [best_params_state[k] for k in best_params_state.keys()]}
+    )
+    best_params_placeholder.dataframe(df_params_state.set_index("param"), width="stretch", height=220)
+else:
+    best_params_placeholder.info("Waiting for evaluations…")
 
-    # --- Persistent result placeholders (rehydrate from session if available) ---
-    st.caption("Recent EA evaluations (rolling window)")
-    eval_table_placeholder = st.empty()
-
-    st.markdown("**Best candidate so far**")
-    best_score_col, best_params_col = st.columns([1, 1.8], gap="large")
-    with best_score_col:
-        best_score_placeholder = st.empty()
-    with best_params_col:
-        best_params_placeholder = st.empty()
-
-    st.markdown("**Holdout equity (outside training window)**")
-    holdout_chart_placeholder = st.empty()
-    holdout_status_placeholder = st.empty()
-
-    st.caption("Generation summary")
-    gen_summary_placeholder = st.empty()
-
-    # --- Pull any previous run artifacts back into the UI ---
-    live_rows_state = st.session_state.get("adapter_live_rows") or []
-    if live_rows_state:
-        eval_table_placeholder.dataframe(pd.DataFrame(live_rows_state), width="stretch", height=380)
-    else:
-        eval_table_placeholder.info("No evaluations yet. Run the EA to populate this table.")
-
-    best_tracker_state = st.session_state.get("adapter_best_tracker") or {}
-    best_score_val = best_tracker_state.get("score")
-    best_delta_val = best_tracker_state.get("delta")
-    if isinstance(best_score_val, (int, float)) and best_score_val not in (float("-inf"), float("inf")):
-        best_score_placeholder.metric(
-            "Best score",
-            f"{best_score_val:.3f}",
-            delta=None if best_delta_val is None else f"{best_delta_val:+.3f}",
-        )
-    else:
-        best_score_placeholder.metric("Best score", "—")
-
-    best_params_state = best_tracker_state.get("params") or {}
-    if best_params_state:
-        df_params_state = pd.DataFrame(
-            {"param": list(best_params_state.keys()), "value": [best_params_state[k] for k in best_params_state.keys()]}
-        )
-        best_params_placeholder.dataframe(df_params_state.set_index("param"), width="stretch", height=220)
-    else:
-        best_params_placeholder.info("Waiting for evaluations…")
-
-    holdout_history_state = st.session_state.get("adapter_holdout_history") or []
-    # (chart rendered by holdout_chart helper)
+holdout_history_state = st.session_state.get("adapter_holdout_history") or []
+# (chart rendered by holdout_chart helper)
+# ---------- Results hydration & status ----------
 holdout_status_state = st.session_state.get("adapter_holdout_status") or ("info",
                                                                           "Holdout equity will appear when a best candidate is found.")
 status_kind, status_msg = holdout_status_state
@@ -962,39 +911,41 @@ if run_btn:
 
 
 # --- Always-available Save EA Best Params section ---
-with right:
-    st.divider()
-    st.subheader("Save EA Best Params")
+st.divider()
+st.subheader("Save EA Best Params")
 
-    ea_best = st.session_state.get("ea_best_params") or {}
-    if not ea_best:
-        st.info("Run training to produce EA params, then save them here.")
-    else:
-        # show what will be saved
-        with st.expander("EA best parameters", expanded=False):
-            st.json(ea_best)
+ea_best = st.session_state.get("ea_best_params") or {}
+if not ea_best:
+    st.info("Run training to produce EA params, then save them here.")
+else:
+    with st.expander("EA best parameters", expanded=False):
+        st.json(ea_best)
 
-        # default to the portfolio/strategy that produced these params
-        portfolio_to_save = st.session_state.get("ea_portfolio") or port_name
-        strategy_to_save = st.session_state.get("ea_strategy") or strategy_dotted
+    portfolio_to_save = st.session_state.get("ea_portfolio") or port_name
+    strategy_to_save = st.session_state.get("ea_strategy") or strategy_dotted
 
-        col_s1, col_s2 = st.columns([1, 3])
-        with col_s1:
-            do_save_always = st.button(
-                "💾 Save EA Best Params",
-                type="primary",
-                use_container_width=True,
-                key="save_ea_btn"
+    col_s1, col_s2 = st.columns([1, 3])
+    with col_s1:
+        do_save_always = st.button(
+            "💾 Save EA Best Params",
+            type="primary",
+            use_container_width=True,
+            key="save_ea_btn"
+        )
+    with col_s2:
+        st.markdown(
+            f"Saving for **{portfolio_to_save}** using `{strategy_to_save}` strategy.\n"
+            "This overwrites any previously saved EA-scoped parameters."
+        )
+
+    if do_save_always:
+        try:
+            saved_path = save_strategy_params(
+                portfolio=portfolio_to_save,
+                strategy=strategy_to_save,
+                params=ea_best,
+                scope="ea",
             )
-
-        if do_save_always:
-            try:
-                saved_path = save_strategy_params(
-                    portfolio=portfolio_to_save,
-                    strategy=strategy_to_save,
-                    params=ea_best,
-                    scope="ea",
-                )
-                st.success(f"Saved EA params for '{portfolio_to_save}' → {saved_path or '(path not returned)'}")
-            except Exception as e:
-                st.error(f"Save failed: {e}")
+            st.success(f"Saved EA params for '{portfolio_to_save}' → {saved_path or '(path not returned)'}")
+        except Exception as e:
+            st.error(f"Save failed: {e}")
