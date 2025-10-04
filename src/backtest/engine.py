@@ -288,6 +288,8 @@ class ATRParams:
     exit_n: int = 10                  # recent low lookback for exit
     atr_n: int = 14
     atr_multiple: float = 2.0         # volatility filter: price > rolling_high - k * ATR
+    k_atr_buffer: float = 0.0         # Phase 1.1: breakout buffer (in ATRs) beyond prior high/low
+    persist_n: int = 1                # Phase 1.1: require N consecutive breakout bars
     tp_multiple: float = 0.0          # optional profit target (in ATRs). 0 disables.
     holding_period_limit: int = 0     # optional max holding days. 0 disables.
     allow_short: bool = False         # optional shorting; default off for simplicity
@@ -455,9 +457,37 @@ def backtest_atr_breakout(
     atr = wilder_atr(df["high"], df["low"], df["close"], n=params.atr_n)
     roll_high = df["close"].rolling(params.breakout_n).max()
     roll_low = df["close"].rolling(params.exit_n).min()
+    prior_high = roll_high.shift(1)
+
+    k_atr_buffer = _coerce_float(getattr(params, "k_atr_buffer", 0.0), 0.0)
+    if k_atr_buffer < 0.0:
+        k_atr_buffer = 0.0
+    persist_candidate = _coerce_float(getattr(params, "persist_n", 1), 1.0)
+    if persist_candidate < 1:
+        persist_candidate = 1.0
+    persist_n = int(persist_candidate) if persist_candidate else 1
+    if persist_n < 1:
+        persist_n = 1
 
     entry_th = roll_high - params.atr_multiple * atr
-    long_signal = df["close"] > entry_th
+    long_base = (df["close"] > entry_th).fillna(False)
+    if k_atr_buffer > 0.0:
+        buffer_threshold = (prior_high + k_atr_buffer * atr)
+        long_base = long_base & (df["close"] > buffer_threshold).fillna(False)
+    long_base = long_base.fillna(False)
+
+    if persist_n > 1:
+        long_signal_series = (
+            long_base.astype(int)
+            .rolling(window=persist_n, min_periods=persist_n)
+            .sum()
+            .eq(persist_n)
+        )
+        long_signal = long_signal_series.fillna(False).astype(bool)
+    else:
+        long_signal = long_base.astype(bool)
+
+    raw_long_breakout = long_base.astype(bool)
 
     in_pos = False
     entry_idx: Optional[int] = None
@@ -485,6 +515,17 @@ def backtest_atr_breakout(
     index_list = list(df.index)
     n_bars = len(index_list)
 
+    long_streak_counter = 0
+    state_tracking: Dict[str, int] = {
+        "long_streak": 0,
+        "short_streak": 0,
+        "long_streak_max": 0,
+        "entry_count": 0,
+        "exit_count": 0,
+    }
+    entry_count = 0
+    exit_count = 0
+
     def _safe_price(value: Any, fallback: float) -> float:
         out = _coerce_float(value, fallback)
         if out <= 0.0:
@@ -507,6 +548,16 @@ def backtest_atr_breakout(
 
         exit_trigger: Optional[Dict[str, Any]] = None
         entry_trigger: Optional[Dict[str, Any]] = None
+
+        raw_break_today = bool(raw_long_breakout.iloc[i]) if i < len(raw_long_breakout) else False
+        if raw_break_today:
+            long_streak_counter += 1
+        else:
+            long_streak_counter = 0
+        state_tracking["long_streak"] = long_streak_counter
+        if long_streak_counter > state_tracking.get("long_streak_max", 0):
+            state_tracking["long_streak_max"] = long_streak_counter
+        state_tracking["short_streak"] = 0
 
         if pending_exit and in_pos:
             if i - pending_exit.get("signal_idx", i) >= delay_bars:
@@ -702,6 +753,9 @@ def backtest_atr_breakout(
             trades.append(trade_record)
             trade_rows.append(trade_record)
 
+            exit_count += 1
+            state_tracking["exit_count"] = exit_count
+
             position_qty = 0.0
             in_pos = False
             entry_idx = None
@@ -760,6 +814,8 @@ def backtest_atr_breakout(
                 entry_signal_time = entry_trigger.get("signal_time")
                 entry_signal_price = entry_trigger.get("signal_price")
                 in_pos = True
+                entry_count += 1
+                state_tracking["entry_count"] = entry_count
 
         current_gross = cash_gross + position_qty * price_close
         current_net = cash_net + position_qty * price_close
@@ -858,6 +914,18 @@ def backtest_atr_breakout(
 
     meta = dict(base_meta)
     meta["costs"] = {"enabled": enable_costs, "summary": cost_summary}
+    meta.setdefault("runtime_counters", {})
+    meta["runtime_counters"].update(
+        {
+            "long_streak": int(state_tracking.get("long_streak", 0)),
+            "long_streak_max": int(state_tracking.get("long_streak_max", 0)),
+            "short_streak": int(state_tracking.get("short_streak", 0)),
+            "entry_count": int(entry_count),
+            "exit_count": int(exit_count),
+            "persist_n": int(persist_n),
+            "k_atr_buffer": float(k_atr_buffer),
+        }
+    )
 
     return {
         "equity": eq_net,
@@ -875,3 +943,4 @@ def backtest_atr_breakout(
 #   2. Test delayed execution with `EXEC_DELAY_BARS=1 EXEC_FILL_WHERE=open streamlit run Home.py`.
 #   3. In the Streamlit app, open Simulate Portfolio and expand "Cost Attribution (post-cost)" to review metrics.
 #   4. Verify the TRI panel test toggle remains available in the EA Train/Test Inspector page.
+#   5. Adjust `k_atr_buffer` and `persist_n` from defaults and confirm turnover/trade counts decline while default settings match legacy results.

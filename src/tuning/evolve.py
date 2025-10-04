@@ -75,6 +75,12 @@ class Bounds:
     cost_bps_min: float = 0.0
     cost_bps_max: float = 10.0
 
+    # Phase 1.1 buffers/persistence
+    k_atr_buffer_min: float = 0.0
+    k_atr_buffer_max: float = 0.75
+    persist_n_min: int = 1
+    persist_n_max: int = 5
+
     # EA meta (kept here for convenience when we save/load profiles)
     pop_size: int = 40
     generations: int = 20
@@ -104,6 +110,8 @@ def _fix(ind: Dict, b: Bounds) -> Dict:
     y["risk_per_trade"] = _clip_float(float(y.get("risk_per_trade", 0.01)), b.risk_per_trade_min, b.risk_per_trade_max)
     y["tp_multiple"]    = _clip_float(float(y.get("tp_multiple", 0.0)), b.tp_multiple_min, b.tp_multiple_max)
     y["cost_bps"]       = _clip_float(float(y.get("cost_bps", 0.0)), b.cost_bps_min, b.cost_bps_max)
+    y["k_atr_buffer"]   = _clip_float(float(y.get("k_atr_buffer", 0.0)), b.k_atr_buffer_min, b.k_atr_buffer_max)
+    y["persist_n"]      = _clip_int(int(y.get("persist_n", 1)), b.persist_n_min, b.persist_n_max)
 
     # Trend filter ordering
     sf = _clip_int(int(y.get("sma_fast", 30)), b.sma_fast_min, b.sma_fast_max)
@@ -139,6 +147,8 @@ def _rand(b: Bounds, rng: random.Random) -> Dict:
 
         "holding_period_limit": rng.randint(b.holding_period_min, b.holding_period_max),
         "cost_bps": rng.uniform(b.cost_bps_min, b.cost_bps_max),
+        "k_atr_buffer": rng.uniform(b.k_atr_buffer_min, b.k_atr_buffer_max),
+        "persist_n": rng.randint(b.persist_n_min, b.persist_n_max),
     }
     return _fix(ind, b)
 
@@ -187,6 +197,16 @@ def _mutate(ind: Dict, b: Bounds, rng: random.Random) -> Dict:
     if rng.random() < 0.5:
         out["cost_bps"] = _clamp(out.get("cost_bps", 0.0) + rng.gauss(0, 0.3), b.cost_bps_min, b.cost_bps_max)
 
+    if rng.random() < 0.5:
+        out["k_atr_buffer"] = _clamp(
+            out.get("k_atr_buffer", 0.0) + rng.gauss(0, 0.05),
+            b.k_atr_buffer_min,
+            b.k_atr_buffer_max,
+        )
+    if rng.random() < 0.5:
+        delta = int(round(rng.gauss(0, 0.75)))
+        out["persist_n"] = _clip_int(int(out.get("persist_n", 1)) + delta, b.persist_n_min, b.persist_n_max)
+
     # ---- rare boolean flip ----
     if b.allow_trend_filter and rng.random() < 0.2:
         out["use_trend_filter"] = not bool(out.get("use_trend_filter", False))
@@ -197,13 +217,24 @@ def _mutate(ind: Dict, b: Bounds, rng: random.Random) -> Dict:
 def _xover(a: Dict, b_: Dict, rng: random.Random, bounds: Bounds) -> Dict:
     child = {}
     # integers: coin-flip inherit
-    for k in ["breakout_n","exit_n","atr_n","sma_fast","sma_slow","sma_long","long_slope_len","holding_period_limit"]:
+    for k in [
+        "breakout_n",
+        "exit_n",
+        "atr_n",
+        "sma_fast",
+        "sma_slow",
+        "sma_long",
+        "long_slope_len",
+        "holding_period_limit",
+        "persist_n",
+    ]:
         child[k] = a[k] if rng.random() < 0.5 else b_[k]
     # floats: blend around parents with bounds
     child["atr_multiple"]   = _clamp(_blend(a["atr_multiple"],   b_["atr_multiple"],   alpha=0.2), bounds.atr_multiple_min, bounds.atr_multiple_max)
     child["risk_per_trade"] = _clamp(_blend(a["risk_per_trade"], b_["risk_per_trade"], alpha=0.2), bounds.risk_per_trade_min, bounds.risk_per_trade_max)
     child["tp_multiple"]    = _clamp(_blend(a["tp_multiple"],    b_["tp_multiple"],    alpha=0.2), bounds.tp_multiple_min, bounds.tp_multiple_max)
     child["cost_bps"]       = _clamp(_blend(a["cost_bps"],       b_["cost_bps"],       alpha=0.2), bounds.cost_bps_min, bounds.cost_bps_max)
+    child["k_atr_buffer"]   = _clamp(_blend(a["k_atr_buffer"],   b_["k_atr_buffer"],   alpha=0.2), bounds.k_atr_buffer_min, bounds.k_atr_buffer_max)
     # bool
     child["use_trend_filter"] = a["use_trend_filter"] if rng.random() < 0.5 else b_["use_trend_filter"]
     return _fix(child, bounds)
@@ -232,6 +263,13 @@ def _fitness(symbol: str, start: str, end: str, starting_equity: float, ind: Dic
         long_slope_len=int(ind.get("long_slope_len", 15)),
         holding_period_limit=hp_limit,
     )
+    params.k_atr_buffer = float(ind.get("k_atr_buffer", 0.0) or 0.0)
+    if params.k_atr_buffer < 0.0:
+        params.k_atr_buffer = 0.0
+    persist_val = int(ind.get("persist_n", 1) or 1)
+    if persist_val < 1:
+        persist_val = 1
+    params.persist_n = persist_val
     res = backtest_atr_breakout(symbol, start, end, float(starting_equity), params)
     metrics = res["metrics"]
 

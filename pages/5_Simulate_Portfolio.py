@@ -63,6 +63,12 @@ def _prepare_frame(symbol: str, start_iso: str, end_iso: str, params: dict) -> p
     atr_n = int(params.get("atr_n", 14))
     breakout_n = int(params.get("breakout_n", 55))
     exit_n = int(params.get("exit_n", 20))
+    k_atr_buffer = float(params.get("k_atr_buffer", 0.0) or 0.0)
+    if k_atr_buffer < 0.0:
+        k_atr_buffer = 0.0
+    persist_n = int(params.get("persist_n", 1) or 1)
+    if persist_n < 1:
+        persist_n = 1
     use_trend = bool(params.get("use_trend_filter", False))
     sma_fast = int(params.get("sma_fast", 30))
     sma_slow = int(params.get("sma_slow", 50))
@@ -79,7 +85,20 @@ def _prepare_frame(symbol: str, start_iso: str, end_iso: str, params: dict) -> p
         df["trend_ok"] = True
 
     # Signals on bar t for execution at t+1 open
-    df["entry_sig"] = (df["close"] > df["breakout_high"]) & df["trend_ok"]
+    raw_entry = (df["close"] > df["breakout_high"]) & df["trend_ok"]
+    if k_atr_buffer > 0.0:
+        raw_entry = raw_entry & (df["close"] > (df["breakout_high"] + k_atr_buffer * df["atr"]))
+    raw_entry = raw_entry.fillna(False)
+    if persist_n > 1:
+        entry_sig = (
+            raw_entry.astype(int)
+            .rolling(window=persist_n, min_periods=persist_n)
+            .sum()
+            .eq(persist_n)
+        ).fillna(False)
+    else:
+        entry_sig = raw_entry
+    df["entry_sig"] = entry_sig.astype(bool)
     df["exit_sig"] = (df["close"] < df["exit_low"])
 
     # Base score
@@ -89,7 +108,10 @@ def _prepare_frame(symbol: str, start_iso: str, end_iso: str, params: dict) -> p
         atr_pct = (df["atr"] / df["close"]).replace([0, np.inf, -np.inf], np.nan)
         base = (mom / atr_pct).replace([np.inf, -np.inf], np.nan)
     else:
-        base = (df["close"] - df["breakout_high"]) / df["atr"]
+        breakout_ref = df["breakout_high"]
+        if k_atr_buffer > 0.0:
+            breakout_ref = breakout_ref + k_atr_buffer * df["atr"]
+        base = (df["close"] - breakout_ref) / df["atr"]
     df["score_base"] = base.clip(lower=0).fillna(0.0)
     return df
 
@@ -615,6 +637,13 @@ if st.button("Run Simulation", type="primary"):
                     else:
                         params = it["params"]
 
+                    persist_val = int(params.get("persist_n", 1) or 1)
+                    if persist_val < 1:
+                        persist_val = 1
+                    k_buffer = float(params.get("k_atr_buffer", 0.0) or 0.0)
+                    if k_buffer < 0.0:
+                        k_buffer = 0.0
+
                     res = backtest_single(
                         symbol,
                         start.isoformat(),
@@ -624,6 +653,8 @@ if st.button("Run Simulation", type="primary"):
                         atr_n=int(params.get("atr_n", 14)),
                         starting_equity=alloc,  # weighted capital
                         atr_multiple=float(params.get("atr_multiple", 3.0)),
+                        k_atr_buffer=k_buffer,
+                        persist_n=persist_val,
                         risk_per_trade=float(params.get("risk_per_trade", 0.01)),
                         allow_fractional=bool(params.get("allow_fractional", True)),
                     )
