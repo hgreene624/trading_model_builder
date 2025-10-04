@@ -384,11 +384,11 @@ def render_tri_panel(
     fig.update_layout(
         margin=dict(l=10, r=10, t=10, b=10),
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1.0,
+            orientation="v",
+            yanchor="top",
+            y=1.0,
+            xanchor="left",
+            x=0.0,
         ),
         hovermode="x unified",
         xaxis_title="Date",
