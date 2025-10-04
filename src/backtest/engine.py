@@ -160,8 +160,10 @@ class CostModel:
     per_trade_fee: float = 0.0
     enabled: bool = False
     fixed_bps: float = 0.0
-    atr_k: float = 0.25
-    min_half_spread_bps: float = 1.0
+    atr_k: float = 0.05
+    min_half_spread_bps: float = 0.5
+    use_range_impact: bool = False
+    cap_range_impact_bps: float = 10.0
     mode: str = "simple_spread"
 
     @classmethod
@@ -174,6 +176,8 @@ class CostModel:
         fixed_bps: float | None = None,
         atr_k: float | None = None,
         min_half_spread_bps: float | None = None,
+        use_range_impact: bool | None = None,
+        cap_range_impact_bps: float | None = None,
         mode: str | None = None,
     ) -> "CostModel":
         commission_bps = max(0.0, _coerce_float(commission_bps, 0.0))
@@ -181,8 +185,18 @@ class CostModel:
         per_trade_fee = max(0.0, _coerce_float(per_trade_fee, 0.0))
         active = enabled or (commission_bps > 0.0 or slippage_bps > 0.0 or per_trade_fee > 0.0)
         fixed = max(0.0, _coerce_float(fixed_bps, 0.0)) if fixed_bps is not None else 0.0
-        atr_scale = max(0.0, _coerce_float(atr_k, 0.25)) if atr_k is not None else 0.25
-        min_spread = max(0.0, _coerce_float(min_half_spread_bps, 1.0)) if min_half_spread_bps is not None else 1.0
+        atr_scale = max(0.0, _coerce_float(atr_k, 0.05)) if atr_k is not None else 0.05
+        min_spread = (
+            max(0.0, _coerce_float(min_half_spread_bps, 0.5))
+            if min_half_spread_bps is not None
+            else 0.5
+        )
+        range_impact = bool(use_range_impact) if use_range_impact is not None else False
+        cap_range = (
+            max(0.0, _coerce_float(cap_range_impact_bps, 10.0))
+            if cap_range_impact_bps is not None
+            else 10.0
+        )
         mode_clean = str(mode).strip().lower() if mode is not None else "simple_spread"
         if mode_clean not in {"simple_spread"}:
             mode_clean = "simple_spread"
@@ -194,6 +208,8 @@ class CostModel:
             fixed_bps=fixed,
             atr_k=atr_scale,
             min_half_spread_bps=min_spread,
+            use_range_impact=range_impact,
+            cap_range_impact_bps=cap_range,
             mode=mode_clean,
         )
 
@@ -209,15 +225,19 @@ class CostModel:
             "fixed_bps": float(self.fixed_bps),
             "atr_k": float(self.atr_k),
             "min_half_spread_bps": float(self.min_half_spread_bps),
+            "use_range_impact": bool(self.use_range_impact),
+            "cap_range_impact_bps": float(self.cap_range_impact_bps),
             "mode": str(self.mode),
         }
 
     @classmethod
     def from_env(cls) -> "CostModel":
-        enabled = _env_flag("COST_ENABLED", False)
+        enabled = _env_flag("COST_ENABLED", True)
         fixed_bps = max(0.0, _env_float("COST_FIXED_BPS", 0.5))
-        atr_k = max(0.0, _env_float("COST_ATR_K", 0.25))
-        min_half_spread = max(0.0, _env_float("COST_MIN_HS_BPS", 1.0))
+        atr_k = max(0.0, _env_float("COST_ATR_K", 0.05))
+        min_half_spread = max(0.0, _env_float("COST_MIN_HS_BPS", 0.5))
+        use_range_impact = _env_flag("COST_USE_RANGE_IMPACT", False)
+        cap_range_impact_bps = max(0.0, _env_float("CAP_RANGE_IMPACT_BPS", 10.0))
         mode = os.getenv("COST_MODE", "simple_spread")
         mode = str(mode).strip().lower()
         if mode not in {"simple_spread"}:
@@ -230,6 +250,8 @@ class CostModel:
             fixed_bps=float(fixed_bps),
             atr_k=float(atr_k),
             min_half_spread_bps=float(min_half_spread),
+            use_range_impact=bool(use_range_impact),
+            cap_range_impact_bps=float(cap_range_impact_bps),
             mode=mode,
         )
 
@@ -280,19 +302,27 @@ class CostModel:
         }
 
 
-def _estimate_half_spread_bps(bar: Dict[str, Any] | pd.Series) -> float:
+def _estimate_half_spread_bps(bar: Dict[str, Any] | pd.Series, cm: CostModel | None) -> float:
+    if cm is None:
+        return 0.0
+    if not getattr(cm, "use_range_impact", False):
+        return float(getattr(cm, "min_half_spread_bps", 0.0))
     try:
-        high = _coerce_float(bar.get("high"), 0.0)  # type: ignore[arg-type]
-        low = _coerce_float(bar.get("low"), 0.0)  # type: ignore[arg-type]
-        close = _coerce_float(bar.get("close"), 0.0)  # type: ignore[arg-type]
+        high = _coerce_float(bar.get("high", 0.0), 0.0)  # type: ignore[arg-type]
+        low = _coerce_float(bar.get("low", 0.0), 0.0)  # type: ignore[arg-type]
+        close = _coerce_float(bar.get("close", 0.0), 0.0)  # type: ignore[arg-type]
     except AttributeError:
-        return 0.0
-    if close <= 0.0 or high <= 0.0 or low <= 0.0:
-        return 0.0
+        return float(cm.min_half_spread_bps)
+    if high <= 0.0 or low <= 0.0:
+        return float(cm.min_half_spread_bps)
     spread = max(0.0, high - low)
     if spread <= 0.0:
-        return 0.0
-    return float(0.5 * spread / close * 10_000.0)
+        return float(cm.min_half_spread_bps)
+    rng_bps = 0.5 * spread / max(1e-12, close) * 10_000.0
+    cap = max(0.0, _coerce_float(getattr(cm, "cap_range_impact_bps", 0.0), 0.0))
+    if cap <= 0.0:
+        return float(rng_bps)
+    return float(min(rng_bps, cap))
 
 
 def _apply_costs(
@@ -306,11 +336,12 @@ def _apply_costs(
     quantity = _coerce_float(qty, 0.0)
     if not cm or not getattr(cm, "enabled", False) or quantity == 0.0 or price <= 0.0:
         return float(price), 0.0, 0.0
-    atr_component = 0.0
+    atr_value = 0.0
     if atr_pct is not None:
-        atr_component = max(0.0, _coerce_float(atr_pct, 0.0)) * cm.atr_k * 10_000.0
-    half_spread = _estimate_half_spread_bps(bar)
-    slip_bps = max(cm.min_half_spread_bps, half_spread, atr_component)
+        atr_value = max(0.0, _coerce_float(atr_pct, 0.0))
+    base_bps = atr_value * cm.atr_k * 10_000.0
+    half_spread = _estimate_half_spread_bps(bar, cm)
+    slip_bps = max(base_bps, half_spread, cm.min_half_spread_bps)
     fees_bps = max(0.0, _coerce_float(cm.fixed_bps, 0.0))
     direction = 1.0 if quantity > 0 else -1.0
     price_after = price * (1.0 + direction * slip_bps / 10_000.0)
