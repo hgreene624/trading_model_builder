@@ -578,6 +578,22 @@ def backtest_atr_breakout(
     blocked_by_cooldown = 0
 
     log_per_trade = logger.isEnabledFor(logging.DEBUG) and _env_flag("LOG_TRADES", False)
+    try:
+        log_sample_every = max(1, int(os.getenv("LOG_TRADES_SAMPLE", "1")))
+    except ValueError:
+        log_sample_every = 1
+    try:
+        log_sample_head = max(0, int(os.getenv("LOG_TRADES_HEAD", "0")))
+    except ValueError:
+        log_sample_head = 0
+    trade_log_counter = 0
+
+    def _should_log_trade(counter: int) -> bool:
+        if log_sample_head > 0 and counter <= log_sample_head:
+            return True
+        if log_sample_every <= 1:
+            return True
+        return counter % log_sample_every == 0
 
     def _safe_price(value: Any, fallback: float) -> float:
         out = _coerce_float(value, fallback)
@@ -833,7 +849,9 @@ def backtest_atr_breakout(
             state_tracking["exit_count"] = exit_count
 
             if log_per_trade:
-                logger.debug(
+                trade_log_counter += 1
+                if _should_log_trade(trade_log_counter):
+                    logger.debug(
                     "%s,%s,%s,qty=%.6f,%.4f->%.4f,slip_bps=%.2f,fees_bps=%.2f,reason=exit,detail=%s,streaks=%s,blocks=%s",
                     ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
                     symbol,
@@ -915,16 +933,20 @@ def backtest_atr_breakout(
                 state_tracking["entry_count"] = entry_count
 
                 if log_per_trade:
-                    entry_price_before = float(entry_breakdown.get("price_before", entry_decision_price))
-                    entry_price_after = float(
-                        entry_breakdown.get("price_after", entry_breakdown.get("fill_price", entry_decision_price))
-                    )
-                    logger.debug(
-                        "%s,%s,%s,qty=%.6f,%.4f->%.4f,slip_bps=%.2f,fees_bps=%.2f,reason=enter,streaks=%s,blocks=%s",
-                        ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
-                        symbol,
-                        "long",
-                        float(position_qty),
+                    trade_log_counter += 1
+                    if _should_log_trade(trade_log_counter):
+                        entry_price_before = float(entry_breakdown.get("price_before", entry_decision_price))
+                        entry_price_after = float(
+                            entry_breakdown.get(
+                                "price_after", entry_breakdown.get("fill_price", entry_decision_price)
+                            )
+                        )
+                        logger.debug(
+                            "%s,%s,%s,qty=%.6f,%.4f->%.4f,slip_bps=%.2f,fees_bps=%.2f,reason=enter,streaks=%s,blocks=%s",
+                            ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                            symbol,
+                            "long",
+                            float(position_qty),
                         entry_price_before,
                         entry_price_after,
                         float(entry_breakdown.get("slippage_bps", 0.0)),

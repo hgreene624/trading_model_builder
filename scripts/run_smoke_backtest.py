@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 from src.backtest.metrics import TRADING_DAYS, max_drawdown, summarize_costs
 from src.models.atr_breakout import backtest_single
 from src.utils.logging_setup import setup_logging
+from src.storage import get_ohlcv_root
 
 
 def _parse_args() -> argparse.Namespace:
@@ -46,7 +47,70 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--label", default="")
+    parser.add_argument("--fast", action="store_true", help="Use deterministic fast-mode defaults.")
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="Do not attempt network backfill; skip gracefully if data missing.",
+    )
+    parser.add_argument(
+        "--max-bars",
+        type=int,
+        default=None,
+        help="If provided, limit processing to approximately the most recent N bars.",
+    )
     return parser.parse_args()
+
+
+def _arg_was_provided(flag: str) -> bool:
+    flag = flag.strip()
+    if not flag.startswith("--"):
+        flag = f"--{flag}"
+    for token in sys.argv[1:]:
+        if token == flag:
+            return True
+        if token.startswith(f"{flag}="):
+            return True
+    return False
+
+
+def _apply_fast_defaults(args: argparse.Namespace) -> None:
+    if not args.fast:
+        return
+
+    overrides = {
+        "tickers": ("--tickers", "SPY"),
+        "start": ("--start", "2023-01-01"),
+        "end": ("--end", "2023-06-30"),
+        "k_atr_buffer": ("--k-atr-buffer", 0.0),
+        "persist_n": ("--persist-n", 1),
+        "cost_enabled": ("--cost-enabled", 1),
+        "fixed_bps": ("--fixed-bps", 0.5),
+        "atr_k": ("--atr-k", 0.25),
+        "min_hs_bps": ("--min-hs-bps", 1.0),
+    }
+
+    for attr, (flag, value) in overrides.items():
+        if not _arg_was_provided(flag):
+            setattr(args, attr, value)
+
+    if args.exec_delay_bars is None and not _arg_was_provided("--exec-delay-bars"):
+        args.exec_delay_bars = 0
+    if not _arg_was_provided("--exec-fill-where"):
+        args.exec_fill_where = "close"
+
+
+def _has_cached_data(symbol: str, timeframe: str = "1D") -> bool:
+    root = get_ohlcv_root()
+    sym = symbol.upper().replace("/", "_")
+    tf = (timeframe or "1D").upper()
+    for provider in ("alpaca", "yahoo"):
+        provider_dir = root / provider / sym / tf
+        if provider_dir.exists():
+            for candidate in provider_dir.glob("*.parquet"):
+                if candidate.is_file():
+                    return True
+    return False
 
 
 def _ensure_env(args: argparse.Namespace) -> None:
@@ -79,6 +143,14 @@ def _safe_float(value) -> float | None:
 
 def main() -> None:
     args = _parse_args()
+    _apply_fast_defaults(args)
+    if args.fast:
+        os.environ.setdefault("SMOKE_FAST", "1")
+        os.environ.setdefault("LOG_TRADES_SAMPLE", os.getenv("LOG_TRADES_SAMPLE", "10"))
+        os.environ.setdefault("LOG_TRADES_HEAD", os.getenv("LOG_TRADES_HEAD", "50"))
+    os.environ["SMOKE_CACHE_ONLY"] = "1" if args.cache_only else os.environ.get("SMOKE_CACHE_ONLY", "0")
+    if args.max_bars is not None and args.max_bars < 0:
+        args.max_bars = None
     _ensure_env(args)
     setup_logging()
 
@@ -86,8 +158,17 @@ def main() -> None:
     np.random.seed(args.seed)
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    start = pd.Timestamp(args.start)
+    tickers_requested = list(tickers)
+    start_requested = pd.Timestamp(args.start)
     end = pd.Timestamp(args.end)
+
+    if args.max_bars:
+        approx_days = max(int(args.max_bars), 1)
+        candidate_start = end - pd.Timedelta(days=approx_days)
+        if candidate_start > start_requested:
+            start_requested = candidate_start
+
+    start = start_requested
 
     trades_frames: List[pd.DataFrame] = []
     equity_post_series: List[pd.Series] = []
@@ -95,37 +176,62 @@ def main() -> None:
     metadata: List[Dict] = []
 
     failures: List[Dict[str, str]] = []
-
-    for symbol in tickers:
-        try:
-            result = backtest_single(
-                symbol=symbol,
-                start=start,
-                end=end,
-                breakout_n=20,
-                exit_n=10,
-                atr_n=14,
-                starting_equity=100_000.0,
-                atr_multiple=2.0,
-                k_atr_buffer=args.k_atr_buffer,
-                persist_n=max(1, args.persist_n),
-                enable_costs=bool(args.cost_enabled),
-                delay_bars=max(0, args.exec_delay_bars),
-                execution=args.exec_fill_where,
+    skip_run = False
+    skip_reason = ""
+    cache_missing: List[str] = []
+    loop_tickers = list(tickers)
+    if args.cache_only:
+        cache_map = {sym: _has_cached_data(sym) for sym in tickers}
+        loop_tickers = [sym for sym, has in cache_map.items() if has]
+        cache_missing = [sym for sym, has in cache_map.items() if not has]
+        if cache_missing:
+            failures.extend({"symbol": sym, "error": "cache-missing"} for sym in cache_missing)
+            missing_str = ", ".join(cache_missing)
+            print(f"Cache-only mode: missing cached data for {missing_str}.")
+        if not loop_tickers:
+            skip_run = True
+            skip_reason = (
+                f"cache-only: missing cached data for {', '.join(cache_missing) or 'requested symbols'}"
             )
-        except Exception as exc:  # pragma: no cover - defensive path
-            failures.append({"symbol": symbol, "error": str(exc)})
-            continue
-        metadata.append(result.get("meta", {}))
-        trades_df = result.get("trades_df")
-        if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
-            trades_frames.append(trades_df.copy())
-        equity_post = result.get("equity")
-        if isinstance(equity_post, pd.Series) and len(equity_post):
-            equity_post_series.append(equity_post.astype(float))
-        equity_pre = result.get("equity_pre_cost")
-        if isinstance(equity_pre, pd.Series) and len(equity_pre):
-            equity_pre_series.append(equity_pre.astype(float))
+
+    tickers_processed: List[str] = []
+
+    if not skip_run:
+        for symbol in loop_tickers:
+            try:
+                result = backtest_single(
+                    symbol=symbol,
+                    start=start,
+                    end=end,
+                    breakout_n=20,
+                    exit_n=10,
+                    atr_n=14,
+                    starting_equity=100_000.0,
+                    atr_multiple=2.0,
+                    k_atr_buffer=args.k_atr_buffer,
+                    persist_n=max(1, args.persist_n),
+                    enable_costs=bool(args.cost_enabled),
+                    delay_bars=max(0, args.exec_delay_bars),
+                    execution=args.exec_fill_where,
+                )
+            except Exception as exc:  # pragma: no cover - defensive path
+                failures.append({"symbol": symbol, "error": str(exc)})
+                if args.cache_only:
+                    skip_run = True
+                    skip_reason = f"cache-only: {exc}"
+                    break
+                continue
+            tickers_processed.append(symbol)
+            metadata.append(result.get("meta", {}))
+            trades_df = result.get("trades_df")
+            if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+                trades_frames.append(trades_df.copy())
+            equity_post = result.get("equity")
+            if isinstance(equity_post, pd.Series) and len(equity_post):
+                equity_post_series.append(equity_post.astype(float))
+            equity_pre = result.get("equity_pre_cost")
+            if isinstance(equity_pre, pd.Series) and len(equity_pre):
+                equity_pre_series.append(equity_pre.astype(float))
 
     combined_trades = pd.concat(trades_frames, ignore_index=True) if trades_frames else pd.DataFrame()
     required_cols = ["time", "symbol", "qty", "price_before", "price_after", "notional", "slip_bps", "fees_bps"]
@@ -172,7 +278,7 @@ def main() -> None:
 
     summary = {
         "inputs": {
-            "tickers": tickers,
+            "tickers": tickers_requested,
             "start": str(start),
             "end": str(end),
             "k_atr_buffer": float(args.k_atr_buffer),
@@ -187,6 +293,10 @@ def main() -> None:
             "exec_fill_where": args.exec_fill_where,
             "seed": int(args.seed),
             "label": args.label,
+            "fast_mode": bool(args.fast),
+            "cache_only": bool(args.cache_only),
+            "max_bars": int(args.max_bars) if args.max_bars else None,
+            "tickers_processed": tickers_processed,
         },
         "metrics": {
             "pre_cost_cagr": _safe_float(cost_summary.get("pre_cost_cagr")),
@@ -202,6 +312,11 @@ def main() -> None:
         "counters": counters,
         "failures": failures,
     }
+    summary["skipped"] = bool(skip_run)
+    if skip_run:
+        summary["skip_reason"] = skip_reason or "cache data missing"
+    if cache_missing:
+        summary["cache_missing"] = cache_missing
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     label = args.label.strip().replace(" ", "_") or f"seed{args.seed}"
@@ -231,6 +346,12 @@ def main() -> None:
             log_target.write_text("", encoding="utf-8")
     else:
         log_target.write_text("", encoding="utf-8")
+
+    if skip_run and args.cache_only:
+        cache_note = run_dir / "cache_status.txt"
+        cache_note.write_text("cache missing\n", encoding="utf-8")
+        print(f"Smoke run skipped (cache-only). Artifacts saved to {run_dir} | reason={skip_reason}")
+        return
 
     post_cagr = summary["metrics"].get("post_cost_cagr")
     drag_bps = summary["metrics"].get("annualized_drag_bps")

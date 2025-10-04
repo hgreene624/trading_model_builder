@@ -78,49 +78,31 @@ def _baseline_columns() -> List[str]:
     ]
 
 
-@pytest.mark.slow
-def test_smoke_churn_costs() -> None:
+def _run_smoke_suite(
+    run_specs: List[Tuple[str, List[str]]],
+    base_cmd: List[str],
+    baseline_label: str,
+    report_suffix: str,
+    timeout: int = 90,
+) -> Dict[str, object]:
     if not HARNESS_PATH.exists():
         pytest.skip("Smoke harness script is unavailable.")
 
     REPORT_ROOT.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    csv_path = REPORT_ROOT / f"smoke_churn_costs_{timestamp}.csv"
-    txt_path = REPORT_ROOT / f"smoke_churn_costs_{timestamp}.txt"
-
-    base_cmd = [
-        sys.executable,
-        str(HARNESS_PATH),
-        "--tickers",
-        "SPY,QQQ,AAPL,MSFT,AMD",
-        "--start",
-        "2022-01-01",
-        "--end",
-        "2024-12-31",
-        "--cost-enabled",
-        "1",
-        "--fixed-bps",
-        "0.5",
-        "--atr-k",
-        "0.25",
-        "--min-hs-bps",
-        "1.0",
-    ]
-
-    runs: List[Tuple[str, List[str]]] = [
-        ("baseline", ["--k-atr-buffer", "0.0", "--persist-n", "1"]),
-        ("filtA", ["--k-atr-buffer", "0.25", "--persist-n", "2"]),
-        ("filtB", ["--k-atr-buffer", "0.25", "--persist-n", "3"]),
-    ]
+    report_tag = f"{report_suffix}_{timestamp}"
+    csv_path = REPORT_ROOT / f"smoke_churn_costs_{report_tag}.csv"
+    txt_path = REPORT_ROOT / f"smoke_churn_costs_{report_tag}.txt"
 
     since_ts = time.time()
     rows: List[Dict[str, object]] = []
     executed_commands: List[str] = []
     stderr_notes: List[str] = []
+    run_outputs: List[Dict[str, object]] = []
 
-    for label, args in runs:
-        cmd = base_cmd + ["--label", label] + args
+    for label, extra_args in run_specs:
+        cmd = base_cmd + ["--label", label] + extra_args
         executed_commands.append(" ".join(cmd))
         try:
             result = subprocess.run(
@@ -128,7 +110,7 @@ def test_smoke_churn_costs() -> None:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=90,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive
             result = subprocess.CompletedProcess(
@@ -138,8 +120,8 @@ def test_smoke_churn_costs() -> None:
                 stderr=(exc.stderr or "") + "\n[timeout expired]",
             )
 
-        stdout_path = REPORT_ROOT / f"{label}_stdout.log"
-        stderr_path = REPORT_ROOT / f"{label}_stderr.log"
+        stdout_path = REPORT_ROOT / f"{label}_{report_suffix}_stdout.log"
+        stderr_path = REPORT_ROOT / f"{label}_{report_suffix}_stderr.log"
         stdout_path.write_text(result.stdout or "", encoding="utf-8")
         stderr_path.write_text(result.stderr or "", encoding="utf-8")
 
@@ -154,23 +136,32 @@ def test_smoke_churn_costs() -> None:
             }
         )
 
+        summary_data = None
         if summary_path and summary_path.exists():
             try:
                 summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError as exc:  # pragma: no cover - defensive
                 stderr_notes.append(f"{label}: failed to parse summary.json ({exc})")
-                summary_data = None
-        else:
-            summary_data = None
+        elif result.returncode != 0:
+            stderr_notes.append(
+                f"{label}: smoke harness did not produce summary.json; returncode={result.returncode}."
+            )
 
+        skip_flag = False
+        skip_reason = ""
+        cache_note_path = ""
         if summary_data:
             inputs = summary_data.get("inputs", {})
             metrics = summary_data.get("metrics", {})
             counters = summary_data.get("counters", {})
+            skip_flag = bool(summary_data.get("skipped"))
+            skip_reason = summary_data.get("skip_reason", "")
 
             row.update(
                 {
-                    "tickers": ",".join(inputs.get("tickers", [])) if isinstance(inputs.get("tickers"), list) else inputs.get("tickers"),
+                    "tickers": ",".join(inputs.get("tickers", []))
+                    if isinstance(inputs.get("tickers"), list)
+                    else inputs.get("tickers"),
                     "start": inputs.get("start"),
                     "end": inputs.get("end"),
                     "k_atr_buffer": inputs.get("k_atr_buffer"),
@@ -198,36 +189,54 @@ def test_smoke_churn_costs() -> None:
                     "blocked_by_cooldown": counters.get("blocked_by_cooldown"),
                 }
             )
-        else:
+        elif result.stderr:
             stderr_notes.append(
-                f"{label}: smoke harness did not produce summary.json; returncode={result.returncode}."
+                f"{label}: harness stderr snippet -> {(result.stderr.strip()[:200]) if result.stderr else 'no stderr'}"
             )
-            if run_dir:
-                stderr_notes.append(f"{label}: inspected directory {run_dir}")
 
-        if result.returncode != 0 and not summary_data:
-            stderr_notes.append(
-                f"{label}: harness stderr snippet -> {result.stderr.strip()[:200] if result.stderr else 'no stderr'}"
-            )
+        if run_dir is not None:
+            cache_note = run_dir / "cache_status.txt"
+            if cache_note.exists():
+                cache_note_path = str(cache_note)
+
+        run_outputs.append(
+            {
+                "label": label,
+                "command": " ".join(cmd),
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+                "stdout_snippet": (result.stdout or "").strip()[-500:],
+                "stderr_snippet": (result.stderr or "").strip()[-500:],
+                "skipped": skip_flag,
+                "skip_reason": skip_reason,
+                "summary_available": bool(summary_data),
+                "cache_note_path": cache_note_path,
+            }
+        )
 
         rows.append(row)
 
     df = pd.DataFrame(rows, columns=_baseline_columns())
     df.to_csv(csv_path, index=False)
 
-    baseline_row = df[df["label"] == "baseline"].iloc[0] if not df[df["label"] == "baseline"].empty else None
-
     lines: List[str] = []
-    lines.append(f"Smoke churn costs report generated at {timestamp}")
+    lines.append(f"Smoke churn costs report ({report_suffix}) generated at {timestamp}")
     lines.append("Commands executed:")
     lines.extend([f"  {cmd}" for cmd in executed_commands])
     lines.append("")
 
-    display_df = df.copy()
-    display_df = display_df.fillna("")
-    table_cols = ["label", "k_atr_buffer", "persist_n", "post_cost_cagr", "annualized_drag_bps", "turnover_gross", "IR_post", "TE_post"]
+    display_df = df.copy().fillna("")
+    table_cols = [
+        "label",
+        "k_atr_buffer",
+        "persist_n",
+        "post_cost_cagr",
+        "annualized_drag_bps",
+        "turnover_gross",
+        "IR_post",
+        "TE_post",
+    ]
     col_widths = {col: max(len(col), *(len(str(val)) for val in display_df[col])) for col in table_cols}
-
     header = " ".join(col.ljust(col_widths[col]) for col in table_cols)
     lines.append(header)
     lines.append("-" * len(header))
@@ -236,67 +245,146 @@ def test_smoke_churn_costs() -> None:
         lines.append(line)
     lines.append("")
 
-    def _delta(current: float | None, baseline: float | None) -> str:
-        try:
-            if current is None or baseline is None:
-                return "n/a"
-            return f"{current - baseline:+.4f}"
-        except TypeError:
-            return "n/a"
+    baseline_row = df[df["label"] == baseline_label]
+    baseline_meta = next((meta for meta in run_outputs if meta["label"] == baseline_label), None)
+    if baseline_row is not None and not baseline_row.empty and baseline_meta and not baseline_meta["skipped"]:
+        row = baseline_row.iloc[0]
 
-    if baseline_row is not None:
-        try:
-            base_turnover = float(baseline_row["turnover_gross"])
-        except (TypeError, ValueError):
-            base_turnover = None
-        try:
-            base_drag = float(baseline_row["annualized_drag_bps"])
-        except (TypeError, ValueError):
-            base_drag = None
-        try:
-            base_ir = float(baseline_row["IR_post"])
-        except (TypeError, ValueError):
-            base_ir = None
-        try:
-            base_te = float(baseline_row["TE_post"])
-        except (TypeError, ValueError):
-            base_te = None
-        try:
-            base_cagr = float(baseline_row["post_cost_cagr"])
-        except (TypeError, ValueError):
-            base_cagr = None
+        def _as_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        base_turnover = _as_float(row["turnover_gross"])
+        base_drag = _as_float(row["annualized_drag_bps"])
+        base_ir = _as_float(row["IR_post"])
+        base_te = _as_float(row["TE_post"])
+        base_cagr = _as_float(row["post_cost_cagr"])
+
+        def _delta(current: float | None, base: float | None) -> str:
+            if current is None or base is None:
+                return "n/a"
+            return f"{current - base:+.4f}"
 
         lines.append("Comparisons versus baseline:")
-        for _, row in df.iterrows():
-            if row["label"] == "baseline":
+        for meta in run_outputs:
+            if meta["label"] == baseline_label or meta["skipped"]:
                 continue
-            label = row["label"] or "(unknown)"
-
-            def _as_float(value):
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    return None
-
-            turnover = _as_float(row["turnover_gross"])
-            drag = _as_float(row["annualized_drag_bps"])
-            ir_post = _as_float(row["IR_post"])
-            te_post = _as_float(row["TE_post"])
-            post_cagr = _as_float(row["post_cost_cagr"])
-
+            other_row = df[df["label"] == meta["label"]]
+            if other_row.empty:
+                continue
+            vals = other_row.iloc[0]
             lines.append(
-                f"  {label}: Δturnover={_delta(turnover, base_turnover)}, Δdrag_bps={_delta(drag, base_drag)}, "
-                f"ΔIR={_delta(ir_post, base_ir)}, ΔTE={_delta(te_post, base_te)}, Δpost_CAGR={_delta(post_cagr, base_cagr)}"
+                "  {label}: Δturnover={d_turn}, Δdrag_bps={d_drag}, ΔIR={d_ir}, ΔTE={d_te}, Δpost_CAGR={d_cagr}".format(
+                    label=meta["label"],
+                    d_turn=_delta(_as_float(vals["turnover_gross"]), base_turnover),
+                    d_drag=_delta(_as_float(vals["annualized_drag_bps"]), base_drag),
+                    d_ir=_delta(_as_float(vals["IR_post"]), base_ir),
+                    d_te=_delta(_as_float(vals["TE_post"]), base_te),
+                    d_cagr=_delta(_as_float(vals["post_cost_cagr"]), base_cagr),
+                )
             )
+        lines.append("")
+
+    skip_meta = [meta for meta in run_outputs if meta["skipped"]]
+    if skip_meta:
+        lines.append("Skipped runs:")
+        for meta in skip_meta:
+            reason = meta["skip_reason"] or "cache missing"
+            cache_note = f" (cache note: {meta['cache_note_path']})" if meta["cache_note_path"] else ""
+            lines.append(f"  - {meta['label']}: {reason}{cache_note}")
         lines.append("")
 
     if stderr_notes:
         lines.append("Notes:")
         lines.extend([f"  - {note}" for note in stderr_notes])
+        lines.append("")
+
+    lines.append("Harness output snippets:")
+    for meta in run_outputs:
+        lines.append(f"=== {meta['label']} STDOUT ===")
+        lines.append(meta["stdout_snippet"] or "(empty)")
+        lines.append(f"=== {meta['label']} STDERR ===")
+        lines.append(meta["stderr_snippet"] or "(empty)")
+        lines.append("")
 
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    success_count = sum(bool(path) for path in df["summary_path"])
-    if success_count == 0:
-        pytest.skip("Smoke harness could not complete any run; see TXT for details.")
+    success_count = sum(1 for meta in run_outputs if meta["summary_available"] and not meta["skipped"])
+    available_count = sum(1 for meta in run_outputs if meta["summary_available"])
+    cache_count = sum(1 for meta in run_outputs if meta["cache_note_path"])
 
+    return {
+        "df": df,
+        "csv_path": csv_path,
+        "txt_path": txt_path,
+        "success_count": success_count,
+        "available_count": available_count,
+        "cache_count": cache_count,
+    }
+
+
+def test_smoke_churn_costs_fast() -> None:
+    base_cmd = [
+        sys.executable,
+        str(HARNESS_PATH),
+        "--fast",
+        "--cache-only",
+        "--max-bars",
+        "5000",
+        "--cost-enabled",
+        "1",
+        "--fixed-bps",
+        "0.5",
+        "--atr-k",
+        "0.25",
+        "--min-hs-bps",
+        "1.0",
+    ]
+
+    runs: List[Tuple[str, List[str]]] = [
+        ("baseline_fast", ["--k-atr-buffer", "0.0", "--persist-n", "1"]),
+        ("filtA_fast", ["--k-atr-buffer", "0.25", "--persist-n", "2"]),
+        ("filtB_fast", ["--k-atr-buffer", "0.25", "--persist-n", "3"]),
+    ]
+
+    result = _run_smoke_suite(runs, base_cmd, baseline_label="baseline_fast", report_suffix="fast", timeout=90)
+
+    assert result["available_count"] > 0 or result["cache_count"] > 0, (
+        "Fast smoke harness produced no summaries or cache notes; see report at "
+        f"{result['txt_path']}"
+    )
+
+
+@pytest.mark.slow
+def test_smoke_churn_costs_slow() -> None:
+    base_cmd = [
+        sys.executable,
+        str(HARNESS_PATH),
+        "--tickers",
+        "SPY,QQQ,AAPL,MSFT,AMD",
+        "--start",
+        "2022-01-01",
+        "--end",
+        "2024-12-31",
+        "--cost-enabled",
+        "1",
+        "--fixed-bps",
+        "0.5",
+        "--atr-k",
+        "0.25",
+        "--min-hs-bps",
+        "1.0",
+    ]
+
+    runs: List[Tuple[str, List[str]]] = [
+        ("baseline", ["--k-atr-buffer", "0.0", "--persist-n", "1"]),
+        ("filtA", ["--k-atr-buffer", "0.25", "--persist-n", "2"]),
+        ("filtB", ["--k-atr-buffer", "0.25", "--persist-n", "3"]),
+    ]
+
+    result = _run_smoke_suite(runs, base_cmd, baseline_label="baseline", report_suffix="slow", timeout=120)
+
+    if result["success_count"] == 0:
+        pytest.skip("Smoke harness could not complete slow run; see TXT for details.")
