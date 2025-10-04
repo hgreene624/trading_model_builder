@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import warnings
 
+from src.utils.tri_panel import render_tri_panel
+
 # ---------- settings ----------
 LOG_DIR = Path("storage/logs/ea")
 DEFAULT_PAGE_TITLE = "EA Train/Test Inspector"
@@ -500,6 +502,50 @@ def main():
         starting_equity=starting_equity,
     )
     st.plotly_chart(fig2, use_container_width=True)
+
+    tri_curve = pd.Series(dtype=float)
+    try:
+        current_gen = int(st.session_state.get("ea_inspect_gen", 0))
+    except Exception:
+        current_gen = None
+    if current_gen is not None and not eval_df.empty and "gen" in eval_df.columns:
+        gen_slice = eval_df[eval_df["gen"] == current_gen]
+        if not gen_slice.empty and "total_return" in gen_slice.columns:
+            try:
+                best_row = gen_slice.loc[gen_slice["total_return"].idxmax()]
+                params = _row_params(best_row)
+                ec_train = run_equity_curve(
+                    strategy,
+                    tickers,
+                    train_start,
+                    train_end,
+                    starting_equity,
+                    params,
+                )
+                end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
+                ec_test = run_equity_curve(
+                    strategy,
+                    tickers,
+                    test_start,
+                    test_end,
+                    end_equity,
+                    params,
+                )
+                ec = pd.concat([ec_train, ec_test], ignore_index=True)
+                if {"date", "equity"}.issubset(ec.columns):
+                    ec = ec.dropna(subset=["date", "equity"])
+                    if not ec.empty:
+                        ec["date"] = pd.to_datetime(ec["date"])
+                        ec = ec.sort_values("date").drop_duplicates(subset=["date"])
+                        tri_curve = ec.set_index("date")["equity"]
+            except Exception as tri_err:  # pragma: no cover - defensive UI helper
+                _dbg(f"tri_panel: {type(tri_err).__name__}: {tri_err}")
+
+    render_tri_panel(
+        tri_curve,
+        test_start=test_start,
+        test_end=test_end,
+    )
 
     # Debug trace from the equity provider
     with st.expander("Debug: equity provider trace", expanded=False):

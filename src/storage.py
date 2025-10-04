@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 from datetime import datetime
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # -----------------------------------------------------------------------------
 # Core paths & utils
@@ -571,6 +575,109 @@ def get_ohlcv_root() -> Path:
     root.mkdir(parents=True, exist_ok=True)
     return root
 
+
+def load_price_history(
+    symbol: str,
+    *,
+    timeframe: str = "1D",
+    start: "datetime | pd.Timestamp | None" = None,
+    end: "datetime | pd.Timestamp | None" = None,
+) -> "pd.DataFrame":
+    """
+    Lightweight wrapper around src.data.loader.get_ohlcv that normalizes columns.
+    Defaults to roughly a 3-year window when dates are omitted.
+    """
+    import pandas as pd
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        from src.data.loader import get_ohlcv
+    except Exception as exc:  # pragma: no cover - surface loader import errors
+        logger.exception("load_price_history failed to import get_ohlcv")
+        raise RuntimeError("load_price_history requires src.data.loader.get_ohlcv") from exc
+
+    def _coerce(ts: "datetime | pd.Timestamp | None") -> "datetime | None":
+        if ts is None:
+            return None
+        if isinstance(ts, pd.Timestamp):
+            ts = ts.to_pydatetime()
+        elif not isinstance(ts, datetime):
+            parsed = pd.to_datetime(ts)
+            if isinstance(parsed, pd.DatetimeIndex):
+                parsed = parsed[0]
+            ts = parsed.to_pydatetime()
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
+
+    symbol_norm = (symbol or "").strip().upper()
+    if not symbol_norm:
+        raise ValueError("symbol is required")
+
+    end_dt = _coerce(end)
+    if end_dt is None:
+        end_dt = datetime.now(timezone.utc)
+    start_dt = _coerce(start)
+    if start_dt is None:
+        start_dt = end_dt - timedelta(days=365 * 3)
+
+    logger.debug(
+        "load_price_history request",
+        extra={
+            "symbol": symbol_norm,
+            "timeframe": timeframe,
+            "start": start_dt.isoformat() if start_dt else None,
+            "end": end_dt.isoformat() if end_dt else None,
+        },
+    )
+    try:
+        df = get_ohlcv(symbol_norm, start_dt, end_dt, timeframe=timeframe)
+    except Exception:
+        logger.exception(
+            "load_price_history get_ohlcv raised",
+        )
+        raise
+    if df is None:
+        logger.warning("load_price_history returned None", extra={"symbol": symbol_norm})
+        return df
+    if df.empty:
+        logger.info("load_price_history returned empty frame", extra={"symbol": symbol_norm})
+        return df
+
+    df = df.copy()
+    cols_lower = {str(col).lower(): col for col in df.columns}
+
+    close_col = cols_lower.get("close")
+    if close_col and close_col != "close":
+        df = df.rename(columns={close_col: "close"})
+    elif "close" not in df.columns:
+        for alias in ("c", "price"):
+            if alias in cols_lower:
+                df = df.rename(columns={cols_lower[alias]: "close"})
+                break
+
+    adj_col = cols_lower.get("adj_close")
+    if adj_col and adj_col != "adj_close":
+        df = df.rename(columns={adj_col: "adj_close"})
+    elif "adj_close" not in df.columns:
+        for alias in ("adjusted_close", "adjclose"):
+            if alias in cols_lower:
+                df = df.rename(columns={cols_lower[alias]: "adj_close"})
+                break
+
+    if "adj_close" not in df.columns and "close" in df.columns:
+        df["adj_close"] = df["close"]
+
+    logger.debug(
+        "load_price_history normalized columns",
+        extra={
+            "symbol": symbol_norm,
+            "columns": list(df.columns),
+            "rows": int(len(df)),
+        },
+    )
+    return df
+
 # ----------------------------------------------------------------------
 # Strategy parameter I/O (EA / WF)
 # ----------------------------------------------------------------------
@@ -617,3 +724,4 @@ def load_strategy_params(portfolio: str, strategy: str, scope: str = "ea") -> Op
         return _read_json(path)
     except Exception:
         return None
+# Logging helper configured near module imports (see top-level logger assignment).
