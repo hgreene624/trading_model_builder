@@ -271,6 +271,117 @@ def _simulate_dynamic(items, strategy_selections, start, end, starting_equity,
 
     return {"equity": equity, "per_ticker": per_ticker, "trades_by_symbol": trades_by_symbol, "frames": frames}
 
+
+def _calc_cagr(series: pd.Series) -> float:
+    if series is None or len(series) < 2:
+        return 0.0
+    start_val = float(series.iloc[0]) if len(series) else 0.0
+    end_val = float(series.iloc[-1]) if len(series) else 0.0
+    if not (start_val > 0 and end_val > 0):
+        return 0.0
+    try:
+        delta_days = (series.index[-1] - series.index[0]).days
+    except Exception:
+        return 0.0
+    if delta_days <= 0:
+        return 0.0
+    years = delta_days / 365.25
+    if years <= 0:
+        return 0.0
+    return float((end_val / start_val) ** (1 / years) - 1.0)
+
+
+def _aggregate_cost_summary(results: dict[str, dict]) -> dict:
+    if not results:
+        return {}
+
+    frames_pre: list[pd.Series] = []
+    frames_post: list[pd.Series] = []
+    trade_tables: list[pd.DataFrame] = []
+    start_equity_total = 0.0
+
+    for symbol, res in results.items():
+        eq_post = res.get("equity")
+        eq_pre = res.get("equity_pre_cost")
+        if isinstance(eq_pre, pd.Series) and not eq_pre.empty:
+            frames_pre.append(eq_pre.rename(symbol))
+        if isinstance(eq_post, pd.Series) and not eq_post.empty:
+            frames_post.append(eq_post.rename(symbol))
+            start_equity_total += float(eq_post.iloc[0]) if len(eq_post) else 0.0
+        trades_df = res.get("trades_df")
+        if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+            trade_tables.append(trades_df.assign(symbol=symbol))
+
+    df_pre = pd.concat(frames_pre, axis=1).sort_index() if frames_pre else pd.DataFrame()
+    df_post = pd.concat(frames_post, axis=1).sort_index() if frames_post else pd.DataFrame()
+    if not df_pre.empty:
+        df_pre = df_pre.fillna(method="ffill")
+        portfolio_pre = df_pre.sum(axis=1, skipna=True)
+    else:
+        portfolio_pre = pd.Series(dtype=float)
+    if not df_post.empty:
+        df_post = df_post.fillna(method="ffill")
+        portfolio_post = df_post.sum(axis=1, skipna=True)
+    else:
+        portfolio_post = pd.Series(dtype=float)
+
+    agg_trades = pd.concat(trade_tables, ignore_index=True) if trade_tables else pd.DataFrame()
+
+    total_entry_notional = float(agg_trades["notional_entry"].sum()) if not agg_trades.empty and "notional_entry" in agg_trades else 0.0
+    total_exit_notional = float(agg_trades["notional_exit"].sum()) if not agg_trades.empty and "notional_exit" in agg_trades else 0.0
+    total_notional = total_entry_notional + total_exit_notional
+    start_equity_total = start_equity_total or 0.0
+    turnover = (total_notional / start_equity_total) if start_equity_total else 0.0
+
+    def _weighted_bps(df: pd.DataFrame, column: str, weight_col: str) -> float:
+        if df.empty or column not in df or weight_col not in df:
+            return 0.0
+        weights = df[weight_col]
+        total_weight = float(weights.sum())
+        if total_weight == 0:
+            return 0.0
+        return float((df[column] * weights).sum() / total_weight)
+
+    weighted_slippage_bps = _weighted_bps(agg_trades, "entry_slippage_bps", "notional_entry") + _weighted_bps(agg_trades, "exit_slippage_bps", "notional_exit")
+    weighted_fees_bps = _weighted_bps(agg_trades, "entry_fee_bps", "notional_entry") + _weighted_bps(agg_trades, "exit_fee_bps", "notional_exit")
+
+    total_slip_cost = float(agg_trades["entry_slippage_cost"].sum() + agg_trades["exit_slippage_cost"].sum()) if not agg_trades.empty and {"entry_slippage_cost", "exit_slippage_cost"}.issubset(agg_trades.columns) else 0.0
+    fee_cols = {"entry_fee_cost", "exit_fee_cost", "entry_fixed_cost", "exit_fixed_cost"}
+    total_fee_cost = float(agg_trades[list(fee_cols)].sum().sum()) if not agg_trades.empty and fee_cols.issubset(agg_trades.columns) else 0.0
+
+    pre_cagr = _calc_cagr(portfolio_pre)
+    post_cagr = _calc_cagr(portfolio_post)
+    annualized_drag = pre_cagr - post_cagr
+
+    return {
+        "turnover": float(turnover),
+        "weighted_slippage_bps": float(weighted_slippage_bps),
+        "weighted_fees_bps": float(weighted_fees_bps),
+        "pre_cost_cagr": float(pre_cagr),
+        "post_cost_cagr": float(post_cagr),
+        "annualized_drag": float(annualized_drag),
+        "total_slippage_cost": float(total_slip_cost),
+        "total_fee_cost": float(total_fee_cost),
+        "total_cost": float(total_slip_cost + total_fee_cost),
+    }
+
+
+def _format_cost_table(summary: dict) -> pd.DataFrame:
+    if not summary:
+        return pd.DataFrame(columns=["Metric", "Value"])
+    rows = [
+        ("Turnover (x)", f"{summary.get('turnover', 0.0):.2f}"),
+        ("Weighted Slippage (bps)", f"{summary.get('weighted_slippage_bps', 0.0):.2f}"),
+        ("Weighted Fees (bps)", f"{summary.get('weighted_fees_bps', 0.0):.2f}"),
+        ("Pre-Cost CAGR", f"{summary.get('pre_cost_cagr', 0.0):.2%}"),
+        ("Post-Cost CAGR", f"{summary.get('post_cost_cagr', 0.0):.2%}"),
+        ("Annualized Drag", f"{summary.get('annualized_drag', 0.0):.2%}"),
+        ("Total Slippage Cost", f"${summary.get('total_slippage_cost', 0.0):,.2f}"),
+        ("Total Fee Cost", f"${summary.get('total_fee_cost', 0.0):,.2f}"),
+        ("Total Cost", f"${summary.get('total_cost', 0.0):,.2f}"),
+    ]
+    return pd.DataFrame(rows, columns=["Metric", "Value"])
+
 def _symbol_price_equity_chart(symbol: str, price: pd.Series, total_eq: pd.Series, trades: list[dict] | None = None, title: str | None = None):
     """Dual-axis chart: left=total equity, right=symbol price; markers = Buy/Sell on the price line.
 
@@ -526,6 +637,13 @@ if st.button("Run Simulation", type="primary"):
                 aligned = pd.concat(curves, axis=1).fillna(method="ffill").dropna(how="all")
                 total_eq = aligned.sum(axis=1)
 
+            cost_summary = {}
+            if not alloc_mode.startswith("Dynamic"):
+                try:
+                    cost_summary = _aggregate_cost_summary(res_map)
+                except Exception:
+                    cost_summary = {}
+
             # ------- Aggregate & display -------
             if total_eq is None or total_eq.empty:
                 st.error("No equity curves produced.")
@@ -535,6 +653,10 @@ if st.button("Run Simulation", type="primary"):
                 equity_chart(total_eq, title=f"Total Equity — {p['name']}"),
                 width="stretch",
             )
+
+            if cost_summary:
+                st.subheader("Cost Attribution")
+                st.table(_format_cost_table(cost_summary))
 
             out = pd.DataFrame(per_ticker)
             st.subheader("Per-Ticker Performance")
