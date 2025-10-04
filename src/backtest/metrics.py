@@ -18,10 +18,13 @@ All functions are dependency-light (numpy/pandas only) and safe on empty inputs.
 """
 
 from __future__ import annotations
+import logging
 import numpy as np
 import pandas as pd
 
 TRADING_DAYS = 252
+
+logger = logging.getLogger("backtest.metrics")
 
 # ---------- Path/shape independent helpers ----------
 
@@ -212,7 +215,22 @@ def summarize_costs(
             )
     pre_cost_cagr = _cagr_from_index(equity_curve_pre)
     post_cost_cagr = _cagr_from_index(equity_curve_post)
-    annualized_drag_bps = float((pre_cost_cagr - post_cost_cagr) * 10_000.0)
+    pre_len = len(equity_curve_pre) if equity_curve_pre is not None else 0
+    post_len = len(equity_curve_post) if equity_curve_post is not None else 0
+    if equity_curve_pre is None or equity_curve_post is None or pre_len == 0 or post_len == 0:
+        annualized_drag_bps: float | None = None
+    else:
+        annualized_drag_bps = float((pre_cost_cagr - post_cost_cagr) * 10_000.0)
+
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "summarize_costs turnover=%.4f slip_bps=%.2f fees_bps=%.2f drag_bps=%s",
+            float(turnover_gross),
+            float(slippage_bps_weighted),
+            float(fees_bps_weighted),
+            "None" if annualized_drag_bps is None else f"{annualized_drag_bps:.2f}",
+        )
+
     return {
         "turnover_gross": float(turnover_gross),
         "turnover_avg_daily": float(turnover_avg_daily),
@@ -220,7 +238,7 @@ def summarize_costs(
         "fees_bps_weighted": float(fees_bps_weighted),
         "pre_cost_cagr": float(pre_cost_cagr),
         "post_cost_cagr": float(post_cost_cagr),
-        "annualized_drag_bps": float(annualized_drag_bps),
+        "annualized_drag_bps": float(annualized_drag_bps) if annualized_drag_bps is not None else None,
     }
 
 

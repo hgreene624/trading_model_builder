@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import math
+import logging
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -114,6 +116,41 @@ def _env_float(name: str, default: float = 0.0) -> float:
     if raw is None:
         return default
     return _coerce_float(raw, default=default)
+
+
+# ---------- Logging ----------
+
+logger = logging.getLogger("backtest.engine")
+_ENGINE_LOGGER_CONFIGURED = False
+
+
+def _ensure_engine_logger() -> None:
+    """Configure rotating file logging for the engine (idempotent)."""
+
+    global _ENGINE_LOGGER_CONFIGURED
+    log_level_name = str(os.getenv("LOG_LEVEL", "INFO")).upper()
+    log_level = getattr(logging, log_level_name, logging.INFO)
+    logger.setLevel(log_level)
+    if _ENGINE_LOGGER_CONFIGURED:
+        return
+    try:
+        log_dir = os.path.join("storage", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        has_rotating = any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
+        if not has_rotating:
+            root_logger = logging.getLogger()
+            has_rotating = any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers)
+        if not has_rotating:
+            handler = RotatingFileHandler(
+                os.path.join(log_dir, "engine.log"), maxBytes=5 * 1024 * 1024, backupCount=3
+            )
+            handler.setLevel(log_level)
+            handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+            logger.addHandler(handler)
+    except Exception:
+        # Logging is best-effort; failures should not break the engine.
+        pass
+    _ENGINE_LOGGER_CONFIGURED = True
 
 
 @dataclass
@@ -336,6 +373,8 @@ def backtest_atr_breakout(
     Defaults preserve the original behaviour (costs off, delay=0).
     """
 
+    _ensure_engine_logger()
+
     extra_params: Dict[str, Any] = {}
     if isinstance(params, dict):
         params_dict = dict(params)
@@ -471,10 +510,14 @@ def backtest_atr_breakout(
 
     entry_th = roll_high - params.atr_multiple * atr
     long_base = (df["close"] > entry_th).fillna(False)
+    long_pre_buffer = long_base.copy()
+    buffer_gate = pd.Series(True, index=df.index)
     if k_atr_buffer > 0.0:
         buffer_threshold = (prior_high + k_atr_buffer * atr)
-        long_base = long_base & (df["close"] > buffer_threshold).fillna(False)
+        buffer_gate = (df["close"] > buffer_threshold).fillna(False)
+        long_base = long_base & buffer_gate
     long_base = long_base.fillna(False)
+    buffer_gate = buffer_gate.fillna(False)
 
     if persist_n > 1:
         long_signal_series = (
@@ -522,9 +565,19 @@ def backtest_atr_breakout(
         "long_streak_max": 0,
         "entry_count": 0,
         "exit_count": 0,
+        "blocked_by_buffer": 0,
+        "blocked_by_persistence": 0,
+        "blocked_by_min_hold": 0,
+        "blocked_by_cooldown": 0,
     }
     entry_count = 0
     exit_count = 0
+    blocked_by_buffer = 0
+    blocked_by_persistence = 0
+    blocked_by_min_hold = 0
+    blocked_by_cooldown = 0
+
+    log_per_trade = logger.isEnabledFor(logging.DEBUG) and _env_flag("LOG_TRADES", False)
 
     def _safe_price(value: Any, fallback: float) -> float:
         out = _coerce_float(value, fallback)
@@ -558,6 +611,29 @@ def backtest_atr_breakout(
         if long_streak_counter > state_tracking.get("long_streak_max", 0):
             state_tracking["long_streak_max"] = long_streak_counter
         state_tracking["short_streak"] = 0
+
+        base_without_buffer = bool(long_pre_buffer.iloc[i]) if i < len(long_pre_buffer) else False
+        buffer_pass_today = bool(buffer_gate.iloc[i]) if i < len(buffer_gate) else True
+        long_after_buffer = bool(long_base.iloc[i]) if i < len(long_base) else False
+        signal_today = bool(long_signal.iloc[i]) if i < len(long_signal) else False
+        if (
+            not in_pos
+            and pending_entry is None
+            and k_atr_buffer > 0.0
+            and base_without_buffer
+            and not buffer_pass_today
+        ):
+            blocked_by_buffer += 1
+            state_tracking["blocked_by_buffer"] = blocked_by_buffer
+        if (
+            not in_pos
+            and pending_entry is None
+            and persist_n > 1
+            and long_after_buffer
+            and not signal_today
+        ):
+            blocked_by_persistence += 1
+            state_tracking["blocked_by_persistence"] = blocked_by_persistence
 
         if pending_exit and in_pos:
             if i - pending_exit.get("signal_idx", i) >= delay_bars:
@@ -756,6 +832,27 @@ def backtest_atr_breakout(
             exit_count += 1
             state_tracking["exit_count"] = exit_count
 
+            if log_per_trade:
+                logger.debug(
+                    "%s,%s,%s,qty=%.6f,%.4f->%.4f,slip_bps=%.2f,fees_bps=%.2f,reason=exit,detail=%s,streaks=%s,blocks=%s",
+                    ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                    symbol,
+                    "long",
+                    float(qty),
+                    exit_price_before,
+                    exit_price_after,
+                    float(exit_breakdown.get("slippage_bps", 0.0)),
+                    float(exit_breakdown.get("commission_bps", 0.0)),
+                    exit_trigger.get("reason"),
+                    {"long": state_tracking.get("long_streak", 0), "max": state_tracking.get("long_streak_max", 0)},
+                    {
+                        "buffer": blocked_by_buffer,
+                        "persistence": blocked_by_persistence,
+                        "min_hold": blocked_by_min_hold,
+                        "cooldown": blocked_by_cooldown,
+                    },
+                )
+
             position_qty = 0.0
             in_pos = False
             entry_idx = None
@@ -816,6 +913,30 @@ def backtest_atr_breakout(
                 in_pos = True
                 entry_count += 1
                 state_tracking["entry_count"] = entry_count
+
+                if log_per_trade:
+                    entry_price_before = float(entry_breakdown.get("price_before", entry_decision_price))
+                    entry_price_after = float(
+                        entry_breakdown.get("price_after", entry_breakdown.get("fill_price", entry_decision_price))
+                    )
+                    logger.debug(
+                        "%s,%s,%s,qty=%.6f,%.4f->%.4f,slip_bps=%.2f,fees_bps=%.2f,reason=enter,streaks=%s,blocks=%s",
+                        ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                        symbol,
+                        "long",
+                        float(position_qty),
+                        entry_price_before,
+                        entry_price_after,
+                        float(entry_breakdown.get("slippage_bps", 0.0)),
+                        float(entry_breakdown.get("commission_bps", 0.0)),
+                        {"long": state_tracking.get("long_streak", 0), "max": state_tracking.get("long_streak_max", 0)},
+                        {
+                            "buffer": blocked_by_buffer,
+                            "persistence": blocked_by_persistence,
+                            "min_hold": blocked_by_min_hold,
+                            "cooldown": blocked_by_cooldown,
+                        },
+                    )
 
         current_gross = cash_gross + position_qty * price_close
         current_net = cash_net + position_qty * price_close
@@ -924,8 +1045,25 @@ def backtest_atr_breakout(
             "exit_count": int(exit_count),
             "persist_n": int(persist_n),
             "k_atr_buffer": float(k_atr_buffer),
+            "blocked_by_buffer": int(blocked_by_buffer),
+            "blocked_by_persistence": int(blocked_by_persistence),
+            "blocked_by_min_hold": int(blocked_by_min_hold),
+            "blocked_by_cooldown": int(blocked_by_cooldown),
         }
     )
+
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "run_complete symbol=%s trades=%d entries=%d exits=%d buffer_blocks=%d persistence_blocks=%d delay_bars=%d costs_enabled=%s",
+            symbol,
+            len(trades),
+            int(entry_count),
+            int(exit_count),
+            int(blocked_by_buffer),
+            int(blocked_by_persistence),
+            int(delay_bars),
+            bool(enable_costs),
+        )
 
     return {
         "equity": eq_net,
