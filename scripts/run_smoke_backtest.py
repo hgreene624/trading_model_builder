@@ -41,6 +41,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed-bps", type=float, default=float(os.getenv("COST_FIXED_BPS", 0.5)))
     parser.add_argument("--atr-k", type=float, default=float(os.getenv("COST_ATR_K", 0.25)))
     parser.add_argument("--min-hs-bps", type=float, default=float(os.getenv("COST_MIN_HS_BPS", 1.0)))
+    parser.add_argument(
+        "--use-range-impact",
+        type=int,
+        choices=[0, 1],
+        default=int(os.getenv("COST_USE_RANGE_IMPACT", 0)),
+        help="Enable range-based slippage proxy (Phase 1.2).",
+    )  # PH1.2
+    parser.add_argument(
+        "--cap-range-impact-bps",
+        type=float,
+        default=float(os.getenv("CAP_RANGE_IMPACT_BPS", 10.0)),
+        help="Cap for range-based slippage impact in bps.",
+    )  # PH1.2
     parser.add_argument("--exec-delay-bars", type=int, default=int(os.getenv("EXEC_DELAY_BARS", 0)))
     parser.add_argument(
         "--exec-fill-where", choices=["open", "close"], default=os.getenv("EXEC_FILL_WHERE", "close")
@@ -88,6 +101,8 @@ def _apply_fast_defaults(args: argparse.Namespace) -> None:
         "fixed_bps": ("--fixed-bps", 0.5),
         "atr_k": ("--atr-k", 0.25),
         "min_hs_bps": ("--min-hs-bps", 1.0),
+        "use_range_impact": ("--use-range-impact", 0),  # PH1.2
+        "cap_range_impact_bps": ("--cap-range-impact-bps", 10.0),  # PH1.2
     }
 
     for attr, (flag, value) in overrides.items():
@@ -118,6 +133,8 @@ def _ensure_env(args: argparse.Namespace) -> None:
     os.environ["COST_FIXED_BPS"] = str(args.fixed_bps)
     os.environ["COST_ATR_K"] = str(args.atr_k)
     os.environ["COST_MIN_HS_BPS"] = str(args.min_hs_bps)
+    os.environ["COST_USE_RANGE_IMPACT"] = str(int(bool(args.use_range_impact)))  # PH1.2
+    os.environ["CAP_RANGE_IMPACT_BPS"] = str(float(args.cap_range_impact_bps))  # PH1.2
     os.environ["EXEC_DELAY_BARS"] = str(args.exec_delay_bars)
     os.environ["EXEC_FILL_WHERE"] = args.exec_fill_where
     os.environ.setdefault("LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO"))
@@ -127,7 +144,7 @@ def _aggregate_equity(series_list: List[pd.Series]) -> pd.Series | None:
     if not series_list:
         return None
     eq_df = pd.concat(series_list, axis=1)
-    eq_df = eq_df.fillna(method="ffill").dropna(how="all")
+    eq_df = eq_df.ffill().dropna(how="all")  # PH1.2
     aggregated = eq_df.sum(axis=1)
     return aggregated.astype(float)
 
@@ -276,6 +293,30 @@ def main() -> None:
         for key in counter_keys:
             counters[key] += int(runtime.get(key, 0) or 0)
 
+    cost_inputs_effective = {
+        "atr_k": float(args.atr_k),
+        "min_half_spread_bps": float(args.min_hs_bps),
+        "use_range_impact": bool(args.use_range_impact),
+        "cap_range_impact_bps": float(args.cap_range_impact_bps),
+    }
+    for meta in metadata:  # PH1.2: reflect the actual knobs observed in engine metadata
+        if not isinstance(meta, dict):
+            continue
+        meta_inputs = meta.get("cost_inputs")
+        if not isinstance(meta_inputs, dict):
+            continue
+        for key in cost_inputs_effective:
+            if key not in meta_inputs:
+                continue
+            value = meta_inputs[key]
+            if key == "use_range_impact":
+                cost_inputs_effective[key] = bool(value)
+            else:
+                try:
+                    cost_inputs_effective[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+
     summary = {
         "inputs": {
             "tickers": tickers_requested,
@@ -287,8 +328,10 @@ def main() -> None:
             "reentry_cooldown_days": int(max(0, args.reentry_cooldown_days)),
             "cost_enabled": int(args.cost_enabled),
             "fixed_bps": float(args.fixed_bps),
-            "atr_k": float(args.atr_k),
-            "min_half_spread_bps": float(args.min_hs_bps),
+            "atr_k": cost_inputs_effective["atr_k"],  # PH1.2
+            "min_half_spread_bps": cost_inputs_effective["min_half_spread_bps"],  # PH1.2
+            "use_range_impact": cost_inputs_effective["use_range_impact"],  # PH1.2
+            "cap_range_impact_bps": cost_inputs_effective["cap_range_impact_bps"],  # PH1.2
             "exec_delay_bars": int(max(0, args.exec_delay_bars)),
             "exec_fill_where": args.exec_fill_where,
             "seed": int(args.seed),
