@@ -441,6 +441,35 @@ with left:
         st.caption("Parameter search bounds")
 
 
+        # Streamlit reruns the script on every interaction. When users drag one
+        # slider handle, the other sliders briefly render using the *previous*
+        # EA bounds stored in `ea_cfg`. Because we also shrink the track width to
+        # those bounds, the new handle position can fall outside the temporary
+        # limits and Streamlit will snap it back to the older defaults. Pull the
+        # pending widget state into the config before computing the padded
+        # domains so that every rerun sees the latest values.
+        _pending_slider_state = {
+            "breakout_n range": ("breakout_n_min", "breakout_n_max", int),
+            "exit_n range": ("exit_n_min", "exit_n_max", int),
+            "atr_n range": ("atr_n_min", "atr_n_max", int),
+            "holding_period_limit range": ("hold_min", "hold_max", int),
+            "atr_multiple range": ("atr_multiple_min", "atr_multiple_max", float),
+            "tp_multiple range": ("tp_multiple_min", "tp_multiple_max", float),
+        }
+        for widget_key, (lo_key, hi_key, caster) in _pending_slider_state.items():
+            if widget_key not in st.session_state:
+                continue
+            try:
+                lo_val, hi_val = st.session_state[widget_key]
+            except Exception:
+                continue
+            try:
+                ea_cfg[lo_key] = caster(lo_val)
+                ea_cfg[hi_key] = caster(hi_val)
+            except Exception:
+                # Fall back to the stored config if casting fails (e.g. weird state)
+                continue
+
         # Dynamically tighten slider track to the configured bounds (better UX)
         def _pad_int_range(lo: int, hi: int, pad_ratio: float = 0.25, hard_lo: int = 1, hard_hi: int = 600) -> tuple[
             int, int]:
