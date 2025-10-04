@@ -7,9 +7,10 @@ import argparse
 import json
 import os
 import random
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterator, List
 
 import sys
 
@@ -87,6 +88,30 @@ def _arg_was_provided(flag: str) -> bool:
     return False
 
 
+_FAST_ENV_KEYS = {
+    "tickers": "SMOKE_TICKERS",
+    "start": "SMOKE_START",
+    "end": "SMOKE_END",
+    "k_atr_buffer": "K_ATR_BUFFER",
+    "persist_n": "PERSIST_N",
+    "cost_enabled": "COST_ENABLED",
+    "fixed_bps": "COST_FIXED_BPS",
+    "atr_k": "COST_ATR_K",
+    "min_hs_bps": "COST_MIN_HS_BPS",
+    "use_range_impact": "COST_USE_RANGE_IMPACT",
+    "cap_range_impact_bps": "CAP_RANGE_IMPACT_BPS",
+}
+
+_FAST_SENSITIVE_ATTRS = {
+    "cost_enabled",
+    "fixed_bps",
+    "atr_k",
+    "min_hs_bps",
+    "use_range_impact",
+    "cap_range_impact_bps",
+}
+
+
 def _apply_fast_defaults(args: argparse.Namespace) -> None:
     if not args.fast:
         return
@@ -105,14 +130,29 @@ def _apply_fast_defaults(args: argparse.Namespace) -> None:
         "cap_range_impact_bps": ("--cap-range-impact-bps", 10.0),  # PH1.2
     }
 
+    warnings: List[str] = []
+
     for attr, (flag, value) in overrides.items():
-        if not _arg_was_provided(flag):
-            setattr(args, attr, value)
+        cli_provided = _arg_was_provided(flag)
+        env_key = _FAST_ENV_KEYS.get(attr)
+        env_present = env_key is not None and env_key in os.environ
+        if cli_provided or env_present:
+            if attr in _FAST_SENSITIVE_ATTRS:
+                source = "CLI flag" if cli_provided else f"ENV {env_key}"
+                warnings.append(
+                    f"WARNING: --fast default for {flag} ignored; using {source} value."
+                )
+            continue
+        setattr(args, attr, value)
 
     if args.exec_delay_bars is None and not _arg_was_provided("--exec-delay-bars"):
-        args.exec_delay_bars = 0
-    if not _arg_was_provided("--exec-fill-where"):
+        if "EXEC_DELAY_BARS" not in os.environ:
+            args.exec_delay_bars = 0
+    if not _arg_was_provided("--exec-fill-where") and "EXEC_FILL_WHERE" not in os.environ:
         args.exec_fill_where = "close"
+
+    for message in warnings:
+        print(message)
 
 
 def _has_cached_data(symbol: str, timeframe: str = "1D") -> bool:
@@ -128,51 +168,113 @@ def _has_cached_data(symbol: str, timeframe: str = "1D") -> bool:
     return False
 
 
-def _ensure_env(args: argparse.Namespace) -> None:
-    os.environ["COST_ENABLED"] = str(args.cost_enabled)
-    os.environ["COST_FIXED_BPS"] = str(args.fixed_bps)
-    os.environ["COST_ATR_K"] = str(args.atr_k)
-    os.environ["COST_MIN_HS_BPS"] = str(args.min_hs_bps)
-    os.environ["COST_USE_RANGE_IMPACT"] = str(int(bool(args.use_range_impact)))  # PH1.2
-    os.environ["CAP_RANGE_IMPACT_BPS"] = str(float(args.cap_range_impact_bps))  # PH1.2
-    os.environ["EXEC_DELAY_BARS"] = str(args.exec_delay_bars)
-    os.environ["EXEC_FILL_WHERE"] = args.exec_fill_where
-    os.environ.setdefault("LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO"))
+def _coerce_bool(value) -> bool:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+        try:
+            return bool(int(lowered))
+        except ValueError:
+            return True
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return bool(value)
 
 
-def _aggregate_equity(series_list: List[pd.Series]) -> pd.Series | None:
-    if not series_list:
-        return None
-    eq_df = pd.concat(series_list, axis=1)
-    eq_df = eq_df.ffill().dropna(how="all")  # PH1.2
-    aggregated = eq_df.sum(axis=1)
-    return aggregated.astype(float)
+def _serialize_bool(value) -> str:
+    return "1" if _coerce_bool(value) else "0"
 
 
-def _safe_float(value) -> float | None:
-    if value is None:
-        return None
+_ENV_OVERRIDE_META = [
+    ("cost_enabled", "COST_ENABLED", "--cost-enabled", lambda v: _serialize_bool(v)),
+    ("fixed_bps", "COST_FIXED_BPS", "--fixed-bps", lambda v: str(float(v))),
+    ("atr_k", "COST_ATR_K", "--atr-k", lambda v: str(float(v))),
+    ("min_hs_bps", "COST_MIN_HS_BPS", "--min-hs-bps", lambda v: str(float(v))),
+    ("use_range_impact", "COST_USE_RANGE_IMPACT", "--use-range-impact", lambda v: _serialize_bool(v)),
+    (
+        "cap_range_impact_bps",
+        "CAP_RANGE_IMPACT_BPS",
+        "--cap-range-impact-bps",
+        lambda v: str(float(v)),
+    ),
+    (
+        "exec_delay_bars",
+        "EXEC_DELAY_BARS",
+        "--exec-delay-bars",
+        lambda v: str(int(v) if v is not None else 0),
+    ),
+    (
+        "exec_fill_where",
+        "EXEC_FILL_WHERE",
+        "--exec-fill-where",
+        lambda v: str(v),
+    ),
+]
+
+
+def _build_env_overrides(args: argparse.Namespace) -> Dict[str, str]:
+    overrides: Dict[str, str] = {}
+    for attr, env_key, flag, serializer in _ENV_OVERRIDE_META:
+        cli_provided = _arg_was_provided(flag)
+        env_present = env_key in os.environ
+        if cli_provided or not env_present:
+            value = getattr(args, attr)
+            overrides[env_key] = serializer(value)
+    return overrides
+
+
+def _effective_cost_knobs(args: argparse.Namespace) -> Dict[str, float | bool]:
+    def _resolve(attr: str, env_key: str, flag: str, cast):
+        if _arg_was_provided(flag):
+            source = getattr(args, attr)
+        elif env_key in os.environ:
+            source = os.environ[env_key]
+        else:
+            source = getattr(args, attr)
+        return cast(source)
+
+    return {
+        "atr_k": float(_resolve("atr_k", "COST_ATR_K", "--atr-k", float)),
+        "min_half_spread_bps": float(
+            _resolve("min_hs_bps", "COST_MIN_HS_BPS", "--min-hs-bps", float)
+        ),
+        "use_range_impact": bool(
+            _coerce_bool(
+                _resolve("use_range_impact", "COST_USE_RANGE_IMPACT", "--use-range-impact", lambda v: v)
+            )
+        ),
+        "cap_range_impact_bps": float(
+            _resolve("cap_range_impact_bps", "CAP_RANGE_IMPACT_BPS", "--cap-range-impact-bps", float)
+        ),
+    }
+
+
+@contextmanager
+def _temporary_env(overrides: Dict[str, str]) -> Iterator[None]:
+    previous: Dict[str, str | None] = {}
     try:
-        return float(value)
-    except Exception:
-        return None
+        for key, value in overrides.items():
+            previous[key] = os.environ.get(key)
+            os.environ[key] = value
+        yield
+    finally:
+        for key, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
 
 
-def main() -> None:
-    args = _parse_args()
-    _apply_fast_defaults(args)
-    if args.fast:
-        os.environ.setdefault("SMOKE_FAST", "1")
-        os.environ.setdefault("LOG_TRADES_SAMPLE", os.getenv("LOG_TRADES_SAMPLE", "10"))
-        os.environ.setdefault("LOG_TRADES_HEAD", os.getenv("LOG_TRADES_HEAD", "50"))
-    os.environ["SMOKE_CACHE_ONLY"] = "1" if args.cache_only else os.environ.get("SMOKE_CACHE_ONLY", "0")
-    if args.max_bars is not None and args.max_bars < 0:
-        args.max_bars = None
-    _ensure_env(args)
+def _execute_smoke(args: argparse.Namespace, cost_knobs: Dict[str, float | bool]) -> None:
     setup_logging()
 
     random.seed(args.seed)
     np.random.seed(args.seed)
+
+    print(f"Effective cost knobs: {cost_knobs}")
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     tickers_requested = list(tickers)
@@ -251,7 +353,16 @@ def main() -> None:
                 equity_pre_series.append(equity_pre.astype(float))
 
     combined_trades = pd.concat(trades_frames, ignore_index=True) if trades_frames else pd.DataFrame()
-    required_cols = ["time", "symbol", "qty", "price_before", "price_after", "notional", "slip_bps", "fees_bps"]
+    required_cols = [
+        "time",
+        "symbol",
+        "qty",
+        "price_before",
+        "price_after",
+        "notional",
+        "slip_bps",
+        "fees_bps",
+    ]
     for col in required_cols:
         if col not in combined_trades.columns:
             dtype = "datetime64[ns]" if col == "time" else ("object" if col == "symbol" else float)
@@ -294,10 +405,10 @@ def main() -> None:
             counters[key] += int(runtime.get(key, 0) or 0)
 
     cost_inputs_effective = {
-        "atr_k": float(args.atr_k),
-        "min_half_spread_bps": float(args.min_hs_bps),
-        "use_range_impact": bool(args.use_range_impact),
-        "cap_range_impact_bps": float(args.cap_range_impact_bps),
+        "atr_k": float(cost_knobs["atr_k"]),
+        "min_half_spread_bps": float(cost_knobs["min_half_spread_bps"]),
+        "use_range_impact": bool(cost_knobs["use_range_impact"]),
+        "cap_range_impact_bps": float(cost_knobs["cap_range_impact_bps"]),
     }
     for meta in metadata:  # PH1.2: reflect the actual knobs observed in engine metadata
         if not isinstance(meta, dict):
@@ -401,6 +512,44 @@ def main() -> None:
     print(
         f"Smoke run saved to {run_dir} | trades={len(combined_trades)} | post_cost_cagr={post_cagr} | drag_bps={drag_bps}"
     )
+
+
+def _aggregate_equity(series_list: List[pd.Series]) -> pd.Series | None:
+    if not series_list:
+        return None
+    eq_df = pd.concat(series_list, axis=1)
+    eq_df = eq_df.ffill().dropna(how="all")  # PH1.2
+    aggregated = eq_df.sum(axis=1)
+    return aggregated.astype(float)
+
+
+def _safe_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def main() -> None:
+    args = _parse_args()
+    _apply_fast_defaults(args)
+    if args.fast:
+        os.environ.setdefault("SMOKE_FAST", "1")
+        os.environ.setdefault("LOG_TRADES_SAMPLE", os.getenv("LOG_TRADES_SAMPLE", "10"))
+        os.environ.setdefault("LOG_TRADES_HEAD", os.getenv("LOG_TRADES_HEAD", "50"))
+    os.environ["SMOKE_CACHE_ONLY"] = "1" if args.cache_only else os.environ.get("SMOKE_CACHE_ONLY", "0")
+    if args.max_bars is not None and args.max_bars < 0:
+        args.max_bars = None
+    os.environ.setdefault("LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO"))
+
+    env_overrides = _build_env_overrides(args)
+    cost_knobs = _effective_cost_knobs(args)
+
+    with _temporary_env(env_overrides):
+        _execute_smoke(args, cost_knobs)
+
 
 
 if __name__ == "__main__":
