@@ -369,6 +369,17 @@ class ATRParams:
     per_trade_fee: float = 0.0        # flat fee per fill (in account currency)
     enable_costs: bool = False        # toggle attribution / post-cost accounting
     delay_bars: int = 0               # optional execution delay (signal -> fill after N bars)
+    entry_mode: str = "breakout"      # "breakout", "pullback", or "hybrid"
+    trend_ma: int = 200               # long-term MA for pullback trend gate
+    dip_atr_from_high: float = 1.5    # min ATR-normalized distance from recent high
+    dip_lookback_high: int = 20       # window for recent high when spotting dips
+    dip_rsi_max: float = 40.0         # RSI upper bound to accept a dip
+    dip_confirm: str = "close_gt_prev_high"  # confirmation mode for dip entries
+    dip_cooldown_days: int = 5        # cooldown between pullback entries
+    prob_gate_enabled: bool = False   # probability gate toggle (stubbed for now)
+    prob_gate_h: int = 5              # probability gate horizon (days)
+    prob_gate_threshold: float = 0.55 # minimum probability threshold
+    prob_model_id: Optional[str] = None  # identifier for calibrated probability model
 
 # ---------- Indicators ----------
 
@@ -381,6 +392,61 @@ def wilder_atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.ewm(alpha=1.0 / n, adjust=False).mean()
+
+
+def _compute_rsi(close: pd.Series, length: int = 14) -> pd.Series:
+    """Compute a standard Wilder-style RSI."""
+
+    length = max(1, int(length))
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = (-delta.clip(upper=0.0)).abs()
+    avg_gain = gain.ewm(alpha=1.0 / length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / length, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
+    rsi = 100.0 - (100.0 / (1.0 + rs.replace(np.nan, 0.0)))
+    return rsi.clip(lower=0.0, upper=100.0)
+
+
+def _build_pullback_signal(df: pd.DataFrame, atr: pd.Series, params: ATRParams) -> pd.Series:
+    """Generate pullback entry candidates (pre-cooldown) based on dip criteria."""
+
+    if df.empty:
+        return pd.Series(dtype=bool)
+
+    close = df["close"].astype(float)
+    trend_len = max(1, int(_coerce_float(getattr(params, "trend_ma", 200), 200.0)))
+    recent_high_len = max(1, int(_coerce_float(getattr(params, "dip_lookback_high", 20), 20.0)))
+    dip_atr_mult = max(0.0, _coerce_float(getattr(params, "dip_atr_from_high", 1.5), 1.5))
+    dip_rsi_max = _coerce_float(getattr(params, "dip_rsi_max", 40.0), 40.0)
+
+    trend_ma = close.rolling(window=trend_len, min_periods=trend_len).mean()
+    trend_gate = (close > trend_ma).fillna(False)
+
+    recent_high = df["high"].rolling(window=recent_high_len, min_periods=recent_high_len).max()
+    dip_depth = (recent_high - close).clip(lower=0.0)
+    atr_safe = atr.where(atr > 0).astype(float)
+    dip_depth_atr = dip_depth / atr_safe
+    depth_gate = (dip_depth_atr >= dip_atr_mult).fillna(False) if dip_atr_mult > 0 else dip_depth > 0
+
+    rsi = _compute_rsi(close, length=min(20, max(2, int(getattr(params, "dip_rsi_len", 14) or 14))))
+    if dip_rsi_max > 0:
+        rsi_gate = (rsi <= dip_rsi_max).fillna(False)
+    else:
+        rsi_gate = pd.Series(True, index=df.index)
+
+    confirm_mode = str(getattr(params, "dip_confirm", "close_gt_prev_high") or "close_gt_prev_high").strip().lower()
+    if confirm_mode == "none":
+        confirm_gate = pd.Series(True, index=df.index)
+    elif confirm_mode == "rsi_cross_up":
+        prev_rsi = rsi.shift(1)
+        confirm_gate = ((prev_rsi <= dip_rsi_max) & (rsi > prev_rsi)).fillna(False)
+    else:  # default close > prior high
+        prev_high = df["high"].shift(1)
+        confirm_gate = (close > prev_high).fillna(False)
+
+    pullback_signal = (trend_gate & depth_gate & rsi_gate & confirm_gate).astype(bool)
+    return pullback_signal
 
 # ---------- Core backtest ----------
 
@@ -565,6 +631,18 @@ def backtest_atr_breakout(
 
     raw_long_breakout = long_base.astype(bool)
 
+    entry_mode = str(getattr(params, "entry_mode", "breakout") or "breakout").strip().lower()
+    if entry_mode not in {"breakout", "pullback", "hybrid"}:
+        entry_mode = "breakout"
+    use_breakout_entries = entry_mode in {"breakout", "hybrid"}
+    use_pullback_entries = entry_mode in {"pullback", "hybrid"}
+
+    pullback_signal = pd.Series(False, index=df.index)
+    if use_pullback_entries:
+        pullback_signal = _build_pullback_signal(df, atr, params).reindex(df.index, fill_value=False).astype(bool)
+
+    dip_cooldown_days = int(max(0, _coerce_float(getattr(params, "dip_cooldown_days", 5), 5.0)))
+
     in_pos = False
     entry_idx: Optional[int] = None
     entry_time: Optional[pd.Timestamp] = None
@@ -609,6 +687,7 @@ def backtest_atr_breakout(
     blocked_by_persistence = 0
     blocked_by_min_hold = 0
     blocked_by_cooldown = 0
+    last_pullback_entry_idx: Optional[int] = None
 
     log_per_trade = logger.isEnabledFor(logging.DEBUG) and _env_flag("LOG_TRADES", False)
     try:
@@ -651,7 +730,9 @@ def backtest_atr_breakout(
         exit_trigger: Optional[Dict[str, Any]] = None
         entry_trigger: Optional[Dict[str, Any]] = None
 
-        raw_break_today = bool(raw_long_breakout.iloc[i]) if i < len(raw_long_breakout) else False
+        raw_break_today = (
+            bool(raw_long_breakout.iloc[i]) if (use_breakout_entries and i < len(raw_long_breakout)) else False
+        )
         if raw_break_today:
             long_streak_counter += 1
         else:
@@ -661,12 +742,21 @@ def backtest_atr_breakout(
             state_tracking["long_streak_max"] = long_streak_counter
         state_tracking["short_streak"] = 0
 
-        base_without_buffer = bool(long_pre_buffer.iloc[i]) if i < len(long_pre_buffer) else False
-        buffer_pass_today = bool(buffer_gate.iloc[i]) if i < len(buffer_gate) else True
-        long_after_buffer = bool(long_base.iloc[i]) if i < len(long_base) else False
-        signal_today = bool(long_signal.iloc[i]) if i < len(long_signal) else False
+        base_without_buffer = (
+            bool(long_pre_buffer.iloc[i]) if (use_breakout_entries and i < len(long_pre_buffer)) else False
+        )
+        buffer_pass_today = (
+            bool(buffer_gate.iloc[i]) if (use_breakout_entries and i < len(buffer_gate)) else True
+        )
+        long_after_buffer = (
+            bool(long_base.iloc[i]) if (use_breakout_entries and i < len(long_base)) else False
+        )
+        signal_today = (
+            bool(long_signal.iloc[i]) if (use_breakout_entries and i < len(long_signal)) else False
+        )
         if (
-            not in_pos
+            use_breakout_entries
+            and not in_pos
             and pending_entry is None
             and k_atr_buffer > 0.0
             and base_without_buffer
@@ -675,7 +765,8 @@ def backtest_atr_breakout(
             blocked_by_buffer += 1
             state_tracking["blocked_by_buffer"] = blocked_by_buffer
         if (
-            not in_pos
+            use_breakout_entries
+            and not in_pos
             and pending_entry is None
             and persist_n > 1
             and long_after_buffer
@@ -734,16 +825,45 @@ def backtest_atr_breakout(
                 "reason": "final_bar_flatten",
             }
 
-        if not in_pos and entry_trigger is None and bool(long_signal.iloc[i]):
-            trigger = {
-                "signal_idx": i,
-                "signal_time": ts,
-                "signal_price": price_close,
-            }
-            if delay_bars > 0:
-                pending_entry = trigger
-            else:
-                entry_trigger = trigger
+        breakout_signal_today = (
+            bool(long_signal.iloc[i]) if (use_breakout_entries and i < len(long_signal)) else False
+        )
+        pullback_signal_today = (
+            bool(pullback_signal.iloc[i]) if (use_pullback_entries and i < len(pullback_signal)) else False
+        )
+
+        if not in_pos and entry_trigger is None:
+            entry_candidate: Optional[Dict[str, Any]] = None
+            if breakout_signal_today:
+                entry_candidate = {
+                    "signal_idx": i,
+                    "signal_time": ts,
+                    "signal_price": price_close,
+                    "entry_mode": "breakout",
+                    "reason": "breakout_signal",
+                }
+            elif pullback_signal_today:
+                cooldown_ok = True
+                if dip_cooldown_days > 0 and last_pullback_entry_idx is not None:
+                    if (i - last_pullback_entry_idx) < dip_cooldown_days:
+                        cooldown_ok = False
+                if cooldown_ok:
+                    entry_candidate = {
+                        "signal_idx": i,
+                        "signal_time": ts,
+                        "signal_price": price_close,
+                        "entry_mode": "pullback",
+                        "reason": "dip_signal",
+                    }
+                else:
+                    blocked_by_cooldown += 1
+                    state_tracking["blocked_by_cooldown"] = blocked_by_cooldown
+
+            if entry_candidate is not None:
+                if delay_bars > 0:
+                    pending_entry = entry_candidate
+                else:
+                    entry_trigger = entry_candidate
 
         if exit_trigger is not None and in_pos and position_qty > 0:
             base_price = exit_trigger.get("override_price")
@@ -964,6 +1084,9 @@ def backtest_atr_breakout(
                 in_pos = True
                 entry_count += 1
                 state_tracking["entry_count"] = entry_count
+
+                if str(entry_trigger.get("entry_mode", "")) == "pullback":
+                    last_pullback_entry_idx = i
 
                 if log_per_trade:
                     trade_log_counter += 1
