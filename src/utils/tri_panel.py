@@ -33,6 +33,15 @@ def _normalize_curve(series: pd.Series) -> Optional[pd.Series]:
             logger.exception("normalize_curve failed to convert index to datetime")
             return None
     s = s.sort_index()
+    if isinstance(s.index, pd.DatetimeIndex) and getattr(s.index, "tz", None) is not None:
+        try:
+            s.index = s.index.tz_convert(None)
+        except Exception:
+            try:
+                s.index = s.index.tz_localize(None)
+            except Exception:
+                logger.debug("normalize_curve failed to drop timezone", extra={"tz": str(s.index.tz)})
+                return None
     s = s[s > 0]
     if s.empty:
         return None
@@ -111,6 +120,15 @@ def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp])
         except Exception:
             logger.exception("tri_panel failed to coerce series index to datetime")
             return None
+    if isinstance(series.index, pd.DatetimeIndex) and getattr(series.index, "tz", None) is not None:
+        try:
+            series.index = series.index.tz_convert(None)
+        except Exception:
+            try:
+                series.index = series.index.tz_localize(None)
+            except Exception:
+                logger.debug("tri_panel failed to drop timezone from SPY series", extra={"tz": str(series.index.tz)})
+                return None
     series = series.sort_index()
     series = series[series > 0]
     if series.empty:
@@ -212,7 +230,33 @@ def _format_ratio(value: Optional[float]) -> str:
     return f"{value:.2f}"
 
 
-def render_tri_panel(strategy_curve: pd.Series, title: str = "S&P 500 Total-Return (TRI proxy) comparison") -> None:
+def _coerce_timestamp(value: "pd.Timestamp | str | None") -> Optional[pd.Timestamp]:
+    if value is None or value == "":
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        logger.debug("tri_panel failed to parse timestamp", extra={"value": value})
+        return None
+    if getattr(ts, "tzinfo", None) is not None:
+        try:
+            ts = ts.tz_convert(None)
+        except Exception:
+            try:
+                ts = ts.tz_localize(None)
+            except Exception:
+                logger.debug("tri_panel failed to drop timezone", extra={"value": value})
+                return None
+    return ts
+
+
+def render_tri_panel(
+    strategy_curve: pd.Series,
+    title: str = "S&P 500 Total-Return (TRI proxy) comparison",
+    test_start: "pd.Timestamp | str | None" = None,
+    test_end: "pd.Timestamp | str | None" = None,
+    show_test_toggle: bool = True,
+) -> None:
     with st.expander(f"\u25b8 {title}"):
         strategy_norm = _normalize_curve(strategy_curve)
         if strategy_norm is None or strategy_norm.empty:
@@ -232,6 +276,16 @@ def render_tri_panel(strategy_curve: pd.Series, title: str = "S&P 500 Total-Retu
             axis=1,
             join="inner",
         ).dropna()
+        if isinstance(combined.index, pd.DatetimeIndex) and getattr(combined.index, "tz", None) is not None:
+            try:
+                combined.index = combined.index.tz_convert(None)
+            except Exception:
+                try:
+                    combined.index = combined.index.tz_localize(None)
+                except Exception:
+                    logger.debug("tri_panel failed to drop timezone from combined index", extra={"tz": str(combined.index.tz)})
+                    st.info("Unable to align timezones for TRI comparison.")
+                    return
         if combined.empty or len(combined) < 10:
             logger.info(
                 "tri_panel insufficient overlap",
@@ -239,8 +293,52 @@ def render_tri_panel(strategy_curve: pd.Series, title: str = "S&P 500 Total-Retu
             )
             st.info("Insufficient overlapping history between strategy and SPY (requires at least 10 points).")
             return
-        strategy_aligned = combined["Strategy"]
-        spy_aligned = combined["SPY (TRI)"]
+        combined_view = combined
+        test_start_ts = _coerce_timestamp(test_start)
+        test_end_ts = _coerce_timestamp(test_end)
+        test_toggle_available = False
+        restrict_to_test = False
+        if show_test_toggle:
+            if test_start_ts is None or test_end_ts is None:
+                st.info("Test window not provided; displaying full history.")
+            elif test_start_ts > test_end_ts:
+                st.info("Test window start is after end; displaying full history.")
+            else:
+                test_toggle_available = True
+                restrict_to_test = st.checkbox(
+                    "Test-only view",
+                    value=False,
+                    key=f"tri_panel_test_toggle_{title}",
+                )
+        if test_toggle_available and restrict_to_test:
+            test_view = combined.loc[(combined.index >= test_start_ts) & (combined.index <= test_end_ts)]
+            if test_view.empty or len(test_view) < 10:
+                logger.info(
+                    "tri_panel insufficient test overlap",
+                    extra={"rows": int(len(test_view))},
+                )
+                st.info(
+                    "Insufficient overlapping history in the test window (requires at least 10 points). Displaying full history.",
+                )
+            else:
+                first_row = test_view.iloc[0]
+                if (first_row <= 0).any():
+                    logger.info(
+                        "tri_panel non-positive starting values in test window",
+                        extra={"values": first_row.to_dict()},
+                    )
+                    st.info("Test window start values must be positive; displaying full history.")
+                else:
+                    combined_view = test_view.divide(first_row)
+        strategy_aligned = combined_view["Strategy"]
+        spy_aligned = combined_view["SPY (TRI)"]
+        excess_index = strategy_aligned / spy_aligned
+        if not excess_index.empty:
+            first_excess = excess_index.iloc[0]
+            if pd.notna(first_excess) and first_excess > 0:
+                excess_index = excess_index / float(first_excess)
+        combined_chart = combined_view.copy()
+        combined_chart["Excess Index"] = excess_index
         tracking_error, information_ratio = _compute_tracking_stats(strategy_aligned, spy_aligned)
         metrics = pd.DataFrame(
             {
@@ -262,7 +360,7 @@ def render_tri_panel(strategy_curve: pd.Series, title: str = "S&P 500 Total-Retu
                 ],
             }
         )
-        st.line_chart(combined)
+        st.line_chart(combined_chart)
         st.dataframe(metrics, use_container_width=True, hide_index=True)
         st.caption(
             "Strategy and SPY curves normalized to 1.0 on first overlapping date. "

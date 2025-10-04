@@ -541,7 +541,11 @@ def main():
             except Exception as tri_err:  # pragma: no cover - defensive UI helper
                 _dbg(f"tri_panel: {type(tri_err).__name__}: {tri_err}")
 
-    render_tri_panel(tri_curve)
+    render_tri_panel(
+        tri_curve,
+        test_start=test_start,
+        test_end=test_end,
+    )
 
     # Debug trace from the equity provider
     with st.expander("Debug: equity provider trace", expanded=False):
