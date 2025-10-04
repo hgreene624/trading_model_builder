@@ -200,6 +200,20 @@ def _alpha_retention_ratio(row: pd.Series) -> Optional[float]:
     return None
 
 
+_PERFORMANCE_METRIC_TOOLTIPS = {
+    "Sharpe (post-cost)": "Risk-adjusted return that already reflects slippage and fees. Higher is better.",
+    "Sharpe (pre-cost)": "Risk-adjusted return before accounting for trading costs. Provides context for the raw edge.",
+    "CAGR (post-cost)": "Annualized growth after trading costs. Compare against benchmarks on a net basis.",
+    "CAGR (pre-cost)": "Annualized growth before costs. Highlights the gross opportunity before slippage/fees.",
+    "Max Drawdown %": "Worst peak-to-trough equity decline. Smaller losses (closer to 0%) imply lower risk.",
+    "Win Rate %": "Percent of trades that were profitable. Needs to be viewed alongside payoff ratios.",
+    "Expectancy": "Average profit per trade. Positive expectancy is required for a sustainable edge.",
+    "Edge Ratio": "Average win size versus loss size. Values above 1.0 indicate gains outweigh losses.",
+    "Profit Factor": "Gross profits divided by gross losses. >1.0 indicates net profitability.",
+    "Trades": "Number of trades evaluated for this individual. Larger samples lend greater confidence.",
+}
+
+
 _COST_KPI_TOOLTIPS = {
     "Alpha Retention %": (
         "How much of your edge survives costs. 100% means costs had no impact; "
@@ -264,7 +278,13 @@ def _collect_performance_metric_rows(best_row: pd.Series) -> List[Dict[str, str]
         formatted = formatter(val)
         if not formatted:
             return
-        rows.append({"Metric": label, "Value": formatted})
+        rows.append(
+            {
+                "Metric": label,
+                "Value": formatted,
+                "Guidance": _PERFORMANCE_METRIC_TOOLTIPS.get(label, ""),
+            }
+        )
 
     _append("Sharpe (post-cost)", ["sharpe_post_cost", "sharpe_post", "sharpe_net"], lambda v: _format_float(v, 2))
     _append("Sharpe (pre-cost)", ["sharpe_pre_cost", "sharpe_pre", "sharpe_gross", "sharpe_before_cost"], lambda v: _format_float(v, 2))
@@ -331,9 +351,6 @@ def _collect_cost_metric_rows(best_row: pd.Series) -> List[Dict[str, str]]:
     _add_row("Turnover (×/yr)", turnover_display)
     _add_row("Cost per Turnover (bps per 1×)", cost_display)
 
-    if all(row["Value"] == "—" for row in rows):
-        return []
-
     return rows
 
 
@@ -355,17 +372,47 @@ def _render_metric_dashboard(best_row: Optional[pd.Series]) -> None:
     idx = 0
 
     if perf_rows:
-        perf_df = pd.DataFrame(perf_rows).set_index("Metric")
+        perf_df = pd.DataFrame(perf_rows)
         with cols[idx]:
             st.markdown("**Performance Metrics**")
-            st.table(perf_df)
+            st.dataframe(
+                perf_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn(
+                        "Metric",
+                        help="Performance indicator for the selected individual.",
+                    ),
+                    "Value": st.column_config.TextColumn("Value"),
+                    "Guidance": st.column_config.TextColumn(
+                        "Guidance",
+                        help="How to interpret this performance metric.",
+                    ),
+                },
+            )
         idx += 1
 
     if cost_rows:
-        cost_df = pd.DataFrame(cost_rows).set_index("Metric")
+        cost_df = pd.DataFrame(cost_rows)
         with cols[idx]:
             st.markdown("**Costs Impact**")
-            st.table(cost_df)
+            st.dataframe(
+                cost_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn(
+                        "Metric",
+                        help="Cost-related indicator sourced from saved run metrics.",
+                    ),
+                    "Value": st.column_config.TextColumn("Value"),
+                    "Guidance": st.column_config.TextColumn(
+                        "Guidance",
+                        help="How costs influence or contextualize the metric.",
+                    ),
+                },
+            )
 
 # ---------- equity provider ----------
 
