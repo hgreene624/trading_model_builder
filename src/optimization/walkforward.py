@@ -14,6 +14,7 @@ from src.data.loader import get_ohlcv as _load_ohlcv
 from src.backtest.metrics import compute_core_metrics
 from src.optimization.evolutionary import evolutionary_search
 from src.utils.training_logger import TrainingLogger  # your existing logger
+from src.backtest import prob_gate
 
 
 # Worker-safe progress type & default no-op callback
@@ -193,6 +194,54 @@ def walk_forward(
             )
             if isinstance(top, list) and len(top) > 0 and isinstance(top[0], tuple):
                 params_used = dict(top[0][0])  # best param set
+
+        gate_enabled = bool(params_used.get("prob_gate_enabled", False))
+        gate_threshold = float(params_used.get("prob_gate_threshold", 0.0) or 0.0)
+        gate_model_id = str(params_used.get("prob_model_id", "") or "")
+        if gate_enabled and gate_threshold > 0.0:
+            X_frames: List[pd.DataFrame] = []
+            y_frames: List[pd.Series] = []
+            for sym in tickers:
+                params_no_gate = dict(params_used)
+                params_no_gate["prob_gate_enabled"] = False
+                params_no_gate["prob_model_id"] = ""
+                try:
+                    train_res = _run_strategy_on_range(
+                        strategy_dotted,
+                        sym,
+                        train_start,
+                        train_end,
+                        starting_equity,
+                        params_no_gate,
+                    )
+                except Exception:
+                    continue
+                trades = train_res.get("trades", []) or []
+                if not trades:
+                    continue
+                try:
+                    ohlcv = _load_ohlcv(sym, train_start, train_end)
+                except Exception:
+                    continue
+                X_sym, y_sym = prob_gate.prepare_training_data(ohlcv, trades, params_used)
+                if not X_sym.empty and not y_sym.empty:
+                    X_frames.append(X_sym)
+                    y_frames.append(y_sym)
+            if X_frames:
+                X_all = pd.concat(X_frames, ignore_index=True)
+                y_all = pd.concat(y_frames, ignore_index=True)
+                model = prob_gate.fit_model(X_all, y_all)
+                if model is not None:
+                    if not gate_model_id:
+                        gate_model_id = prob_gate.generate_model_id(f"wf{idx}")
+                    prob_gate.save_model(gate_model_id, model)
+                    params_used["prob_model_id"] = gate_model_id
+                else:
+                    params_used["prob_gate_enabled"] = False
+                    params_used.pop("prob_model_id", None)
+            else:
+                params_used["prob_gate_enabled"] = False
+                params_used.pop("prob_model_id", None)
 
         # --- Run strategy on train & OOS windows (per symbol) ---
         is_curves: Dict[str, pd.Series] = {}

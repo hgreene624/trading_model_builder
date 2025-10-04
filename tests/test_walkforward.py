@@ -59,6 +59,7 @@ def compute_fitness(**metrics_overrides) -> float:
         alpha_cagr=1.0,
         beta_calmar=1.0,
         gamma_sharpe=0.5,
+        delta_total_return=0.0,
         min_holding_days=3.0,
         max_holding_days=10.0,
         holding_penalty_weight=0.2,
@@ -67,6 +68,7 @@ def compute_fitness(**metrics_overrides) -> float:
         trade_rate_penalty_weight=0.1,
         num_symbols=2,
         years=1.0,
+        calmar_cap=5.0,
     )
 
 
