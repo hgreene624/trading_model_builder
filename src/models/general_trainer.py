@@ -20,6 +20,8 @@ from datetime import date, datetime
 import pandas as pd
 
 from src.backtest.metrics import compute_core_metrics
+from src.backtest import prob_gate
+from src.data.loader import get_ohlcv
 
 
 def import_callable(dotted: str):
@@ -112,6 +114,48 @@ def train_general_model(
     start_dt = _coerce_datetime(start, "start")
     end_dt = _coerce_datetime(end, "end")
 
+    params_for_eval = dict(base_params)
+    gate_enabled = bool(params_for_eval.get("prob_gate_enabled", False))
+    gate_threshold = float(params_for_eval.get("prob_gate_threshold", 0.0) or 0.0)
+    gate_model_id = str(params_for_eval.get("prob_model_id", "") or "")
+    if gate_enabled and gate_threshold > 0.0:
+        feature_frames: List[pd.DataFrame] = []
+        label_frames: List[pd.Series] = []
+        for sym in tickers:
+            params_no_gate = dict(params_for_eval)
+            params_no_gate["prob_gate_enabled"] = False
+            params_no_gate["prob_model_id"] = ""
+            try:
+                training_res = run(sym, start_dt, end_dt, starting_equity, params_no_gate)
+            except Exception:
+                continue
+            trades = training_res.get("trades", []) or []
+            if not trades:
+                continue
+            try:
+                ohlcv = get_ohlcv(sym, start_dt, end_dt)
+            except Exception:
+                continue
+            X_sym, y_sym = prob_gate.prepare_training_data(ohlcv, trades, params_for_eval)
+            if not X_sym.empty and not y_sym.empty:
+                feature_frames.append(X_sym)
+                label_frames.append(y_sym)
+        if feature_frames:
+            X_all = pd.concat(feature_frames, ignore_index=True)
+            y_all = pd.concat(label_frames, ignore_index=True)
+            model = prob_gate.fit_model(X_all, y_all)
+            if model is not None:
+                if not gate_model_id:
+                    gate_model_id = prob_gate.generate_model_id("trainer")
+                prob_gate.save_model(gate_model_id, model)
+                params_for_eval["prob_model_id"] = gate_model_id
+            else:
+                params_for_eval["prob_gate_enabled"] = False
+                params_for_eval.pop("prob_model_id", None)
+        else:
+            params_for_eval["prob_gate_enabled"] = False
+            params_for_eval.pop("prob_model_id", None)
+
     per_symbol: List[Dict[str, Any]] = []
     # Collect normalized curves in a DataFrame for clean aggregation
     norm_curves: Dict[str, pd.Series] = {}
@@ -124,7 +168,7 @@ def train_general_model(
 
     # --- per-symbol loop ---
     for sym in tickers:
-        result = run(sym, start_dt, end_dt, starting_equity, base_params)
+        result = run(sym, start_dt, end_dt, starting_equity, params_for_eval)
 
         # Compute symbol-level metrics
         metrics = compute_core_metrics(result["equity"], result["daily_returns"], result["trades"])
@@ -211,7 +255,7 @@ def train_general_model(
 
     result: Dict[str, Any] = {
         "strategy": strategy_dotted,
-        "params": dict(base_params),
+        "params": dict(params_for_eval),
         "period": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
         "results": per_symbol,
         "aggregate": aggregate_payload,

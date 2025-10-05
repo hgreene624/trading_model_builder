@@ -23,6 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from src.backtest import prob_gate
+
 # ---- Data loader (swap to your real import) ----
 try:
     from src.data.loader import get_ohlcv
@@ -369,6 +371,9 @@ class ATRParams:
     per_trade_fee: float = 0.0        # flat fee per fill (in account currency)
     enable_costs: bool = False        # toggle attribution / post-cost accounting
     delay_bars: int = 0               # optional execution delay (signal -> fill after N bars)
+    prob_gate_enabled: bool = False   # probability gate toggle (calibrated LR)
+    prob_gate_threshold: float = 0.0  # minimum probability to allow entry
+    prob_model_id: str = ""           # identifier for stored calibrated model
 
 # ---------- Indicators ----------
 
@@ -526,6 +531,23 @@ def backtest_atr_breakout(
             raise ValueError(f"Data for {symbol} missing required column '{col}'")
 
     df = df.sort_index()
+    prob_gate_enabled = bool(getattr(params, "prob_gate_enabled", False))
+    prob_gate_threshold = float(getattr(params, "prob_gate_threshold", 0.0) or 0.0)
+    prob_model_id = str(getattr(params, "prob_model_id", "") or extra_params.get("prob_model_id", ""))
+    gate_probabilities: Optional[pd.Series] = None
+    if prob_gate_enabled and prob_gate_threshold > 0.0 and prob_model_id:
+        try:
+            gate_probabilities = prob_gate.score_probabilities(df, params, prob_model_id)
+        except FileNotFoundError:
+            logger.warning("prob_gate model %s not found; disabling gate", prob_model_id)
+            prob_gate_enabled = False
+            gate_probabilities = None
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.exception("prob_gate scoring failed", exc_info=exc)
+            prob_gate_enabled = False
+            gate_probabilities = None
+    elif prob_gate_enabled:
+        prob_gate_enabled = False
     atr = wilder_atr(df["high"], df["low"], df["close"], n=params.atr_n)
     roll_high = df["close"].rolling(params.breakout_n).max()
     roll_low = df["close"].rolling(params.exit_n).min()
@@ -587,6 +609,7 @@ def backtest_atr_breakout(
 
     pending_entry: Optional[Dict[str, Any]] = None
     pending_exit: Optional[Dict[str, Any]] = None
+    entry_gate_probability: Optional[float] = None
 
     index_list = list(df.index)
     n_bars = len(index_list)
@@ -600,6 +623,7 @@ def backtest_atr_breakout(
         "exit_count": 0,
         "blocked_by_buffer": 0,
         "blocked_by_persistence": 0,
+        "blocked_by_prob_gate": 0,
         "blocked_by_min_hold": 0,
         "blocked_by_cooldown": 0,
     }
@@ -607,6 +631,7 @@ def backtest_atr_breakout(
     exit_count = 0
     blocked_by_buffer = 0
     blocked_by_persistence = 0
+    blocked_by_prob_gate = 0
     blocked_by_min_hold = 0
     blocked_by_cooldown = 0
 
@@ -734,16 +759,31 @@ def backtest_atr_breakout(
                 "reason": "final_bar_flatten",
             }
 
+        gate_probability: Optional[float] = None
+        if prob_gate_enabled and gate_probabilities is not None and i < len(gate_probabilities):
+            try:
+                val = gate_probabilities.iloc[i]
+            except Exception:  # pragma: no cover - defensive alignment guard
+                val = np.nan
+            if pd.notna(val):
+                gate_probability = float(val)
+
         if not in_pos and entry_trigger is None and bool(long_signal.iloc[i]):
-            trigger = {
-                "signal_idx": i,
-                "signal_time": ts,
-                "signal_price": price_close,
-            }
-            if delay_bars > 0:
-                pending_entry = trigger
+            if prob_gate_enabled and gate_probability is not None and gate_probability < prob_gate_threshold:
+                blocked_by_prob_gate += 1
+                state_tracking["blocked_by_prob_gate"] = blocked_by_prob_gate
             else:
-                entry_trigger = trigger
+                trigger = {
+                    "signal_idx": i,
+                    "signal_time": ts,
+                    "signal_price": price_close,
+                }
+                if gate_probability is not None:
+                    trigger["prob_gate_probability"] = gate_probability
+                if delay_bars > 0:
+                    pending_entry = trigger
+                else:
+                    entry_trigger = trigger
 
         if exit_trigger is not None and in_pos and position_qty > 0:
             base_price = exit_trigger.get("override_price")
@@ -873,6 +913,9 @@ def backtest_atr_breakout(
                 "price_after": entry_price_after,
                 "slip_bps": float(slip_bps_weighted),
                 "fees_bps": float(fee_bps_weighted),
+                "prob_gate_probability": float(entry_gate_probability)
+                if entry_gate_probability is not None
+                else None,
             }
 
             trades.append(trade_record)
@@ -912,6 +955,7 @@ def backtest_atr_breakout(
             entry_notional = 0.0
             entry_signal_time = None
             entry_signal_price = None
+            entry_gate_probability = None
             entry_breakdown = {"total_cost": 0.0, "slippage_cost": 0.0, "commission_cost": 0.0, "fee_cost": 0.0,
                                "slippage_bps": 0.0, "commission_bps": 0.0, "fill_price": 0.0}
 
@@ -961,6 +1005,7 @@ def backtest_atr_breakout(
                 entry_notional = entry_breakdown.get("price_after", entry_decision_price) * position_qty
                 entry_signal_time = entry_trigger.get("signal_time")
                 entry_signal_price = entry_trigger.get("signal_price")
+                entry_gate_probability = entry_trigger.get("prob_gate_probability")
                 in_pos = True
                 entry_count += 1
                 state_tracking["entry_count"] = entry_count
@@ -1111,10 +1156,20 @@ def backtest_atr_breakout(
             "k_atr_buffer": float(k_atr_buffer),
             "blocked_by_buffer": int(blocked_by_buffer),
             "blocked_by_persistence": int(blocked_by_persistence),
+            "blocked_by_prob_gate": int(blocked_by_prob_gate),
             "blocked_by_min_hold": int(blocked_by_min_hold),
             "blocked_by_cooldown": int(blocked_by_cooldown),
         }
     )
+
+    if prob_gate_enabled or gate_probabilities is not None:
+        meta["prob_gate"] = {
+            "enabled": bool(prob_gate_enabled),
+            "threshold": float(prob_gate_threshold),
+            "model_id": str(prob_model_id),
+            "blocked": int(blocked_by_prob_gate),
+            "scores_available": gate_probabilities is not None,
+        }
 
     if logger.isEnabledFor(logging.INFO):
         logger.info(
