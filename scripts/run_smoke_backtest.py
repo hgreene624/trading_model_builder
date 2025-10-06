@@ -55,6 +55,12 @@ def _parse_args() -> argparse.Namespace:
         default=float(os.getenv("CAP_RANGE_IMPACT_BPS", 10.0)),
         help="Cap for range-based slippage impact in bps.",
     )  # PH1.2
+    parser.add_argument(
+        "--per-trade-fee-usd",
+        type=float,
+        default=float(os.getenv("FEE_PER_TRADE_USD", os.getenv("ATR_PER_TRADE_FEE", 0.0))),
+        help="Flat fee applied per fill in account currency.",
+    )
     parser.add_argument("--exec-delay-bars", type=int, default=int(os.getenv("EXEC_DELAY_BARS", 0)))
     parser.add_argument(
         "--exec-fill-where", choices=["open", "close"], default=os.getenv("EXEC_FILL_WHERE", "close")
@@ -100,6 +106,7 @@ _FAST_ENV_KEYS = {
     "min_hs_bps": "COST_MIN_HS_BPS",
     "use_range_impact": "COST_USE_RANGE_IMPACT",
     "cap_range_impact_bps": "CAP_RANGE_IMPACT_BPS",
+    "per_trade_fee_usd": "FEE_PER_TRADE_USD",
 }
 
 _FAST_SENSITIVE_ATTRS = {
@@ -109,6 +116,7 @@ _FAST_SENSITIVE_ATTRS = {
     "min_hs_bps",
     "use_range_impact",
     "cap_range_impact_bps",
+    "per_trade_fee_usd",
 }
 
 
@@ -128,6 +136,7 @@ def _apply_fast_defaults(args: argparse.Namespace) -> None:
         "min_hs_bps": ("--min-hs-bps", 1.0),
         "use_range_impact": ("--use-range-impact", 0),  # PH1.2
         "cap_range_impact_bps": ("--cap-range-impact-bps", 10.0),  # PH1.2
+        "per_trade_fee_usd": ("--per-trade-fee-usd", 0.0),
     }
 
     warnings: List[str] = []
@@ -201,6 +210,12 @@ _ENV_OVERRIDE_META = [
         lambda v: str(float(v)),
     ),
     (
+        "per_trade_fee_usd",
+        "FEE_PER_TRADE_USD",
+        "--per-trade-fee-usd",
+        lambda v: str(float(v)),
+    ),
+    (
         "exec_delay_bars",
         "EXEC_DELAY_BARS",
         "--exec-delay-bars",
@@ -223,15 +238,22 @@ def _build_env_overrides(args: argparse.Namespace) -> Dict[str, str]:
         if cli_provided or not env_present:
             value = getattr(args, attr)
             overrides[env_key] = serializer(value)
+    # Maintain legacy compatibility for ATR_PER_TRADE_FEE without clobbering
+    # explicit environment overrides. (PH1.2)
+    if "FEE_PER_TRADE_USD" in overrides:
+        if _arg_was_provided("--per-trade-fee-usd") or "ATR_PER_TRADE_FEE" not in os.environ:
+            overrides.setdefault("ATR_PER_TRADE_FEE", overrides["FEE_PER_TRADE_USD"])
     return overrides
 
 
 def _effective_cost_knobs(args: argparse.Namespace) -> Dict[str, float | bool]:
-    def _resolve(attr: str, env_key: str, flag: str, cast):
+    def _resolve(attr: str, env_key: str, flag: str, cast, fallback_env: str | None = None):
         if _arg_was_provided(flag):
             source = getattr(args, attr)
         elif env_key in os.environ:
             source = os.environ[env_key]
+        elif fallback_env and fallback_env in os.environ:
+            source = os.environ[fallback_env]
         else:
             source = getattr(args, attr)
         return cast(source)
@@ -248,6 +270,16 @@ def _effective_cost_knobs(args: argparse.Namespace) -> Dict[str, float | bool]:
         ),
         "cap_range_impact_bps": float(
             _resolve("cap_range_impact_bps", "CAP_RANGE_IMPACT_BPS", "--cap-range-impact-bps", float)
+        ),
+        "fee_bps": float(_resolve("fixed_bps", "COST_FIXED_BPS", "--fixed-bps", float)),
+        "per_trade_fee_usd": float(
+            _resolve(
+                "per_trade_fee_usd",
+                "FEE_PER_TRADE_USD",
+                "--per-trade-fee-usd",
+                float,
+                fallback_env="ATR_PER_TRADE_FEE",
+            )
         ),
     }
 
@@ -329,6 +361,7 @@ def _execute_smoke(args: argparse.Namespace, cost_knobs: Dict[str, float | bool]
                     atr_multiple=2.0,
                     k_atr_buffer=args.k_atr_buffer,
                     persist_n=max(1, args.persist_n),
+                    per_trade_fee=float(args.per_trade_fee_usd),
                     enable_costs=bool(args.cost_enabled),
                     delay_bars=max(0, args.exec_delay_bars),
                     execution=args.exec_fill_where,
@@ -409,6 +442,8 @@ def _execute_smoke(args: argparse.Namespace, cost_knobs: Dict[str, float | bool]
         "min_half_spread_bps": float(cost_knobs["min_half_spread_bps"]),
         "use_range_impact": bool(cost_knobs["use_range_impact"]),
         "cap_range_impact_bps": float(cost_knobs["cap_range_impact_bps"]),
+        "fee_bps": float(cost_knobs.get("fee_bps", 0.0)),
+        "per_trade_fee_usd": float(cost_knobs.get("per_trade_fee_usd", 0.0)),
     }
     for meta in metadata:  # PH1.2: reflect the actual knobs observed in engine metadata
         if not isinstance(meta, dict):
@@ -443,6 +478,8 @@ def _execute_smoke(args: argparse.Namespace, cost_knobs: Dict[str, float | bool]
             "min_half_spread_bps": cost_inputs_effective["min_half_spread_bps"],  # PH1.2
             "use_range_impact": cost_inputs_effective["use_range_impact"],  # PH1.2
             "cap_range_impact_bps": cost_inputs_effective["cap_range_impact_bps"],  # PH1.2
+            "fee_bps": cost_inputs_effective["fee_bps"],
+            "per_trade_fee_usd": cost_inputs_effective["per_trade_fee_usd"],
             "exec_delay_bars": int(max(0, args.exec_delay_bars)),
             "exec_fill_where": args.exec_fill_where,
             "seed": int(args.seed),
@@ -455,13 +492,22 @@ def _execute_smoke(args: argparse.Namespace, cost_knobs: Dict[str, float | bool]
         "metrics": {
             "pre_cost_cagr": _safe_float(cost_summary.get("pre_cost_cagr")),
             "post_cost_cagr": _safe_float(cost_summary.get("post_cost_cagr")),
-            "annualized_drag_bps": cost_summary.get("annualized_drag_bps"),
-            "IR_post": ir_post,
-            "TE_post": tracking_error_post,
-            "MaxDD_post": maxdd_post,
-            "turnover_gross": cost_summary.get("turnover_gross"),
-            "slippage_bps_weighted": cost_summary.get("slippage_bps_weighted"),
-            "fees_bps_weighted": cost_summary.get("fees_bps_weighted"),
+            "annualized_drag_bps": _safe_float(cost_summary.get("annualized_drag_bps")),
+            "IR_post": _safe_float(ir_post),
+            "TE_post": _safe_float(tracking_error_post),
+            "MaxDD_post": _safe_float(maxdd_post),
+            "turnover_gross": _safe_float(cost_summary.get("turnover_gross")),
+            "turnover_ratio": _safe_float(cost_summary.get("turnover_ratio")),
+            "turnover_multiple": _safe_float(cost_summary.get("turnover_multiple")),
+            "slippage_bps_weighted": _safe_float(cost_summary.get("slippage_bps_weighted")),
+            "weighted_slippage_bps": _safe_float(cost_summary.get("weighted_slippage_bps")),
+            "fees_bps_weighted": _safe_float(cost_summary.get("fees_bps_weighted")),
+            "weighted_fees_bps": _safe_float(cost_summary.get("weighted_fees_bps")),
+            "cost_per_turnover_bps": _safe_float(cost_summary.get("cost_per_turnover_bps")),
+            "sharpe_gross": _safe_float(cost_summary.get("sharpe_gross")),
+            "sharpe_net": _safe_float(cost_summary.get("sharpe_net")),
+            "cagr_gross": _safe_float(cost_summary.get("cagr_gross")),
+            "cagr_net": _safe_float(cost_summary.get("cagr_net")),
         },
         "counters": counters,
         "failures": failures,

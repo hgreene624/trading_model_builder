@@ -11,6 +11,11 @@ import streamlit as st
 logger = logging.getLogger(__name__)
 
 try:
+    from src.storage import get_benchmark_total_return  # type: ignore
+except Exception:  # pragma: no cover - optional helper
+    get_benchmark_total_return = None  # type: ignore
+
+try:
     from src.storage import load_price_history  # type: ignore
 except Exception:  # pragma: no cover - loader optional in some envs
     load_price_history = None  # type: ignore
@@ -60,67 +65,96 @@ def _normalize_curve(series: pd.Series) -> Optional[pd.Series]:
 
 
 def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> Optional[pd.Series]:
-    if load_price_history is None:
-        logger.warning("tri_panel load_price_history unavailable")
-        return None
-    try:
-        kwargs = {"timeframe": "1D"}
-        if start is not None:
-            kwargs.setdefault("start", start)
-        if end is not None:
-            kwargs.setdefault("end", end)
+    mode = "TRI"
+    if hasattr(st, "secrets"):
         try:
-            df = load_price_history("SPY", **kwargs)
-        except TypeError:
-            logger.debug("tri_panel fallback load_price_history signature" , extra={"kwargs": kwargs})
-            df = load_price_history("SPY", timeframe="1D")
-    except Exception:
-        logger.exception("tri_panel failed while loading SPY history")
-        return None
-    if df is None:
-        logger.warning("tri_panel load_price_history returned None")
-        return None
-    try:
-        spy_df = df.copy()
-    except Exception:
-        logger.exception("tri_panel failed to copy SPY dataframe")
-        return None
-    if spy_df is None or len(spy_df) == 0:
-        logger.info("tri_panel SPY dataframe empty")
-        return None
-    cols = {str(c).lower(): c for c in spy_df.columns}
-    tri_col = None
-    for cand in ("adj_close", "adjusted_close", "adjclose", "close"):
-        if cand in cols:
-            tri_col = cols[cand]
-            break
-    if tri_col is None:
-        logger.warning("tri_panel could not locate TRI column", extra={"columns": list(spy_df.columns)})
-        return None
-    try:
-        series = spy_df[tri_col].dropna().astype(float)
-    except Exception:
-        logger.exception("tri_panel failed to process TRI column", extra={"tri_col": tri_col})
-        return None
-    if series.empty:
-        logger.info("tri_panel TRI series empty after dropna")
-        return None
-    if not isinstance(series.index, pd.DatetimeIndex):
-        for ts_col in ("date", "datetime", "timestamp"):
-            if ts_col in spy_df.columns:
-                try:
-                    idx = pd.to_datetime(spy_df[ts_col])
-                    series.index = idx
-                    break
-                except Exception:
-                    logger.exception("tri_panel failed parsing timestamp column", extra={"column": ts_col})
-                    continue
-    if not isinstance(series.index, pd.DatetimeIndex):
-        try:
-            series.index = pd.to_datetime(series.index)
+            mode = str(st.secrets.get("BENCHMARK_MODE", "TRI") or "TRI").upper()
         except Exception:
-            logger.exception("tri_panel failed to coerce series index to datetime")
+            mode = "TRI"
+
+    series: Optional[pd.Series]
+    series = None
+    if get_benchmark_total_return is not None:
+        try:
+            series = get_benchmark_total_return(mode=mode, start=start, end=end)
+        except Exception:
+            logger.exception("tri_panel benchmark helper failed", extra={"mode": mode})
+            series = None
+
+    if (series is None or series.empty) and load_price_history is not None:
+        try:
+            kwargs = {"timeframe": "1D"}
+            if start is not None:
+                kwargs.setdefault("start", start)
+            if end is not None:
+                kwargs.setdefault("end", end)
+            try:
+                df = load_price_history("SPY", **kwargs)
+            except TypeError:
+                logger.debug("tri_panel fallback load_price_history signature", extra={"kwargs": kwargs})
+                df = load_price_history("SPY", timeframe="1D")
+        except Exception:
+            logger.exception("tri_panel failed while loading SPY history")
             return None
+        if df is None:
+            logger.warning("tri_panel load_price_history returned None")
+            return None
+        if df is None or len(df) == 0:
+            logger.info("tri_panel SPY dataframe empty")
+            return None
+        cols = {str(c).lower(): c for c in df.columns}
+        if mode == "PRI":
+            preferred_cols = ("close", "adj_close", "adjusted_close", "adjclose")
+        else:
+            preferred_cols = ("adj_close", "adjusted_close", "adjclose", "close")
+        tri_col = None
+        for cand in preferred_cols:
+            if cand in cols:
+                tri_col = cols[cand]
+                break
+        if tri_col is None:
+            logger.warning("tri_panel could not locate benchmark column", extra={"columns": list(df.columns)})
+            return None
+        try:
+            series = df[tri_col].dropna().astype(float)
+        except Exception:
+            logger.exception("tri_panel failed to process benchmark column", extra={"tri_col": tri_col})
+            return None
+        if series.empty:
+            logger.info("tri_panel benchmark series empty after dropna")
+            return None
+        if not isinstance(series.index, pd.DatetimeIndex):
+            for ts_col in ("date", "datetime", "timestamp"):
+                if ts_col in df.columns:
+                    try:
+                        series.index = pd.to_datetime(df[ts_col])
+                        break
+                    except Exception:
+                        logger.exception("tri_panel failed parsing timestamp column", extra={"column": ts_col})
+                        continue
+        if not isinstance(series.index, pd.DatetimeIndex):
+            try:
+                series.index = pd.to_datetime(series.index)
+            except Exception:
+                logger.exception("tri_panel failed to coerce series index to datetime")
+                return None
+        if isinstance(series.index, pd.DatetimeIndex) and getattr(series.index, "tz", None) is not None:
+            try:
+                series.index = series.index.tz_convert(None)
+            except Exception:
+                try:
+                    series.index = series.index.tz_localize(None)
+                except Exception:
+                    logger.debug(
+                        "tri_panel failed to drop timezone from benchmark series",
+                        extra={"tz": str(series.index.tz)},
+                    )
+                    return None
+    if series is None or series.empty:
+        logger.warning("tri_panel benchmark series unavailable")
+        return None
+
+    series = series.sort_index().dropna()
     if isinstance(series.index, pd.DatetimeIndex) and getattr(series.index, "tz", None) is not None:
         try:
             series.index = series.index.tz_convert(None)
@@ -128,14 +162,17 @@ def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp])
             try:
                 series.index = series.index.tz_localize(None)
             except Exception:
-                logger.debug("tri_panel failed to drop timezone from SPY series", extra={"tz": str(series.index.tz)})
+                logger.debug("tri_panel failed to drop timezone", extra={"tz": str(series.index.tz)})
                 return None
-    series = series.sort_index()
     series = series[series > 0]
     if series.empty:
-        logger.info("tri_panel TRI series empty after filtering positives")
+        logger.info("tri_panel benchmark series empty after filtering positives")
         return None
-    return series / float(series.iloc[0])
+    first = series.iloc[0]
+    if first <= 0:
+        logger.info("tri_panel benchmark first value non-positive", extra={"value": float(first)})
+        return None
+    return series / float(first)
 
 
 def _compute_cagr(series: pd.Series) -> Optional[float]:

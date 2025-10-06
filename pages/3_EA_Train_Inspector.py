@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import html
 import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -25,6 +26,34 @@ st.markdown(
     """
     <style>
     div.stButton > button { white-space: nowrap; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <style>
+    .ea-cost-kpi-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .ea-cost-kpi-chip {
+        background-color: var(--secondary-background-color, #f0f2f6);
+        padding: 0.75rem 1rem;
+        border-radius: 0.75rem;
+        min-width: 160px;
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+    }
+    .ea-cost-kpi-chip-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: rgba(49, 51, 63, 0.6);
+        margin-bottom: 0.15rem;
+    }
+    .ea-cost-kpi-chip-value {
+        font-size: 1.15rem;
+        font-weight: 600;
+        color: rgba(49, 51, 63, 0.95);
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -224,8 +253,8 @@ _COST_KPI_TOOLTIPS = {
         ">100 bps/yr is costly. Lower is better."
     ),
     "Weighted Slippage (bps)": (
-        "Average execution penalty per trade (in basis points). For SPY/QQQ, ~5–15 bps is typical "
-        "with simple assumptions. Lower is better."
+        "Average execution penalty per trade (in basis points), weighted by fills. For SPY/QQQ, ~5–15 bps is typical. "
+        "Lower is better."
     ),
     "Turnover (×/yr)": (
         "How many portfolio ‘turns’ per year. Higher turnover usually raises costs unless alpha improves proportionally. "
@@ -324,34 +353,55 @@ def _collect_cost_metric_rows(best_row: pd.Series) -> List[Dict[str, str]]:
     else:
         cost_per_turnover = None
 
-    rows: List[Dict[str, str]] = []
+    kpis: List[Dict[str, str]] = []
 
-    def _add_row(label: str, value: Optional[str]) -> None:
-        rows.append(
+    def _push(label: str, value: Optional[str]) -> None:
+        if not value:
+            return
+        kpis.append(
             {
-                "Metric": label,
-                "Value": value if value is not None else "—",
-                "Guidance": _COST_KPI_TOOLTIPS.get(label, ""),
+                "label": label,
+                "value": value,
+                "tooltip": _COST_KPI_TOOLTIPS.get(label, ""),
             }
         )
 
-    alpha_display = _format_percent(alpha_ratio, 0) if alpha_ratio is not None else None
-    drag_display = f"{drag_bps:.0f} bps/yr" if drag_bps is not None else None
+    if alpha_ratio is not None:
+        _push("Alpha Retention %", _format_percent(alpha_ratio, 0))
+
+    if drag_bps is not None:
+        _push("Annualized Drag (bps/yr)", f"{drag_bps:.0f} bps/yr")
+
     if slip_bps is not None:
         slip_fmt = f"{slip_bps:.1f}" if abs(slip_bps) < 10 else f"{slip_bps:.0f}"
-        slip_display = f"{slip_fmt} bps"
-    else:
-        slip_display = None
-    turnover_display = f"{turnover_ratio:.2f}×/yr" if turnover_ratio is not None else None
-    cost_display = f"{cost_per_turnover:.0f} bps/1×" if cost_per_turnover is not None else None
+        _push("Weighted Slippage (bps)", f"{slip_fmt} bps")
 
-    _add_row("Alpha Retention %", alpha_display)
-    _add_row("Annualized Drag (bps/yr)", drag_display)
-    _add_row("Weighted Slippage (bps)", slip_display)
-    _add_row("Turnover (×/yr)", turnover_display)
-    _add_row("Cost per Turnover (bps per 1×)", cost_display)
+    if turnover_ratio is not None:
+        _push("Turnover (×/yr)", f"{turnover_ratio:.2f}×/yr")
 
-    return rows
+    if cost_per_turnover is not None:
+        _push("Cost per Turnover (bps per 1×)", f"{cost_per_turnover:.0f} bps/1×")
+
+    return kpis
+
+
+def _render_cost_kpis(kpis: List[Dict[str, str]]) -> None:
+    if not kpis:
+        return
+    chips: List[str] = []
+    for item in kpis:
+        label_html = html.escape(item["label"], quote=True)
+        value_html = html.escape(item["value"], quote=True)
+        tooltip_html = html.escape(item.get("tooltip", ""), quote=True)
+        chips.append(
+            """
+            <div class="ea-cost-kpi-chip" title="{tooltip}">
+                <div class="ea-cost-kpi-chip-label">{label}</div>
+                <div class="ea-cost-kpi-chip-value">{value}</div>
+            </div>
+            """.format(label=label_html, value=value_html, tooltip=tooltip_html)
+        )
+    st.markdown(f"<div class='ea-cost-kpi-row'>{''.join(chips)}</div>", unsafe_allow_html=True)
 
 
 def _render_metric_dashboard(best_row: Optional[pd.Series]) -> None:
@@ -394,25 +444,9 @@ def _render_metric_dashboard(best_row: Optional[pd.Series]) -> None:
         idx += 1
 
     if cost_rows:
-        cost_df = pd.DataFrame(cost_rows)
         with cols[idx]:
             st.markdown("**Costs Impact**")
-            st.dataframe(
-                cost_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Metric": st.column_config.TextColumn(
-                        "Metric",
-                        help="Cost-related indicator sourced from saved run metrics.",
-                    ),
-                    "Value": st.column_config.TextColumn("Value"),
-                    "Guidance": st.column_config.TextColumn(
-                        "Guidance",
-                        help="How costs influence or contextualize the metric.",
-                    ),
-                },
-            )
+            _render_cost_kpis(cost_rows)
 
 # ---------- equity provider ----------
 
