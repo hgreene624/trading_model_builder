@@ -74,3 +74,27 @@ def test_ea_config_smoke(monkeypatch, tmp_path, fitness_value):
     done = done_payloads[0]
     assert done.get("stopped_early"), "Early stopping should trigger with patience=1"
     assert done.get("generations_ran") <= cfg["generations"]
+
+
+def test_sbx_handles_negative_bounds_without_complex(monkeypatch):
+    """Ensure SBX crossover never produces complex numbers when bounds are negative."""
+
+    cfg = evolutionary.EAConfig(
+        crossover_op="sbx",
+        crossover_rate=1.0,
+        mutation_rate=0.0,
+        pop_size=4,
+    )
+
+    # Freeze randomness for deterministic behaviour
+    monkeypatch.setattr(evolutionary.random, "random", lambda: 0.25)
+
+    parent_a = {"x": -10.0}
+    parent_b = {"x": -6.0}
+    bounds = {"x": (-12.0, -4.0)}
+
+    child = evolutionary._crossover_configured(parent_a, parent_b, bounds, cfg)
+
+    value = child["x"]
+    assert not isinstance(value, complex)
+    assert bounds["x"][0] <= value <= bounds["x"][1]

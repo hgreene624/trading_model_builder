@@ -309,12 +309,17 @@ def _crossover_configured(
                 else:
                     u = random.random()
                     eta = 2.0
-                    beta = 1.0 + (2.0 * min(v1f, v2f) - float(lo)) / max(1e-9, abs(v2f - v1f))
-                    beta_prime = 1.0 + (2.0 * float(hi) - 2.0 * max(v1f, v2f)) / max(1e-9, abs(v2f - v1f))
+                    span = max(1e-9, abs(v2f - v1f))
+                    beta = 1.0 + (2.0 * min(v1f, v2f) - float(lo)) / span
+                    beta_prime = 1.0 + (2.0 * float(hi) - 2.0 * max(v1f, v2f)) / span
+                    # Guard against negative crossover coefficients which would yield complex values
+                    beta = max(1e-9, beta)
+                    beta_prime = max(1e-9, beta_prime)
                     if u <= 0.5:
-                        beta_q = (u * beta) ** (1.0 / (eta + 1.0))
+                        beta_q = max(1e-9, u * beta) ** (1.0 / (eta + 1.0))
                     else:
-                        beta_q = (1.0 / (2.0 - u * beta_prime)) ** (1.0 / (eta + 1.0))
+                        denom = max(1e-9, 2.0 - u * beta_prime)
+                        beta_q = (1.0 / denom) ** (1.0 / (eta + 1.0))
                     child_val = 0.5 * ((1 + beta_q) * v1f + (1 - beta_q) * v2f)
                     child[key] = float(child_val)
             else:
