@@ -238,18 +238,25 @@ class CostModel:
     def from_env(cls) -> "CostModel":
         enabled = _env_flag("COST_ENABLED", True)
         fixed_bps = max(0.0, _env_float("COST_FIXED_BPS", 0.5))
+        fee_bps_override = os.getenv("FEE_BPS")
+        if fee_bps_override is not None:
+            fixed_bps = max(0.0, _coerce_float(fee_bps_override, fixed_bps))
         atr_k = max(0.0, _env_float("COST_ATR_K", 0.05))  # PH1.2
         min_half_spread = max(0.0, _env_float("COST_MIN_HS_BPS", 0.5))  # PH1.2
         use_range_impact = _env_flag("COST_USE_RANGE_IMPACT", False)  # PH1.2
         cap_range_impact_bps = max(0.0, _env_float("CAP_RANGE_IMPACT_BPS", 10.0))  # PH1.2
+        per_trade_fee_env = os.getenv("FEE_PER_TRADE_USD")
+        if per_trade_fee_env is None:
+            per_trade_fee_env = os.getenv("ATR_PER_TRADE_FEE")
+        per_trade_fee = max(0.0, _coerce_float(per_trade_fee_env, 0.0))
         mode = os.getenv("COST_MODE", "simple_spread")
         mode = str(mode).strip().lower()
         if mode not in {"simple_spread"}:
             mode = "simple_spread"
         return cls(
-            commission_bps=0.0,
+            commission_bps=float(fixed_bps),
             slippage_bps=0.0,
-            per_trade_fee=0.0,
+            per_trade_fee=float(per_trade_fee),
             enabled=bool(enabled),
             fixed_bps=float(fixed_bps),
             atr_k=float(atr_k),  # PH1.2
@@ -277,13 +284,17 @@ class CostModel:
                 "total_cost": 0.0,
                 "slippage_bps": 0.0,
                 "commission_bps": 0.0,
+                "per_trade_fee_bps": 0.0,
             }
 
         total_bps = self.total_bps() / 10_000.0
-        notional = price * qty
+        notional = abs(price * qty)
         slippage_cost = notional * (self.slippage_bps / 10_000.0)
         commission_cost = notional * (self.commission_bps / 10_000.0)
-        fee_cost = self.per_trade_fee
+        fee_cost = abs(self.per_trade_fee)
+        per_trade_fee_bps = 0.0
+        if notional > 0 and fee_cost > 0:
+            per_trade_fee_bps = fee_cost / notional * 10_000.0
 
         # Adjust fill directionally based on side/action
         direction = 1.0
@@ -302,7 +313,9 @@ class CostModel:
             "fee_cost": float(fee_cost),
             "total_cost": float(slippage_cost + commission_cost + fee_cost),
             "slippage_bps": float(self.slippage_bps),
-            "commission_bps": float(self.commission_bps),
+            "commission_bps": float(self.commission_bps + per_trade_fee_bps),
+            "per_trade_fee_bps": float(per_trade_fee_bps),
+            "commission_bps_raw": float(self.commission_bps),
         }
 
 
@@ -347,6 +360,10 @@ def _apply_costs(
     half_spread = _estimate_half_spread_bps(bar, cm)  # PH1.2
     slip_bps = max(base_bps, half_spread, cm.min_half_spread_bps)  # PH1.2
     fees_bps = max(0.0, _coerce_float(cm.fixed_bps, 0.0))
+    per_trade_fee = max(0.0, _coerce_float(getattr(cm, "per_trade_fee", 0.0), 0.0))
+    notional = abs(price * quantity)
+    if per_trade_fee > 0.0 and notional > 0.0:
+        fees_bps += per_trade_fee / notional * 10_000.0
     direction = 1.0 if quantity > 0 else -1.0
     price_after = price * (1.0 + direction * slip_bps / 10_000.0)
     return float(price_after), float(slip_bps), float(fees_bps)
@@ -464,7 +481,9 @@ def backtest_atr_breakout(
 
     commission_cfg = _env_float("ATR_COMMISSION_BPS", commission_cfg)
     slippage_cfg = _env_float("ATR_SLIPPAGE_BPS", slippage_cfg)
+    commission_cfg = _env_float("FEE_BPS", commission_cfg)
     fee_cfg = _env_float("ATR_PER_TRADE_FEE", fee_cfg)
+    fee_cfg = _env_float("FEE_PER_TRADE_USD", fee_cfg)
 
     if cost_model is None:
         cost_model = CostModel.from_inputs(
@@ -816,6 +835,7 @@ def backtest_atr_breakout(
                         "total_cost": float(slip_cost_exit + fee_cost_exit),
                         "price_before": float(exit_price),
                         "price_after": float(exit_fill_price),
+                        "per_trade_fee_bps": 0.0,
                     }
                 )
             else:
@@ -882,8 +902,10 @@ def backtest_atr_breakout(
                 "gross_exit_price": float(exit_price),
                 "entry_slippage_bps": float(entry_breakdown.get("slippage_bps", 0.0)),
                 "entry_fee_bps": float(entry_breakdown.get("commission_bps", 0.0)),
+                "entry_per_trade_fee_bps": float(entry_breakdown.get("per_trade_fee_bps", 0.0)),
                 "exit_slippage_bps": float(exit_breakdown.get("slippage_bps", 0.0)),
                 "exit_fee_bps": float(exit_breakdown.get("commission_bps", 0.0)),
+                "exit_per_trade_fee_bps": float(exit_breakdown.get("per_trade_fee_bps", 0.0)),
                 "signal_time": entry_signal_time,
                 "signal_price": float(entry_signal_price) if entry_signal_price is not None else None,
                 "exit_signal_time": exit_trigger.get("signal_time"),
@@ -994,6 +1016,7 @@ def backtest_atr_breakout(
                             "total_cost": float(slip_cost_entry + fee_cost_entry),
                             "price_before": float(entry_decision_price),
                             "price_after": float(entry_fill_price),
+                            "per_trade_fee_bps": 0.0,
                         }
                     )
                 else:
@@ -1062,6 +1085,8 @@ def backtest_atr_breakout(
         "fees_bps",
         "notional_entry",
         "notional_exit",
+        "entry_per_trade_fee_bps",
+        "exit_per_trade_fee_bps",
     ]
     for col in required_float_cols:
         if col not in trades_df.columns:
@@ -1078,7 +1103,27 @@ def backtest_atr_breakout(
             + trades_df.get("notional_exit", pd.Series(dtype=float)).abs().sum()
         )
     start_equity = eq_gross.iloc[0] if len(eq_gross) else float(starting_equity)
-    turnover_ratio = (total_notional / start_equity) if start_equity else 0.0
+    turnover_multiple = (total_notional / start_equity) if start_equity else 0.0
+
+    period_days = 0.0
+
+    def _span_days(series: pd.Series) -> float:
+        if series is None or len(series) < 2:
+            return 0.0
+        try:
+            delta = series.index[-1] - series.index[0]
+        except Exception:
+            return 0.0
+        try:
+            return float(delta.days)
+        except Exception:
+            return 0.0
+
+    period_days = _span_days(eq_gross)
+    if period_days <= 0.0:
+        period_days = _span_days(eq_net)
+    years = period_days / 365.25 if period_days > 0 else 0.0
+    turnover_ratio = turnover_multiple / years if years > 0 else 0.0
 
     total_slip_cost = 0.0
     total_fee_cost = 0.0
@@ -1095,7 +1140,7 @@ def backtest_atr_breakout(
         ]
         total_fee_cost = float(sum(fee_cols))
 
-    cost_summary: dict[str, float] = {}
+    cost_summary: dict[str, float | None] = {}
     base_summary: dict | None = None
     if _summarize_costs is not None:
         try:
@@ -1107,7 +1152,14 @@ def backtest_atr_breakout(
         except Exception:
             base_summary = None
     if base_summary:
-        cost_summary.update({k: float(v) for k, v in base_summary.items()})
+        for key, value in base_summary.items():
+            if value is None:
+                cost_summary[key] = None
+            else:
+                try:
+                    cost_summary[key] = float(value)
+                except (TypeError, ValueError):
+                    cost_summary[key] = None
     else:
         cost_summary.update(
             {
@@ -1118,31 +1170,88 @@ def backtest_atr_breakout(
                 "pre_cost_cagr": 0.0,
                 "post_cost_cagr": 0.0,
                 "annualized_drag_bps": 0.0,
+                "sharpe_gross": 0.0,
+                "sharpe_net": 0.0,
+                "sharpe_pre_cost": 0.0,
+                "sharpe_post_cost": 0.0,
+                "cagr_gross": 0.0,
+                "cagr_net": 0.0,
             }
         )
 
     if "pre_cost_cagr" in cost_summary and "post_cost_cagr" in cost_summary:
-        cost_summary["annualized_drag"] = float(cost_summary["pre_cost_cagr"] - cost_summary["post_cost_cagr"])
-    cost_summary["weighted_slippage_bps"] = float(cost_summary.get("slippage_bps_weighted", 0.0))
-    cost_summary["weighted_fees_bps"] = float(cost_summary.get("fees_bps_weighted", 0.0))
-    cost_summary["turnover_gross"] = float(cost_summary.get("turnover_gross", total_notional))
-    cost_summary["turnover_avg_daily"] = float(cost_summary.get("turnover_avg_daily", 0.0))
-    cost_summary["turnover"] = float(turnover_ratio)
-    cost_summary["turnover_ratio"] = float(turnover_ratio)
+        try:
+            cost_summary["annualized_drag"] = float(
+                float(cost_summary.get("pre_cost_cagr", 0.0) or 0.0)
+                - float(cost_summary.get("post_cost_cagr", 0.0) or 0.0)
+            )
+        except (TypeError, ValueError):
+            cost_summary["annualized_drag"] = 0.0
+
+    drag_bps = cost_summary.get("annualized_drag_bps")
+    if drag_bps is None and cost_summary.get("annualized_drag") is not None:
+        drag_bps = float(cost_summary.get("annualized_drag", 0.0)) * 10_000.0
+    try:
+        cost_summary["annualized_drag_bps"] = float(drag_bps) if drag_bps is not None else 0.0
+    except (TypeError, ValueError):
+        cost_summary["annualized_drag_bps"] = 0.0
+
+    for alias in ("slippage_bps_weighted", "fees_bps_weighted"):
+        if alias not in cost_summary or cost_summary[alias] is None:
+            cost_summary[alias] = 0.0
+
+    for key in (
+        "pre_cost_cagr",
+        "post_cost_cagr",
+        "sharpe_gross",
+        "sharpe_net",
+        "sharpe_pre_cost",
+        "sharpe_post_cost",
+        "cagr_gross",
+        "cagr_net",
+    ):
+        if key in cost_summary and cost_summary[key] is None:
+            cost_summary[key] = 0.0
+
+    cost_summary["weighted_slippage_bps"] = float(cost_summary.get("slippage_bps_weighted", 0.0) or 0.0)
+    cost_summary["weighted_fees_bps"] = float(cost_summary.get("fees_bps_weighted", 0.0) or 0.0)
+    cost_summary["turnover_gross"] = float(cost_summary.get("turnover_gross", total_notional) or 0.0)
+    cost_summary["turnover_avg_daily"] = float(cost_summary.get("turnover_avg_daily", 0.0) or 0.0)
+    cost_summary["turnover_multiple"] = float(cost_summary.get("turnover_multiple", turnover_multiple) or 0.0)
+    cost_summary["turnover_ratio"] = float(cost_summary.get("turnover_ratio", turnover_ratio) or 0.0)
+    cost_summary["turnover"] = float(cost_summary.get("turnover", cost_summary["turnover_ratio"]))
     cost_summary["total_slippage_cost"] = float(total_slip_cost)
     cost_summary["total_fee_cost"] = float(total_fee_cost)
     cost_summary["total_cost"] = float(total_slip_cost + total_fee_cost)
+    if cost_summary["turnover_ratio"] > 0 and cost_summary["annualized_drag_bps"]:
+        cost_summary["cost_per_turnover_bps"] = (
+            float(cost_summary["annualized_drag_bps"]) / float(cost_summary["turnover_ratio"])
+        )
 
     meta = dict(base_meta)
     meta["costs"] = {"enabled": enable_costs, "summary": cost_summary}
     effective_cost_model = (
         phase0_cost_model if getattr(phase0_cost_model, "enabled", False) else cost_model
     )  # PH1.2
+    effective_cost_dict = effective_cost_model.as_dict() if effective_cost_model else {}
     meta["cost_inputs"] = {  # PH1.2: surface effective cost knobs for downstream logging
-        "atr_k": float(getattr(effective_cost_model, "atr_k", 0.0)),
-        "min_half_spread_bps": float(getattr(effective_cost_model, "min_half_spread_bps", 0.0)),
-        "use_range_impact": bool(getattr(effective_cost_model, "use_range_impact", False)),
-        "cap_range_impact_bps": float(getattr(effective_cost_model, "cap_range_impact_bps", 10.0)),
+        "enabled": bool(getattr(effective_cost_model, "enabled", False)),
+        "commission_bps": float(effective_cost_dict.get("commission_bps", 0.0) or 0.0),
+        "slippage_bps": float(effective_cost_dict.get("slippage_bps", 0.0) or 0.0),
+        "fixed_bps": float(effective_cost_dict.get("fixed_bps", 0.0) or 0.0),
+        "fee_bps": float(effective_cost_dict.get("fixed_bps", 0.0) or 0.0),
+        "per_trade_fee_usd": float(effective_cost_dict.get("per_trade_fee", 0.0) or 0.0),
+        "atr_k": float(effective_cost_dict.get("atr_k", getattr(effective_cost_model, "atr_k", 0.0))),
+        "min_half_spread_bps": float(
+            effective_cost_dict.get("min_half_spread_bps", getattr(effective_cost_model, "min_half_spread_bps", 0.0))
+        ),
+        "use_range_impact": bool(
+            effective_cost_dict.get("use_range_impact", getattr(effective_cost_model, "use_range_impact", False))
+        ),
+        "cap_range_impact_bps": float(
+            effective_cost_dict.get("cap_range_impact_bps", getattr(effective_cost_model, "cap_range_impact_bps", 10.0))
+            or 0.0
+        ),
     }
     meta.setdefault("runtime_counters", {})
     meta["runtime_counters"].update(
