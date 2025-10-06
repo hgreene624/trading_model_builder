@@ -1,5 +1,14 @@
 # EA Implementation Audit
 
+## Changelog
+- 2025-10-13: Simplified the holdout scoring path with a normalised holdout policy that logs the resolved weights, gap tolerance, and train-floor guard so tuning stays transparent while reducing configuration friction.
+- 2025-10-11: Introduced a configurable penalty when the training window severely lags the holdout, preventing high-scoring holdout runs with outsized in-sample losses from dominating selections.
+- 2025-10-12: Allow overriding the holdout shortfall penalty via `storage/config/ea_fitness.json` so tuning can be aligned with portfolio risk appetite.
+- 2025-10-10: Holdout-aware fitness now blends test and training scores with a configurable weight and shortfall penalty, so strategies must perform on both windows to rank highly while preserving overall portfolio quality.
+- 2025-10-08: Portfolio EA scoring now prioritizes holdout/test metrics when a test window is supplied, logging both train and test metric payloads so inspector tooling reflects the same numbers used for fitness. Legacy callers without a holdout remain unchanged.
+- 2025-10-07: Corrected the μ+λ replacement path to keep mutated offspring and injections in the next population so later generations meaningfully explore the search space.
+- 2025-10-06: Added EAConfig with mutation/elitism controls exposed through the Strategy Adapter UI, including mutation rate/scale, crossover, selection, annealing, and worker knobs. Legacy callers that omit `config` continue to use the previous defaults, and the Buy-the-Dip configuration UI has been consolidated into a single section.
+
 ## 1. Executive Summary
 The platform wires two evolutionary optimizers into the Streamlit research workflow: a multi-symbol portfolio tuner (`evolutionary_search`) that loops through the general trainer/backtest stack with JSONL logging, and a single-symbol helper (`evolve_params`) that powers the legacy tuning page; both reuse the ATR breakout engine and metrics pipeline without modifying strategy code.【F:src/optimization/evolutionary.py†L318-L796】【F:src/tuning/evolve.py†L287-L367】【F:src/models/general_trainer.py†L89-L265】
 
@@ -74,6 +83,7 @@ Storage/Inspection
 - **Gates:** zero score returned when trades < `min_trades`, average holding days below `min_avg_holding_days_gate`, or optional hold-day requirement fails; small drawdowns/Sharpe values are zeroed via `eps_mdd`/`eps_sharpe`.【F:src/optimization/evolutionary.py†L214-L235】
 - **Trade-rate context:** trade rate = total trades ÷ symbols ÷ years, where years is derived from train period length; parameters `trade_rate_min`, `trade_rate_max`, and `rate_penalize_upper` control band behavior.【F:src/optimization/evolutionary.py†L272-L285】【F:src/optimization/evolutionary.py†L434-L455】
 - **Metrics sources:** `train_general_model` aggregates equal-weight portfolio metrics, injecting `trades`, `avg_holding_days`, `win_rate`, and `expectancy` so the EA can gate on activity.【F:src/models/general_trainer.py†L169-L245】
+- **Holdout blending:** a resolved holdout policy normalises train/test weights (defaults 0.65/0.35), subtracts a gap penalty when the training score exceeds the holdout beyond the configured tolerance, and applies a floor penalty if the in-sample score falls below the train floor. The policy is logged once per run, and each individual records the applied components and final blended score for inspector tooling.【F:src/optimization/evolutionary.py†L756-L812】【F:src/optimization/evolutionary.py†L944-L1038】
 - **Cost modeling:** ATR engine applies costs/slippage through `CostModel.from_inputs`, environment overrides, and returns post-cost trade logs used by `compute_core_metrics`, ensuring fitness incorporates cost-aware equity curves when enabled.【F:src/backtest/engine.py†L392-L500】【F:src/backtest/metrics.py†L247-L261】
 - **External config:** optional `storage/config/ea_fitness.json` overrides fitness weights and penalty parameters at runtime, with the applied values logged once per session.【F:src/optimization/evolutionary.py†L41-L424】
 - **Single-symbol EA fitness:** returns the blended Sharpe/return/drawdown score described above; penalties rely solely on drawdown magnitude, with engine metrics feeding the calculation.【F:src/tuning/evolve.py†L243-L284】
