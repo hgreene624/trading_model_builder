@@ -338,3 +338,79 @@ def test_holdout_blend_penalizes_overfit(monkeypatch):
     best_params, best_score = results[0]
     assert best_params["x"] == 1, "Balanced candidate should win when holdout collapses"
     assert best_score > 0.0
+
+
+def test_holdout_blend_penalizes_train_shortfall(monkeypatch):
+    """Holdout scoring should demote genomes that crater on the training window."""
+
+    def _fake_train_general_model(_strategy, _tickers, start, _end, _equity, params):
+        base_metrics = {
+            "trades": 10,
+            "avg_holding_days": 4.0,
+        }
+        x_val = params.get("x", 0)
+        if str(start).startswith("2020-04"):
+            # Holdout rewards higher x values
+            score = 0.9 if x_val == 0 else 0.7
+        else:
+            # Training punishes x=0 while keeping x=1 healthy
+            score = -0.8 if x_val == 0 else 0.6
+        base_metrics.update(
+            {
+                "total_return": score,
+                "cagr": score,
+                "calmar": score,
+                "sharpe": score,
+            }
+        )
+        return {"aggregate": {"metrics": base_metrics}}
+
+    seq = iter([
+        {"x": 0},
+        {"x": 1},
+    ])
+
+    def _fake_random_param(_space):
+        try:
+            return dict(next(seq))
+        except StopIteration:
+            return {"x": 1}
+
+    monkeypatch.setattr(evolutionary, "train_general_model", _fake_train_general_model)
+    monkeypatch.setattr(evolutionary, "random_param", _fake_random_param)
+
+    cfg = {
+        "pop_size": 2,
+        "generations": 1,
+        "selection_method": "tournament",
+        "tournament_k": 2,
+        "replacement": "generational",
+        "elitism_fraction": 0.5,
+        "crossover_rate": 0.0,
+        "mutation_rate": 0.0,
+        "mutation_scale": 0.1,
+        "anneal_mutation": False,
+        "fitness_patience": 0,
+        "shuffle_eval": False,
+        "seed": 9,
+    }
+
+    results = evolutionary.evolutionary_search(
+        strategy_dotted="tests.fake",
+        tickers=["AAPL"],
+        start="2020-01-01",
+        end="2020-03-31",
+        test_start="2020-04-01",
+        test_end="2020-06-30",
+        starting_equity=10000.0,
+        param_space={"x": (0, 1)},
+        min_trades=0,
+        n_jobs=1,
+        random_inject_frac=0.0,
+        config=cfg,
+    )
+
+    assert results, "EA should evaluate candidates"
+    best_params, best_score = results[0]
+    assert best_params["x"] == 1, "Strategy with healthier training window should win"
+    assert best_score > 0.0

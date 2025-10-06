@@ -648,6 +648,7 @@ def evolutionary_search(
     holdout_weight = 0.65
     holdout_gap_tolerance = 0.15
     holdout_gap_penalty = 0.50
+    holdout_shortfall_penalty = 0.35
 
     cfg = _coerce_ea_config(config)
 
@@ -705,6 +706,9 @@ def evolutionary_search(
         holdout_weight = _cfg.get("holdout_score_weight", holdout_weight)
         holdout_gap_tolerance = _cfg.get("holdout_gap_tolerance", holdout_gap_tolerance)
         holdout_gap_penalty = _cfg.get("holdout_gap_penalty", holdout_gap_penalty)
+        holdout_shortfall_penalty = _cfg.get(
+            "holdout_shortfall_penalty", holdout_shortfall_penalty
+        )
         # Emit a one-time breadcrumb so logs show which source set the weights
         logger.log("fitness_config", {
             "source": "storage/config/ea_fitness.json",
@@ -724,6 +728,7 @@ def evolutionary_search(
                 "trade_rate_max": trade_rate_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
+                "holdout_shortfall_penalty": holdout_shortfall_penalty,
             },
         })
 
@@ -739,6 +744,10 @@ def evolutionary_search(
         holdout_gap_penalty = max(0.0, float(holdout_gap_penalty))
     except Exception:
         holdout_gap_penalty = 0.50
+    try:
+        holdout_shortfall_penalty = max(0.0, float(holdout_shortfall_penalty))
+    except Exception:
+        holdout_shortfall_penalty = 0.35
 
     # One-time session metadata for inspector tooling
     session_meta_payload = {
@@ -1033,7 +1042,11 @@ def evolutionary_search(
                         ratio = test_score / effective_train_score
                     gap = max(0.0, effective_train_score - test_score - holdout_gap_tolerance)
                     penalty = holdout_gap_penalty * gap
-                    score = max(0.0, test_component + train_bonus - penalty)
+                    train_shortfall = max(
+                        0.0, test_score - effective_train_score - holdout_gap_tolerance
+                    )
+                    shortfall_penalty = holdout_shortfall_penalty * train_shortfall
+                    score = max(0.0, test_component + train_bonus - penalty - shortfall_penalty)
                     fitness_dbg.update(
                         {
                             "holdout_blended": True,
@@ -1045,6 +1058,8 @@ def evolutionary_search(
                             "holdout_component": test_component,
                             "blend_penalty": penalty,
                             "gap_excess": gap,
+                            "train_shortfall": train_shortfall,
+                            "shortfall_penalty": shortfall_penalty,
                             "blended_score": score,
                         }
                     )
@@ -1056,6 +1071,8 @@ def evolutionary_search(
                             "holdout_component": test_component,
                             "gap_excess": gap,
                             "penalty": penalty,
+                            "train_shortfall": train_shortfall,
+                            "shortfall_penalty": shortfall_penalty,
                             "blended_score": score,
                         }
                     )
