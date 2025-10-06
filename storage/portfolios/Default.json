@@ -1,0 +1,73 @@
+{
+  "name": "Default",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "AMZN",
+    "GOOG",
+    "META"
+  ],
+  "meta": {
+    "source": "1_Portfolios",
+    "index_key": null,
+    "filters": {
+      "search": "",
+      "sectors": [
+        "Auto",
+        "Consumer",
+        "Tech"
+      ],
+      "min_median_close_priors": 0.0,
+      "min_median_dollar_vol_priors": 0.0
+    },
+    "windows": {
+      "priors": [
+        "2020-09-28",
+        "2025-09-27"
+      ]
+    },
+    "count": 5,
+    "last_prefetch_at": "2025-09-27T16:12:48+00:00",
+    "per_symbol_ranges": {
+      "AAPL": {
+        "start": "2020-09-29",
+        "end": "2025-09-26"
+      },
+      "MSFT": {
+        "start": "2020-09-29",
+        "end": "2025-09-26"
+      },
+      "AMZN": {
+        "start": "2020-09-29",
+        "end": "2025-09-26"
+      },
+      "GOOG": {
+        "start": "2020-09-29",
+        "end": "2025-09-26"
+      },
+      "META": {
+        "start": "2020-09-29",
+        "end": "2025-09-26"
+      }
+    },
+    "latest_training": {
+      "train_start": "2020-09-29",
+      "train_end": "2024-03-28",
+      "holdout_start": "2024-03-29",
+      "holdout_end": "2025-09-26",
+      "train_fraction": 0.700109649122807,
+      "test_fraction": 0.29989035087719296,
+      "train_share_pct": 70.011,
+      "test_share_pct": 29.989,
+      "train_days": 1277,
+      "test_days": 547,
+      "coverage_start": "2020-09-29",
+      "coverage_end": "2025-09-26",
+      "coverage_days": 1824,
+      "data_cache_root": null,
+      "ea_log_file": "storage/logs/ea/20251006_111945_ea.jsonl",
+      "updated_at": "2025-10-06T18:22:29.048111+00:00"
+    }
+  },
+  "saved_at": "2025-10-06T18:22:29.048368+00:00"
+}
