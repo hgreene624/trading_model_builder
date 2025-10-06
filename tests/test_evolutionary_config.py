@@ -6,6 +6,18 @@ import pytest
 from src.optimization import evolutionary
 
 
+def test_load_fitness_config_shortfall_penalty(tmp_path):
+    """The JSON fitness config should surface the shortfall penalty override."""
+
+    cfg_path = tmp_path / "ea_fitness.json"
+    cfg_path.write_text(json.dumps({"holdout_shortfall_penalty": 0.9}))
+
+    loaded = evolutionary._load_fitness_config_json(str(cfg_path))
+
+    assert "holdout_shortfall_penalty" in loaded
+    assert loaded["holdout_shortfall_penalty"] == pytest.approx(0.9)
+
+
 @pytest.mark.parametrize("fitness_value", [0.25])
 def test_ea_config_smoke(monkeypatch, tmp_path, fitness_value):
     """Smoke-test the new EA config path with early stopping and logging."""

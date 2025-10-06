@@ -87,6 +87,8 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         if "holdout_score_weight" in data: out["holdout_score_weight"] = _getf("holdout_score_weight")
         if "holdout_gap_tolerance" in data: out["holdout_gap_tolerance"] = _getf("holdout_gap_tolerance")
         if "holdout_gap_penalty" in data: out["holdout_gap_penalty"] = _getf("holdout_gap_penalty")
+        if "holdout_shortfall_penalty" in data:
+            out["holdout_shortfall_penalty"] = _getf("holdout_shortfall_penalty")
         if "rate_penalize_upper" in data:
             v = data["rate_penalize_upper"]
             out["rate_penalize_upper"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
@@ -96,6 +98,7 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
             "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
             "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
             "elite_by_return_frac","holdout_score_weight","holdout_gap_tolerance","holdout_gap_penalty",
+            "holdout_shortfall_penalty",
         ]:
             if k in out and out[k] is None:
                 out.pop(k, None)

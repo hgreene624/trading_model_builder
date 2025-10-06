@@ -2,6 +2,7 @@
 
 ## Changelog
 - 2025-10-11: Introduced a configurable penalty when the training window severely lags the holdout, preventing high-scoring holdout runs with outsized in-sample losses from dominating selections.
+- 2025-10-12: Allow overriding the holdout shortfall penalty via `storage/config/ea_fitness.json` so tuning can be aligned with portfolio risk appetite.
 - 2025-10-10: Holdout-aware fitness now blends test and training scores with a configurable weight and shortfall penalty, so strategies must perform on both windows to rank highly while preserving overall portfolio quality.
 - 2025-10-08: Portfolio EA scoring now prioritizes holdout/test metrics when a test window is supplied, logging both train and test metric payloads so inspector tooling reflects the same numbers used for fitness. Legacy callers without a holdout remain unchanged.
 - 2025-10-07: Corrected the μ+λ replacement path to keep mutated offspring and injections in the next population so later generations meaningfully explore the search space.
