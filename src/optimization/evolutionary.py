@@ -1001,43 +1001,43 @@ def evolutionary_search(
         if cfg and cfg.replacement == "mu+lambda":
             next_population: List[Dict[str, Any]] = list(survivors)
             mu_seen = {json.dumps(p, sort_keys=True) for p in next_population}
-            for p, _s, _r in gen_scores:
-                if len(next_population) >= pop_size_effective:
-                    break
-                key = json.dumps(p, sort_keys=True)
+
+            def _try_add(candidate: Dict[str, Any]) -> bool:
+                key = json.dumps(candidate, sort_keys=True)
                 if key in mu_seen:
-                    continue
-                next_population.append(p)
+                    return False
+                next_population.append(candidate)
                 mu_seen.add(key)
+                return True
+
             for child in children:
                 if len(next_population) >= pop_size_effective:
                     break
-                key = json.dumps(child, sort_keys=True)
-                if key in mu_seen:
-                    continue
-                next_population.append(child)
-                mu_seen.add(key)
+                _try_add(child)
+
             for inj in injections:
                 if len(next_population) >= pop_size_effective:
                     break
-                key = json.dumps(inj, sort_keys=True)
-                if key in mu_seen:
-                    continue
-                next_population.append(inj)
-                mu_seen.add(key)
+                _try_add(inj)
+
+            if len(next_population) < pop_size_effective:
+                for p, _s, _r in gen_scores:
+                    if len(next_population) >= pop_size_effective:
+                        break
+                    _try_add(p)
+
             attempts = 0
             max_attempts = max(10 * pop_size_effective, 50)
             while len(next_population) < pop_size_effective and attempts < max_attempts:
                 rnd = random_param(param_space)
-                key = json.dumps(rnd, sort_keys=True)
-                if key in mu_seen and attempts < pop_size_effective * 5:
+                if _try_add(rnd):
                     attempts += 1
                     continue
-                next_population.append(rnd)
-                mu_seen.add(key)
                 attempts += 1
+
             while len(next_population) < pop_size_effective:
                 next_population.append(random_param(param_space))
+
             population = next_population[:pop_size_effective]
         else:
             population = survivors + children + injections

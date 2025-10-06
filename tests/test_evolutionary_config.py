@@ -98,3 +98,68 @@ def test_sbx_handles_negative_bounds_without_complex(monkeypatch):
     value = child["x"]
     assert not isinstance(value, complex)
     assert bounds["x"][0] <= value <= bounds["x"][1]
+
+
+def test_mu_plus_lambda_keeps_children(monkeypatch):
+    """mu+lambda replacement should retain mutated offspring for the next generation."""
+
+    def _fake_train_general_model(*_args, **_kwargs):
+        return {
+            "aggregate": {
+                "metrics": {
+                    "trades": 10,
+                    "avg_holding_days": 5.0,
+                    "cagr": 0.1,
+                    "calmar": 0.1,
+                    "sharpe": 0.1,
+                    "total_return": 0.1,
+                }
+            }
+        }
+
+    monkeypatch.setattr(evolutionary, "train_general_model", _fake_train_general_model)
+
+    per_gen_params = {}
+
+    def _progress(event, payload):
+        if event == "individual_evaluated":
+            per_gen_params.setdefault(payload["gen"], set()).add(
+                json.dumps(payload["params"], sort_keys=True)
+            )
+
+    cfg = {
+        "pop_size": 12,
+        "generations": 3,
+        "selection_method": "tournament",
+        "tournament_k": 3,
+        "replacement": "mu+lambda",
+        "elitism_fraction": 0.1,
+        "crossover_rate": 0.9,
+        "crossover_op": "blend",
+        "mutation_rate": 1.0,
+        "mutation_scale": 0.4,
+        "mutation_scheme": "gaussian",
+        "anneal_mutation": False,
+        "fitness_patience": 0,
+        "shuffle_eval": False,
+        "seed": 42,
+    }
+
+    evolutionary.evolutionary_search(
+        strategy_dotted="tests.fake",
+        tickers=["AAPL"],
+        start="2020-01-01",
+        end="2020-12-31",
+        starting_equity=10000.0,
+        param_space={"atr_n": (5, 15), "risk": (0.1, 0.9)},
+        min_trades=0,
+        n_jobs=1,
+        progress_cb=_progress,
+        config=cfg,
+    )
+
+    assert len(per_gen_params) >= 2, "Expected multiple generations to run"
+    first_gen = per_gen_params.get(0, set())
+    assert first_gen, "Generation 0 should have evaluated individuals"
+    later_diversity = set().union(*(per_gen_params[g] for g in per_gen_params if g >= 1))
+    assert later_diversity - first_gen, "Later generations should include new parameter combinations"
