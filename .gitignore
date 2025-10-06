@@ -1,6 +1,8 @@
 .env
 .streamlit/secrets.toml
 storage/
+!tests/test_data/full_model/storage/
+!tests/test_data/full_model/storage/**
 .venv/
 __pycache__/
 *.pyc

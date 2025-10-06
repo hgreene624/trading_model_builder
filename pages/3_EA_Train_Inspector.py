@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import html
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,12 +18,42 @@ from src.utils.tri_panel import render_tri_panel
 # ---------- settings ----------
 LOG_DIR = Path("storage/logs/ea")
 DEFAULT_PAGE_TITLE = "EA Train/Test Inspector"
+SHOW_COST_KPIS = True
+
 
 # --- UI hardening: prevent button label wrapping globally ---
 st.markdown(
     """
     <style>
     div.stButton > button { white-space: nowrap; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <style>
+    .ea-cost-kpi-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .ea-cost-kpi-chip {
+        background-color: var(--secondary-background-color, #f0f2f6);
+        padding: 0.75rem 1rem;
+        border-radius: 0.75rem;
+        min-width: 160px;
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+    }
+    .ea-cost-kpi-chip-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: rgba(49, 51, 63, 0.6);
+        margin-bottom: 0.15rem;
+    }
+    .ea-cost-kpi-chip-value {
+        font-size: 1.15rem;
+        font-weight: 600;
+        color: rgba(49, 51, 63, 0.95);
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -129,6 +161,292 @@ def _row_params(row: pd.Series) -> Dict[str, Any]:
         return json.loads(pj) if isinstance(pj, str) else {}
     except Exception:
         return {}
+
+
+def _best_row_for_gen(eval_df: pd.DataFrame, gen_idx: Optional[int]) -> Optional[pd.Series]:
+    if gen_idx is None or eval_df.empty or "gen" not in eval_df.columns:
+        return None
+    try:
+        gen_slice = eval_df[eval_df["gen"] == int(gen_idx)]
+    except Exception:
+        return None
+    if gen_slice.empty or "total_return" not in gen_slice.columns:
+        return None
+    try:
+        idx = gen_slice["total_return"].idxmax()
+    except Exception:
+        return None
+    try:
+        return gen_slice.loc[idx]
+    except Exception:
+        return None
+
+
+def _first_float(row: pd.Series, keys: List[str]) -> Optional[float]:
+    for key in keys:
+        if key in row:
+            val = row.get(key)
+            if val is None:
+                continue
+            try:
+                fval = float(val)
+            except Exception:
+                continue
+            if math.isfinite(fval) and not pd.isna(fval):
+                return fval
+    return None
+
+
+def _alpha_retention_ratio(row: pd.Series) -> Optional[float]:
+    sharpe_pre = _first_float(
+        row,
+        [
+            "sharpe_pre_cost",
+            "sharpe_pre",
+            "sharpe_gross",
+            "sharpe_before_cost",
+        ],
+    )
+    sharpe_post = _first_float(
+        row,
+        [
+            "sharpe_post_cost",
+            "sharpe_post",
+            "sharpe_net",
+        ],
+    )
+    if sharpe_pre is not None and abs(sharpe_pre) > 1e-12 and sharpe_post is not None:
+        ratio = sharpe_post / sharpe_pre
+        if math.isfinite(ratio):
+            return ratio
+
+    cagr_pre = _first_float(row, ["pre_cost_cagr", "cagr_pre", "cagr_gross", "cagr"])
+    cagr_post = _first_float(row, ["post_cost_cagr", "cagr_post", "cagr_net"])
+    if cagr_pre is not None and abs(cagr_pre) > 1e-12 and cagr_post is not None:
+        ratio = cagr_post / cagr_pre
+        if math.isfinite(ratio):
+            return ratio
+    return None
+
+
+_PERFORMANCE_METRIC_TOOLTIPS = {
+    "Sharpe (post-cost)": "Risk-adjusted return that already reflects slippage and fees. Higher is better.",
+    "Sharpe (pre-cost)": "Risk-adjusted return before accounting for trading costs. Provides context for the raw edge.",
+    "CAGR (post-cost)": "Annualized growth after trading costs. Compare against benchmarks on a net basis.",
+    "CAGR (pre-cost)": "Annualized growth before costs. Highlights the gross opportunity before slippage/fees.",
+    "Max Drawdown %": "Worst peak-to-trough equity decline. Smaller losses (closer to 0%) imply lower risk.",
+    "Win Rate %": "Percent of trades that were profitable. Needs to be viewed alongside payoff ratios.",
+    "Expectancy": "Average profit per trade. Positive expectancy is required for a sustainable edge.",
+    "Edge Ratio": "Average win size versus loss size. Values above 1.0 indicate gains outweigh losses.",
+    "Profit Factor": "Gross profits divided by gross losses. >1.0 indicates net profitability.",
+    "Trades": "Number of trades evaluated for this individual. Larger samples lend greater confidence.",
+}
+
+
+_COST_KPI_TOOLTIPS = {
+    "Alpha Retention %": (
+        "How much of your edge survives costs. 100% means costs had no impact; "
+        "70–95% is typical for liquid, low-churn setups. Higher is better."
+    ),
+    "Annualized Drag (bps/yr)": (
+        "Per-year performance lost to slippage + fees. <50 bps/yr is good on very liquid symbols; "
+        ">100 bps/yr is costly. Lower is better."
+    ),
+    "Weighted Slippage (bps)": (
+        "Average execution penalty per trade (in basis points), weighted by fills. For SPY/QQQ, ~5–15 bps is typical. "
+        "Lower is better."
+    ),
+    "Turnover (×/yr)": (
+        "How many portfolio ‘turns’ per year. Higher turnover usually raises costs unless alpha improves proportionally. "
+        "Context-dependent."
+    ),
+    "Cost per Turnover (bps per 1×)": (
+        "Cost burden normalized by trading activity. <20 bps per 1× is healthy on liquid names. Lower is better."
+    ),
+}
+
+
+def _format_percent(value: float, digits: int = 0) -> Optional[str]:
+    try:
+        fval = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(fval) or pd.isna(fval):
+        return None
+    scaled = fval * 100.0 if abs(fval) <= 1.0 else fval
+    return f"{scaled:.{digits}f}%"
+
+
+def _format_float(value: float, digits: int = 2) -> Optional[str]:
+    try:
+        fval = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(fval) or pd.isna(fval):
+        return None
+    return f"{fval:.{digits}f}"
+
+
+def _format_int(value: float) -> Optional[str]:
+    try:
+        fval = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(fval) or pd.isna(fval):
+        return None
+    return f"{int(round(fval)):,}"
+
+
+def _collect_performance_metric_rows(best_row: pd.Series) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+
+    def _append(label: str, keys: List[str], formatter) -> None:
+        val = _first_float(best_row, keys)
+        if val is None:
+            return
+        formatted = formatter(val)
+        if not formatted:
+            return
+        rows.append(
+            {
+                "Metric": label,
+                "Value": formatted,
+                "Guidance": _PERFORMANCE_METRIC_TOOLTIPS.get(label, ""),
+            }
+        )
+
+    _append("Sharpe (post-cost)", ["sharpe_post_cost", "sharpe_post", "sharpe_net"], lambda v: _format_float(v, 2))
+    _append("Sharpe (pre-cost)", ["sharpe_pre_cost", "sharpe_pre", "sharpe_gross", "sharpe_before_cost"], lambda v: _format_float(v, 2))
+    _append("CAGR (post-cost)", ["post_cost_cagr", "cagr_post", "cagr_net"], lambda v: _format_percent(v, 1))
+    _append("CAGR (pre-cost)", ["pre_cost_cagr", "cagr_pre", "cagr_gross", "cagr"], lambda v: _format_percent(v, 1))
+    _append("Max Drawdown %", ["max_drawdown", "max_dd", "max_drawdown_pct"], lambda v: _format_percent(v, 1))
+    _append("Win Rate %", ["win_rate", "winrate", "pct_winners"], lambda v: _format_percent(v, 0))
+    _append("Expectancy", ["expectancy"], lambda v: _format_float(v, 2))
+    _append("Edge Ratio", ["edge_ratio"], lambda v: _format_float(v, 2))
+    _append("Profit Factor", ["profit_factor"], lambda v: _format_float(v, 2))
+    _append("Trades", ["num_trades", "trades"], _format_int)
+
+    return rows
+
+
+def _collect_cost_metric_rows(best_row: pd.Series) -> List[Dict[str, str]]:
+    alpha_ratio = _alpha_retention_ratio(best_row)
+    drag_bps = _first_float(best_row, ["annualized_drag_bps", "annualized_drag"])
+    if drag_bps is not None and "annualized_drag" in best_row and "annualized_drag_bps" not in best_row:
+        drag_bps = drag_bps * 10_000.0
+    slip_bps = _first_float(
+        best_row,
+        [
+            "slippage_bps_weighted",
+            "weighted_slippage_bps",
+            "slip_bps_weighted",
+        ],
+    )
+    turnover_ratio = _first_float(best_row, ["turnover_ratio", "turnover"])
+
+    if (
+        drag_bps is not None
+        and turnover_ratio is not None
+        and abs(turnover_ratio) > 1e-12
+    ):
+        cost_per_turnover = drag_bps / turnover_ratio
+    else:
+        cost_per_turnover = None
+
+    kpis: List[Dict[str, str]] = []
+
+    def _push(label: str, value: Optional[str]) -> None:
+        if not value:
+            return
+        kpis.append(
+            {
+                "label": label,
+                "value": value,
+                "tooltip": _COST_KPI_TOOLTIPS.get(label, ""),
+            }
+        )
+
+    if alpha_ratio is not None:
+        _push("Alpha Retention %", _format_percent(alpha_ratio, 0))
+
+    if drag_bps is not None:
+        _push("Annualized Drag (bps/yr)", f"{drag_bps:.0f} bps/yr")
+
+    if slip_bps is not None:
+        slip_fmt = f"{slip_bps:.1f}" if abs(slip_bps) < 10 else f"{slip_bps:.0f}"
+        _push("Weighted Slippage (bps)", f"{slip_fmt} bps")
+
+    if turnover_ratio is not None:
+        _push("Turnover (×/yr)", f"{turnover_ratio:.2f}×/yr")
+
+    if cost_per_turnover is not None:
+        _push("Cost per Turnover (bps per 1×)", f"{cost_per_turnover:.0f} bps/1×")
+
+    return kpis
+
+
+def _render_cost_kpis(kpis: List[Dict[str, str]]) -> None:
+    if not kpis:
+        return
+    chips: List[str] = []
+    for item in kpis:
+        label_html = html.escape(item["label"], quote=True)
+        value_html = html.escape(item["value"], quote=True)
+        tooltip_html = html.escape(item.get("tooltip", ""), quote=True)
+        chips.append(
+            """
+            <div class="ea-cost-kpi-chip" title="{tooltip}">
+                <div class="ea-cost-kpi-chip-label">{label}</div>
+                <div class="ea-cost-kpi-chip-value">{value}</div>
+            </div>
+            """.format(label=label_html, value=value_html, tooltip=tooltip_html)
+        )
+    st.markdown(f"<div class='ea-cost-kpi-row'>{''.join(chips)}</div>", unsafe_allow_html=True)
+
+
+def _render_metric_dashboard(best_row: Optional[pd.Series]) -> None:
+    if best_row is None:
+        return
+
+    perf_rows = _collect_performance_metric_rows(best_row)
+    cost_rows: List[Dict[str, str]] = []
+    if SHOW_COST_KPIS:
+        cost_rows = _collect_cost_metric_rows(best_row)
+
+    col_count = int(bool(perf_rows)) + int(bool(cost_rows))
+    if col_count == 0:
+        return
+
+    st.markdown("#### Metrics Dashboard")
+    cols = st.columns(col_count)
+    idx = 0
+
+    if perf_rows:
+        perf_df = pd.DataFrame(perf_rows)
+        with cols[idx]:
+            st.markdown("**Performance Metrics**")
+            st.dataframe(
+                perf_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn(
+                        "Metric",
+                        help="Performance indicator for the selected individual.",
+                    ),
+                    "Value": st.column_config.TextColumn("Value"),
+                    "Guidance": st.column_config.TextColumn(
+                        "Guidance",
+                        help="How to interpret this performance metric.",
+                    ),
+                },
+            )
+        idx += 1
+
+    if cost_rows:
+        with cols[idx]:
+            st.markdown("**Costs Impact**")
+            _render_cost_kpis(cost_rows)
 
 # ---------- equity provider ----------
 
@@ -465,6 +783,14 @@ def main():
             int(st.session_state.ea_inspect_gen),
         )
 
+    try:
+        current_gen = int(st.session_state.get("ea_inspect_gen", 0))
+    except Exception:
+        current_gen = None
+
+    best_row = _best_row_for_gen(eval_df, current_gen)
+    _render_metric_dashboard(best_row)
+
     # safety
     if not train_start or not train_end:
         st.warning("Training dates missing. Enter train_start/train_end (ISO) or run a new EA with session_meta logging.")
@@ -504,42 +830,35 @@ def main():
     st.plotly_chart(fig2, use_container_width=True)
 
     tri_curve = pd.Series(dtype=float)
-    try:
-        current_gen = int(st.session_state.get("ea_inspect_gen", 0))
-    except Exception:
-        current_gen = None
-    if current_gen is not None and not eval_df.empty and "gen" in eval_df.columns:
-        gen_slice = eval_df[eval_df["gen"] == current_gen]
-        if not gen_slice.empty and "total_return" in gen_slice.columns:
-            try:
-                best_row = gen_slice.loc[gen_slice["total_return"].idxmax()]
-                params = _row_params(best_row)
-                ec_train = run_equity_curve(
-                    strategy,
-                    tickers,
-                    train_start,
-                    train_end,
-                    starting_equity,
-                    params,
-                )
-                end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
-                ec_test = run_equity_curve(
-                    strategy,
-                    tickers,
-                    test_start,
-                    test_end,
-                    end_equity,
-                    params,
-                )
-                ec = pd.concat([ec_train, ec_test], ignore_index=True)
-                if {"date", "equity"}.issubset(ec.columns):
-                    ec = ec.dropna(subset=["date", "equity"])
-                    if not ec.empty:
-                        ec["date"] = pd.to_datetime(ec["date"])
-                        ec = ec.sort_values("date").drop_duplicates(subset=["date"])
-                        tri_curve = ec.set_index("date")["equity"]
-            except Exception as tri_err:  # pragma: no cover - defensive UI helper
-                _dbg(f"tri_panel: {type(tri_err).__name__}: {tri_err}")
+    if best_row is not None and current_gen is not None:
+        try:
+            params = _row_params(best_row)
+            ec_train = run_equity_curve(
+                strategy,
+                tickers,
+                train_start,
+                train_end,
+                starting_equity,
+                params,
+            )
+            end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
+            ec_test = run_equity_curve(
+                strategy,
+                tickers,
+                test_start,
+                test_end,
+                end_equity,
+                params,
+            )
+            ec = pd.concat([ec_train, ec_test], ignore_index=True)
+            if {"date", "equity"}.issubset(ec.columns):
+                ec = ec.dropna(subset=["date", "equity"])
+                if not ec.empty:
+                    ec["date"] = pd.to_datetime(ec["date"])
+                    ec = ec.sort_values("date").drop_duplicates(subset=["date"])
+                    tri_curve = ec.set_index("date")["equity"]
+        except Exception as tri_err:  # pragma: no cover - defensive UI helper
+            _dbg(f"tri_panel: {type(tri_err).__name__}: {tri_err}")
 
     render_tri_panel(
         tri_curve,

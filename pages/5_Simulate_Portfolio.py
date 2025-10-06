@@ -5,6 +5,7 @@ from datetime import date, timedelta
 
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+from src.backtest.metrics import summarize_costs
 
 # --- Dynamic allocation helpers (beta) ---
 def _wilder_atr(df: pd.DataFrame, n: int) -> pd.Series:
@@ -62,6 +63,12 @@ def _prepare_frame(symbol: str, start_iso: str, end_iso: str, params: dict) -> p
     atr_n = int(params.get("atr_n", 14))
     breakout_n = int(params.get("breakout_n", 55))
     exit_n = int(params.get("exit_n", 20))
+    k_atr_buffer = float(params.get("k_atr_buffer", 0.0) or 0.0)
+    if k_atr_buffer < 0.0:
+        k_atr_buffer = 0.0
+    persist_n = int(params.get("persist_n", 1) or 1)
+    if persist_n < 1:
+        persist_n = 1
     use_trend = bool(params.get("use_trend_filter", False))
     sma_fast = int(params.get("sma_fast", 30))
     sma_slow = int(params.get("sma_slow", 50))
@@ -78,7 +85,20 @@ def _prepare_frame(symbol: str, start_iso: str, end_iso: str, params: dict) -> p
         df["trend_ok"] = True
 
     # Signals on bar t for execution at t+1 open
-    df["entry_sig"] = (df["close"] > df["breakout_high"]) & df["trend_ok"]
+    raw_entry = (df["close"] > df["breakout_high"]) & df["trend_ok"]
+    if k_atr_buffer > 0.0:
+        raw_entry = raw_entry & (df["close"] > (df["breakout_high"] + k_atr_buffer * df["atr"]))
+    raw_entry = raw_entry.fillna(False)
+    if persist_n > 1:
+        entry_sig = (
+            raw_entry.astype(int)
+            .rolling(window=persist_n, min_periods=persist_n)
+            .sum()
+            .eq(persist_n)
+        ).fillna(False)
+    else:
+        entry_sig = raw_entry
+    df["entry_sig"] = entry_sig.astype(bool)
     df["exit_sig"] = (df["close"] < df["exit_low"])
 
     # Base score
@@ -88,7 +108,10 @@ def _prepare_frame(symbol: str, start_iso: str, end_iso: str, params: dict) -> p
         atr_pct = (df["atr"] / df["close"]).replace([0, np.inf, -np.inf], np.nan)
         base = (mom / atr_pct).replace([np.inf, -np.inf], np.nan)
     else:
-        base = (df["close"] - df["breakout_high"]) / df["atr"]
+        breakout_ref = df["breakout_high"]
+        if k_atr_buffer > 0.0:
+            breakout_ref = breakout_ref + k_atr_buffer * df["atr"]
+        base = (df["close"] - breakout_ref) / df["atr"]
     df["score_base"] = base.clip(lower=0).fillna(0.0)
     return df
 
@@ -270,6 +293,157 @@ def _simulate_dynamic(items, strategy_selections, start, end, starting_equity,
         })
 
     return {"equity": equity, "per_ticker": per_ticker, "trades_by_symbol": trades_by_symbol, "frames": frames}
+
+
+def _calc_cagr(series: pd.Series) -> float:
+    if series is None or len(series) < 2:
+        return 0.0
+    start_val = float(series.iloc[0]) if len(series) else 0.0
+    end_val = float(series.iloc[-1]) if len(series) else 0.0
+    if not (start_val > 0 and end_val > 0):
+        return 0.0
+    try:
+        delta_days = (series.index[-1] - series.index[0]).days
+    except Exception:
+        return 0.0
+    if delta_days <= 0:
+        return 0.0
+    years = delta_days / 365.25
+    if years <= 0:
+        return 0.0
+    return float((end_val / start_val) ** (1 / years) - 1.0)
+
+
+def _aggregate_cost_summary(results: dict[str, dict]) -> dict:
+    if not results:
+        return {}
+
+    frames_pre: list[pd.Series] = []
+    frames_post: list[pd.Series] = []
+    trade_tables: list[pd.DataFrame] = []
+    start_equity_total = 0.0
+
+    for symbol, res in results.items():
+        eq_post = res.get("equity")
+        eq_pre = res.get("equity_pre_cost")
+        if isinstance(eq_pre, pd.Series) and not eq_pre.empty:
+            frames_pre.append(eq_pre.rename(symbol))
+        if isinstance(eq_post, pd.Series) and not eq_post.empty:
+            frames_post.append(eq_post.rename(symbol))
+            start_equity_total += float(eq_post.iloc[0]) if len(eq_post) else 0.0
+        trades_df = res.get("trades_df")
+        if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+            trade_tables.append(trades_df.assign(symbol=symbol))
+
+    df_pre = pd.concat(frames_pre, axis=1).sort_index() if frames_pre else pd.DataFrame()
+    df_post = pd.concat(frames_post, axis=1).sort_index() if frames_post else pd.DataFrame()
+    if not df_pre.empty:
+        df_pre = df_pre.fillna(method="ffill")
+        portfolio_pre = df_pre.sum(axis=1, skipna=True)
+    else:
+        portfolio_pre = pd.Series(dtype=float)
+    if not df_post.empty:
+        df_post = df_post.fillna(method="ffill")
+        portfolio_post = df_post.sum(axis=1, skipna=True)
+    else:
+        portfolio_post = pd.Series(dtype=float)
+
+    agg_trades = pd.concat(trade_tables, ignore_index=True) if trade_tables else pd.DataFrame()
+
+    summary = summarize_costs(
+        agg_trades if not agg_trades.empty else None,
+        portfolio_pre if not portfolio_pre.empty else None,
+        portfolio_post if not portfolio_post.empty else None,
+    )
+
+    total_slip_cost = float(
+        agg_trades.get("entry_slippage_cost", pd.Series(dtype=float)).sum()
+        + agg_trades.get("exit_slippage_cost", pd.Series(dtype=float)).sum()
+    ) if not agg_trades.empty else 0.0
+    fee_cols = [
+        agg_trades.get("entry_fee_cost", pd.Series(dtype=float)).sum(),
+        agg_trades.get("exit_fee_cost", pd.Series(dtype=float)).sum(),
+        agg_trades.get("entry_fixed_cost", pd.Series(dtype=float)).sum(),
+        agg_trades.get("exit_fixed_cost", pd.Series(dtype=float)).sum(),
+    ] if not agg_trades.empty else [0.0]
+    total_fee_cost = float(sum(fee_cols)) if fee_cols else 0.0
+
+    turnover_gross = float(summary.get("turnover_gross", 0.0))
+    start_equity_total = start_equity_total or 0.0
+    turnover_ratio = float(summary.get("turnover_ratio", 0.0) or 0.0)
+    if turnover_ratio == 0.0 and start_equity_total:
+        turnover_ratio = (turnover_gross / start_equity_total) if start_equity_total else 0.0
+
+    turnover_multiple = float(summary.get("turnover_multiple", 0.0) or 0.0)
+    if turnover_multiple == 0.0 and start_equity_total:
+        turnover_multiple = turnover_gross / start_equity_total if start_equity_total else 0.0
+
+    out = {k: float(v) for k, v in summary.items()}
+    out["turnover_ratio"] = float(turnover_ratio)
+    out["turnover"] = float(turnover_ratio)
+    out["turnover_multiple"] = float(turnover_multiple)
+    out["weighted_slippage_bps"] = float(out.get("slippage_bps_weighted", 0.0))
+    out["weighted_fees_bps"] = float(out.get("fees_bps_weighted", 0.0))
+    if "annualized_drag_bps" in out:
+        out["annualized_drag"] = float(out["annualized_drag_bps"] / 10_000.0)
+    out["total_slippage_cost"] = float(total_slip_cost)
+    out["total_fee_cost"] = float(total_fee_cost)
+    out["total_cost"] = float(total_slip_cost + total_fee_cost)
+
+    alpha_retention = None
+    sharpe_gross = out.get("sharpe_gross", summary.get("sharpe_gross"))
+    sharpe_net = out.get("sharpe_net", summary.get("sharpe_net"))
+    try:
+        if sharpe_gross is not None and sharpe_net is not None and abs(float(sharpe_gross)) > 1e-12:
+            alpha_retention = float(sharpe_net) / float(sharpe_gross)
+    except (TypeError, ValueError):
+        alpha_retention = None
+    if alpha_retention is None:
+        cagr_gross = out.get("cagr_gross", out.get("pre_cost_cagr"))
+        cagr_net = out.get("cagr_net", out.get("post_cost_cagr"))
+        try:
+            if cagr_gross is not None and cagr_net is not None and abs(float(cagr_gross)) > 1e-12:
+                alpha_retention = float(cagr_net) / float(cagr_gross)
+        except (TypeError, ValueError):
+            alpha_retention = None
+    out["alpha_retention_ratio"] = float(alpha_retention) if alpha_retention is not None else None
+
+    return out
+
+
+def _format_cost_table(summary: dict) -> pd.DataFrame:
+    if not summary:
+        return pd.DataFrame(columns=["Metric", "Value"])
+    rows = [
+        ("Turnover (gross $)", f"${summary.get('turnover_gross', 0.0):,.2f}"),
+        ("Turnover (avg daily $)", f"${summary.get('turnover_avg_daily', 0.0):,.2f}"),
+        ("Turnover (x start)", f"{summary.get('turnover_multiple', summary.get('turnover_ratio', summary.get('turnover', 0.0))):.2f}"),
+        (
+            "Turnover (×/yr)",
+            f"{summary.get('turnover_ratio', summary.get('turnover', 0.0)):.2f}",
+        ),
+        (
+            "Alpha Retention %",
+            f"{(summary.get('alpha_retention_ratio') or 0.0) * 100:.0f}%"
+            if summary.get("alpha_retention_ratio") is not None
+            else "—",
+        ),
+        ("Weighted Slippage (bps)", f"{summary.get('weighted_slippage_bps', 0.0):.2f}"),
+        ("Weighted Fees (bps)", f"{summary.get('weighted_fees_bps', 0.0):.2f}"),
+        ("Pre-Cost CAGR", f"{summary.get('pre_cost_cagr', 0.0):.2%}"),
+        ("Post-Cost CAGR", f"{summary.get('post_cost_cagr', 0.0):.2%}"),
+        ("Annualized Drag (bps)", f"{summary.get('annualized_drag_bps', summary.get('annualized_drag', 0.0) * 10_000):.1f}"),
+        (
+            "Cost per Turnover (bps/1×)",
+            f"{summary.get('cost_per_turnover_bps', 0.0):.1f}"
+            if summary.get("cost_per_turnover_bps") is not None
+            else "—",
+        ),
+        ("Total Slippage Cost", f"${summary.get('total_slippage_cost', 0.0):,.2f}"),
+        ("Total Fee Cost", f"${summary.get('total_fee_cost', 0.0):,.2f}"),
+        ("Total Cost", f"${summary.get('total_cost', 0.0):,.2f}"),
+    ]
+    return pd.DataFrame(rows, columns=["Metric", "Value"])
 
 def _symbol_price_equity_chart(symbol: str, price: pd.Series, total_eq: pd.Series, trades: list[dict] | None = None, title: str | None = None):
     """Dual-axis chart: left=total equity, right=symbol price; markers = Buy/Sell on the price line.
@@ -505,6 +679,13 @@ if st.button("Run Simulation", type="primary"):
                     else:
                         params = it["params"]
 
+                    persist_val = int(params.get("persist_n", 1) or 1)
+                    if persist_val < 1:
+                        persist_val = 1
+                    k_buffer = float(params.get("k_atr_buffer", 0.0) or 0.0)
+                    if k_buffer < 0.0:
+                        k_buffer = 0.0
+
                     res = backtest_single(
                         symbol,
                         start.isoformat(),
@@ -514,6 +695,8 @@ if st.button("Run Simulation", type="primary"):
                         atr_n=int(params.get("atr_n", 14)),
                         starting_equity=alloc,  # weighted capital
                         atr_multiple=float(params.get("atr_multiple", 3.0)),
+                        k_atr_buffer=k_buffer,
+                        persist_n=persist_val,
                         risk_per_trade=float(params.get("risk_per_trade", 0.01)),
                         allow_fractional=bool(params.get("allow_fractional", True)),
                     )
@@ -526,6 +709,13 @@ if st.button("Run Simulation", type="primary"):
                 aligned = pd.concat(curves, axis=1).fillna(method="ffill").dropna(how="all")
                 total_eq = aligned.sum(axis=1)
 
+            cost_summary = {}
+            if not alloc_mode.startswith("Dynamic"):
+                try:
+                    cost_summary = _aggregate_cost_summary(res_map)
+                except Exception:
+                    cost_summary = {}
+
             # ------- Aggregate & display -------
             if total_eq is None or total_eq.empty:
                 st.error("No equity curves produced.")
@@ -535,6 +725,12 @@ if st.button("Run Simulation", type="primary"):
                 equity_chart(total_eq, title=f"Total Equity — {p['name']}"),
                 width="stretch",
             )
+
+            with st.expander("Cost Attribution (post-cost)", expanded=False):
+                if cost_summary:
+                    st.table(_format_cost_table(cost_summary))
+                else:
+                    st.info("No cost attribution available for this run.")
 
             out = pd.DataFrame(per_ticker)
             st.subheader("Per-Ticker Performance")
@@ -614,3 +810,5 @@ if st.button("Run Simulation", type="primary"):
             st.success("Simulation saved.")
         except Exception as e:
             st.error(f"Error: {e}")
+
+# QA Checklist: in the app, expand "Cost Attribution (post-cost)" after running a simulation with costs enabled.

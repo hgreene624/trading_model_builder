@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 from datetime import datetime
 
+
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     import pandas as pd
 
@@ -677,6 +680,141 @@ def load_price_history(
         },
     )
     return df
+
+
+# -----------------------------------------------------------------------------
+# Benchmark helpers
+# -----------------------------------------------------------------------------
+
+
+def _benchmark_cache_dir() -> Path:
+    return _ensure_dir(get_data_dir() / "benchmarks")
+
+
+def _benchmark_cache_path(mode: str) -> Path:
+    mode_clean = (mode or "tri").strip().lower()
+    if mode_clean not in {"tri", "pri"}:
+        mode_clean = "tri"
+    return _benchmark_cache_dir() / f"benchmark_total_return_{mode_clean}.parquet"
+
+
+def get_benchmark_total_return(
+    *,
+    mode: str = "TRI",
+    start: "datetime | pd.Timestamp | str | None" = None,
+    end: "datetime | pd.Timestamp | str | None" = None,
+) -> "pd.Series | None":
+    import pandas as pd
+
+    mode_clean = str(mode or "TRI").strip().upper()
+    if mode_clean not in {"TRI", "PRI"}:
+        mode_clean = "TRI"
+
+    cache_path = _benchmark_cache_path(mode_clean)
+    series: "pd.Series | None" = None
+    if cache_path.exists():
+        try:
+            cache_df = pd.read_parquet(cache_path)
+            if {"date", "value"}.issubset(cache_df.columns):
+                cache_df["date"] = pd.to_datetime(cache_df["date"])
+                series = pd.Series(cache_df["value"].astype(float).values, index=cache_df["date"])
+        except Exception:
+            logger.exception("failed to load benchmark cache", extra={"path": str(cache_path)})
+            series = None
+
+    if series is None or series.empty:
+        preferred_symbols = ["SP500TR", "SPY"]
+        for symbol in preferred_symbols:
+            try:
+                df = load_price_history(symbol, timeframe="1D", start=start, end=end)
+            except Exception:
+                logger.debug("benchmark fetch failed", exc_info=True, extra={"symbol": symbol})
+                continue
+            if df is None or df.empty:
+                continue
+            cols = {str(col).lower(): col for col in df.columns}
+            if mode_clean == "PRI":
+                preferred_cols = ("close", "adj_close")
+            else:
+                preferred_cols = ("adj_close", "close")
+            src_col = None
+            for candidate in preferred_cols:
+                if candidate in cols:
+                    src_col = cols[candidate]
+                    break
+            if src_col is None:
+                continue
+            try:
+                series = df[src_col].dropna().astype(float)
+            except Exception:
+                logger.debug("benchmark column coercion failed", exc_info=True, extra={"symbol": symbol})
+                series = None
+                continue
+            if series.empty:
+                series = None
+                continue
+            if not isinstance(series.index, pd.DatetimeIndex):
+                idx_col = None
+                for candidate in ("date", "datetime", "timestamp"):
+                    if candidate in cols:
+                        idx_col = cols[candidate]
+                        break
+                if idx_col is not None:
+                    try:
+                        series.index = pd.to_datetime(df[idx_col])
+                    except Exception:
+                        logger.debug("benchmark index alignment failed", exc_info=True, extra={"symbol": symbol})
+                        series = None
+                        continue
+                else:
+                    try:
+                        series.index = pd.to_datetime(series.index)
+                    except Exception:
+                        logger.debug("benchmark index coercion failed", exc_info=True, extra={"symbol": symbol})
+                        series = None
+                        continue
+            if isinstance(series.index, pd.DatetimeIndex) and getattr(series.index, "tz", None) is not None:
+                try:
+                    series.index = series.index.tz_convert(None)
+                except Exception:
+                    try:
+                        series.index = series.index.tz_localize(None)
+                    except Exception:
+                        logger.debug("benchmark timezone drop failed", exc_info=True, extra={"symbol": symbol})
+                        series = None
+                        continue
+            series = series.sort_index()
+            series = series[series > 0]
+            if series.empty:
+                series = None
+                continue
+            base_value = series.iloc[0]
+            if base_value <= 0:
+                series = None
+                continue
+            series = series / float(base_value)
+            try:
+                cache_payload = pd.DataFrame(
+                    {
+                        "date": series.index,
+                        "value": series.values,
+                        "source": symbol,
+                    }
+                )
+                cache_payload.to_parquet(cache_path, index=False)
+            except Exception:
+                logger.exception("failed to cache benchmark series", extra={"path": str(cache_path)})
+            break
+
+    if series is None or series.empty:
+        return None
+
+    if start is not None:
+        series = series[series.index >= pd.to_datetime(start)]
+    if end is not None:
+        series = series[series.index <= pd.to_datetime(end)]
+
+    return series
 
 # ----------------------------------------------------------------------
 # Strategy parameter I/O (EA / WF)

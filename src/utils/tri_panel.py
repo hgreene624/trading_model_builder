@@ -5,9 +5,15 @@ import math
 from typing import Optional
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 logger = logging.getLogger(__name__)
+
+try:
+    from src.storage import get_benchmark_total_return  # type: ignore
+except Exception:  # pragma: no cover - optional helper
+    get_benchmark_total_return = None  # type: ignore
 
 try:
     from src.storage import load_price_history  # type: ignore
@@ -59,67 +65,96 @@ def _normalize_curve(series: pd.Series) -> Optional[pd.Series]:
 
 
 def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> Optional[pd.Series]:
-    if load_price_history is None:
-        logger.warning("tri_panel load_price_history unavailable")
-        return None
-    try:
-        kwargs = {"timeframe": "1D"}
-        if start is not None:
-            kwargs.setdefault("start", start)
-        if end is not None:
-            kwargs.setdefault("end", end)
+    mode = "TRI"
+    if hasattr(st, "secrets"):
         try:
-            df = load_price_history("SPY", **kwargs)
-        except TypeError:
-            logger.debug("tri_panel fallback load_price_history signature" , extra={"kwargs": kwargs})
-            df = load_price_history("SPY", timeframe="1D")
-    except Exception:
-        logger.exception("tri_panel failed while loading SPY history")
-        return None
-    if df is None:
-        logger.warning("tri_panel load_price_history returned None")
-        return None
-    try:
-        spy_df = df.copy()
-    except Exception:
-        logger.exception("tri_panel failed to copy SPY dataframe")
-        return None
-    if spy_df is None or len(spy_df) == 0:
-        logger.info("tri_panel SPY dataframe empty")
-        return None
-    cols = {str(c).lower(): c for c in spy_df.columns}
-    tri_col = None
-    for cand in ("adj_close", "adjusted_close", "adjclose", "close"):
-        if cand in cols:
-            tri_col = cols[cand]
-            break
-    if tri_col is None:
-        logger.warning("tri_panel could not locate TRI column", extra={"columns": list(spy_df.columns)})
-        return None
-    try:
-        series = spy_df[tri_col].dropna().astype(float)
-    except Exception:
-        logger.exception("tri_panel failed to process TRI column", extra={"tri_col": tri_col})
-        return None
-    if series.empty:
-        logger.info("tri_panel TRI series empty after dropna")
-        return None
-    if not isinstance(series.index, pd.DatetimeIndex):
-        for ts_col in ("date", "datetime", "timestamp"):
-            if ts_col in spy_df.columns:
-                try:
-                    idx = pd.to_datetime(spy_df[ts_col])
-                    series.index = idx
-                    break
-                except Exception:
-                    logger.exception("tri_panel failed parsing timestamp column", extra={"column": ts_col})
-                    continue
-    if not isinstance(series.index, pd.DatetimeIndex):
-        try:
-            series.index = pd.to_datetime(series.index)
+            mode = str(st.secrets.get("BENCHMARK_MODE", "TRI") or "TRI").upper()
         except Exception:
-            logger.exception("tri_panel failed to coerce series index to datetime")
+            mode = "TRI"
+
+    series: Optional[pd.Series]
+    series = None
+    if get_benchmark_total_return is not None:
+        try:
+            series = get_benchmark_total_return(mode=mode, start=start, end=end)
+        except Exception:
+            logger.exception("tri_panel benchmark helper failed", extra={"mode": mode})
+            series = None
+
+    if (series is None or series.empty) and load_price_history is not None:
+        try:
+            kwargs = {"timeframe": "1D"}
+            if start is not None:
+                kwargs.setdefault("start", start)
+            if end is not None:
+                kwargs.setdefault("end", end)
+            try:
+                df = load_price_history("SPY", **kwargs)
+            except TypeError:
+                logger.debug("tri_panel fallback load_price_history signature", extra={"kwargs": kwargs})
+                df = load_price_history("SPY", timeframe="1D")
+        except Exception:
+            logger.exception("tri_panel failed while loading SPY history")
             return None
+        if df is None:
+            logger.warning("tri_panel load_price_history returned None")
+            return None
+        if df is None or len(df) == 0:
+            logger.info("tri_panel SPY dataframe empty")
+            return None
+        cols = {str(c).lower(): c for c in df.columns}
+        if mode == "PRI":
+            preferred_cols = ("close", "adj_close", "adjusted_close", "adjclose")
+        else:
+            preferred_cols = ("adj_close", "adjusted_close", "adjclose", "close")
+        tri_col = None
+        for cand in preferred_cols:
+            if cand in cols:
+                tri_col = cols[cand]
+                break
+        if tri_col is None:
+            logger.warning("tri_panel could not locate benchmark column", extra={"columns": list(df.columns)})
+            return None
+        try:
+            series = df[tri_col].dropna().astype(float)
+        except Exception:
+            logger.exception("tri_panel failed to process benchmark column", extra={"tri_col": tri_col})
+            return None
+        if series.empty:
+            logger.info("tri_panel benchmark series empty after dropna")
+            return None
+        if not isinstance(series.index, pd.DatetimeIndex):
+            for ts_col in ("date", "datetime", "timestamp"):
+                if ts_col in df.columns:
+                    try:
+                        series.index = pd.to_datetime(df[ts_col])
+                        break
+                    except Exception:
+                        logger.exception("tri_panel failed parsing timestamp column", extra={"column": ts_col})
+                        continue
+        if not isinstance(series.index, pd.DatetimeIndex):
+            try:
+                series.index = pd.to_datetime(series.index)
+            except Exception:
+                logger.exception("tri_panel failed to coerce series index to datetime")
+                return None
+        if isinstance(series.index, pd.DatetimeIndex) and getattr(series.index, "tz", None) is not None:
+            try:
+                series.index = series.index.tz_convert(None)
+            except Exception:
+                try:
+                    series.index = series.index.tz_localize(None)
+                except Exception:
+                    logger.debug(
+                        "tri_panel failed to drop timezone from benchmark series",
+                        extra={"tz": str(series.index.tz)},
+                    )
+                    return None
+    if series is None or series.empty:
+        logger.warning("tri_panel benchmark series unavailable")
+        return None
+
+    series = series.sort_index().dropna()
     if isinstance(series.index, pd.DatetimeIndex) and getattr(series.index, "tz", None) is not None:
         try:
             series.index = series.index.tz_convert(None)
@@ -127,14 +162,17 @@ def _extract_spy_tri(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp])
             try:
                 series.index = series.index.tz_localize(None)
             except Exception:
-                logger.debug("tri_panel failed to drop timezone from SPY series", extra={"tz": str(series.index.tz)})
+                logger.debug("tri_panel failed to drop timezone", extra={"tz": str(series.index.tz)})
                 return None
-    series = series.sort_index()
     series = series[series > 0]
     if series.empty:
-        logger.info("tri_panel TRI series empty after filtering positives")
+        logger.info("tri_panel benchmark series empty after filtering positives")
         return None
-    return series / float(series.iloc[0])
+    first = series.iloc[0]
+    if first <= 0:
+        logger.info("tri_panel benchmark first value non-positive", extra={"value": float(first)})
+        return None
+    return series / float(first)
 
 
 def _compute_cagr(series: pd.Series) -> Optional[float]:
@@ -257,112 +295,150 @@ def render_tri_panel(
     test_end: "pd.Timestamp | str | None" = None,
     show_test_toggle: bool = True,
 ) -> None:
-    with st.expander(f"\u25b8 {title}"):
-        strategy_norm = _normalize_curve(strategy_curve)
-        if strategy_norm is None or strategy_norm.empty:
-            logger.info("tri_panel no strategy curve available")
-            st.info("Strategy equity curve unavailable; cannot compute TRI comparison.")
-            return
-        spy_norm = _extract_spy_tri(
-            start=strategy_norm.index.min() if not strategy_norm.empty else None,
-            end=strategy_norm.index.max() if not strategy_norm.empty else None,
-        )
-        if spy_norm is None or spy_norm.empty:
-            logger.warning("tri_panel SPY normalization failed")
-            st.warning("SPY TRI data unavailable (loader missing or returned no data).")
-            return
-        combined = pd.concat(
-            [strategy_norm.rename("Strategy"), spy_norm.rename("SPY (TRI)")],
-            axis=1,
-            join="inner",
-        ).dropna()
-        if isinstance(combined.index, pd.DatetimeIndex) and getattr(combined.index, "tz", None) is not None:
+    st.markdown(f"#### {title}")
+    strategy_norm = _normalize_curve(strategy_curve)
+    if strategy_norm is None or strategy_norm.empty:
+        logger.info("tri_panel no strategy curve available")
+        st.info("Strategy equity curve unavailable; cannot compute TRI comparison.")
+        return
+    spy_norm = _extract_spy_tri(
+        start=strategy_norm.index.min() if not strategy_norm.empty else None,
+        end=strategy_norm.index.max() if not strategy_norm.empty else None,
+    )
+    if spy_norm is None or spy_norm.empty:
+        logger.warning("tri_panel SPY normalization failed")
+        st.warning("SPY TRI data unavailable (loader missing or returned no data).")
+        return
+    combined = pd.concat(
+        [strategy_norm.rename("Strategy"), spy_norm.rename("SPY (TRI)")],
+        axis=1,
+        join="inner",
+    ).dropna()
+    if isinstance(combined.index, pd.DatetimeIndex) and getattr(combined.index, "tz", None) is not None:
+        try:
+            combined.index = combined.index.tz_convert(None)
+        except Exception:
             try:
-                combined.index = combined.index.tz_convert(None)
+                combined.index = combined.index.tz_localize(None)
             except Exception:
-                try:
-                    combined.index = combined.index.tz_localize(None)
-                except Exception:
-                    logger.debug("tri_panel failed to drop timezone from combined index", extra={"tz": str(combined.index.tz)})
-                    st.info("Unable to align timezones for TRI comparison.")
-                    return
-        if combined.empty or len(combined) < 10:
-            logger.info(
-                "tri_panel insufficient overlap",
-                extra={"rows": int(len(combined))},
+                logger.debug("tri_panel failed to drop timezone from combined index", extra={"tz": str(combined.index.tz)})
+                st.info("Unable to align timezones for TRI comparison.")
+                return
+    if combined.empty or len(combined) < 10:
+        logger.info(
+            "tri_panel insufficient overlap",
+            extra={"rows": int(len(combined))},
+        )
+        st.info("Insufficient overlapping history between strategy and SPY (requires at least 10 points).")
+        return
+    combined_view = combined
+    test_start_ts = _coerce_timestamp(test_start)
+    test_end_ts = _coerce_timestamp(test_end)
+    test_toggle_available = False
+    restrict_to_test = False
+    if show_test_toggle:
+        if test_start_ts is None or test_end_ts is None:
+            st.info("Test window not provided; displaying full history.")
+        elif test_start_ts > test_end_ts:
+            st.info("Test window start is after end; displaying full history.")
+        else:
+            test_toggle_available = True
+            restrict_to_test = st.checkbox(
+                "Test-only view",
+                value=False,
+                key=f"tri_panel_test_toggle_{title}",
             )
-            st.info("Insufficient overlapping history between strategy and SPY (requires at least 10 points).")
-            return
-        combined_view = combined
-        test_start_ts = _coerce_timestamp(test_start)
-        test_end_ts = _coerce_timestamp(test_end)
-        test_toggle_available = False
-        restrict_to_test = False
-        if show_test_toggle:
-            if test_start_ts is None or test_end_ts is None:
-                st.info("Test window not provided; displaying full history.")
-            elif test_start_ts > test_end_ts:
-                st.info("Test window start is after end; displaying full history.")
-            else:
-                test_toggle_available = True
-                restrict_to_test = st.checkbox(
-                    "Test-only view",
-                    value=False,
-                    key=f"tri_panel_test_toggle_{title}",
-                )
-        if test_toggle_available and restrict_to_test:
-            test_view = combined.loc[(combined.index >= test_start_ts) & (combined.index <= test_end_ts)]
-            if test_view.empty or len(test_view) < 10:
+    if test_toggle_available and restrict_to_test:
+        test_view = combined.loc[(combined.index >= test_start_ts) & (combined.index <= test_end_ts)]
+        if test_view.empty or len(test_view) < 10:
+            logger.info(
+                "tri_panel insufficient test overlap",
+                extra={"rows": int(len(test_view))},
+            )
+            st.info(
+                "Insufficient overlapping history in the test window (requires at least 10 points). Displaying full history.",
+            )
+        else:
+            first_row = test_view.iloc[0]
+            if (first_row <= 0).any():
                 logger.info(
-                    "tri_panel insufficient test overlap",
-                    extra={"rows": int(len(test_view))},
+                    "tri_panel non-positive starting values in test window",
+                    extra={"values": first_row.to_dict()},
                 )
-                st.info(
-                    "Insufficient overlapping history in the test window (requires at least 10 points). Displaying full history.",
-                )
+                st.info("Test window start values must be positive; displaying full history.")
             else:
-                first_row = test_view.iloc[0]
-                if (first_row <= 0).any():
-                    logger.info(
-                        "tri_panel non-positive starting values in test window",
-                        extra={"values": first_row.to_dict()},
-                    )
-                    st.info("Test window start values must be positive; displaying full history.")
-                else:
-                    combined_view = test_view.divide(first_row)
-        strategy_aligned = combined_view["Strategy"]
-        spy_aligned = combined_view["SPY (TRI)"]
-        excess_index = strategy_aligned / spy_aligned
-        if not excess_index.empty:
-            first_excess = excess_index.iloc[0]
-            if pd.notna(first_excess) and first_excess > 0:
-                excess_index = excess_index / float(first_excess)
-        combined_chart = combined_view.copy()
-        combined_chart["Excess Index"] = excess_index
-        tracking_error, information_ratio = _compute_tracking_stats(strategy_aligned, spy_aligned)
-        metrics = pd.DataFrame(
-            {
-                "Metric": [
-                    "Strategy CAGR",
-                    "Strategy MaxDD",
-                    "SPY (TRI) CAGR",
-                    "SPY (TRI) MaxDD",
-                    "Tracking Error (annualized)",
-                    "Information Ratio",
-                ],
-                "Value": [
-                    _format_pct(_compute_cagr(strategy_aligned)),
-                    _format_pct(_compute_max_dd(strategy_aligned)),
-                    _format_pct(_compute_cagr(spy_aligned)),
-                    _format_pct(_compute_max_dd(spy_aligned)),
-                    _format_pct(tracking_error),
-                    _format_ratio(information_ratio),
-                ],
-            }
+                combined_view = test_view.divide(first_row)
+    strategy_aligned = combined_view["Strategy"]
+    spy_aligned = combined_view["SPY (TRI)"]
+    excess_index = strategy_aligned / spy_aligned
+    if not excess_index.empty:
+        first_excess = excess_index.iloc[0]
+        if pd.notna(first_excess) and first_excess > 0:
+            excess_index = excess_index / float(first_excess)
+    combined_chart = combined_view.copy()
+    combined_chart["Excess Index"] = excess_index
+    tracking_error, information_ratio = _compute_tracking_stats(strategy_aligned, spy_aligned)
+    metrics = pd.DataFrame(
+        {
+            "Metric": [
+                "Strategy CAGR",
+                "Strategy MaxDD",
+                "SPY (TRI) CAGR",
+                "SPY (TRI) MaxDD",
+                "Tracking Error (annualized)",
+                "Information Ratio",
+            ],
+            "Value": [
+                _format_pct(_compute_cagr(strategy_aligned)),
+                _format_pct(_compute_max_dd(strategy_aligned)),
+                _format_pct(_compute_cagr(spy_aligned)),
+                _format_pct(_compute_max_dd(spy_aligned)),
+                _format_pct(tracking_error),
+                _format_ratio(information_ratio),
+            ],
+        }
+    )
+
+    fig = go.Figure()
+    for column, color in (
+        ("Strategy", "#1f77b4"),
+        ("SPY (TRI)", "#ff7f0e"),
+        ("Excess Index", "#2ca02c"),
+    ):
+        series = combined_chart[column].dropna()
+        if series.empty:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=series.index,
+                y=series.values,
+                mode="lines",
+                name=column,
+                line=dict(width=2, color=color),
+            )
         )
-        st.line_chart(combined_chart)
-        st.dataframe(metrics, use_container_width=True, hide_index=True)
-        st.caption(
-            "Strategy and SPY curves normalized to 1.0 on first overlapping date. "
-            "SPY adjusted close used as TRI proxy when available."
-        )
+
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=10, b=10),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1.0,
+            xanchor="left",
+            x=0.0,
+        ),
+        hovermode="x unified",
+        xaxis_title="Date",
+        yaxis_title="Normalized return",
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
+    )
+    st.dataframe(metrics, use_container_width=True, hide_index=True)
+    st.caption(
+        "Strategy and SPY curves normalized to 1.0 on first overlapping date. "
+        "SPY adjusted close used as TRI proxy when available."
+    )

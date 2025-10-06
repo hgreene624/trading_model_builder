@@ -18,10 +18,13 @@ All functions are dependency-light (numpy/pandas only) and safe on empty inputs.
 """
 
 from __future__ import annotations
+import logging
 import numpy as np
 import pandas as pd
 
 TRADING_DAYS = 252
+
+logger = logging.getLogger("backtest.metrics")
 
 # ---------- Path/shape independent helpers ----------
 
@@ -59,7 +62,18 @@ def cagr(equity: pd.Series) -> float:
     if days <= 0:
         return 0.0
     years = days / 365.25
-    return float((end_val / start_val) ** (1 / years) - 1.0)
+    if years <= 0:
+        return 0.0
+    ratio = end_val / start_val
+    if ratio <= 0:
+        return 0.0
+    try:
+        value = ratio ** (1 / years) - 1.0
+    except (OverflowError, ValueError):
+        return 0.0
+    if isinstance(value, complex):
+        return 0.0
+    return float(value)
 
 def max_drawdown(equity: pd.Series) -> float:
     if equity is None or len(equity) == 0:
@@ -155,6 +169,140 @@ def entry_exit_efficiency(trades: list[dict]) -> dict:
         "exit_efficiency": float(np.mean(exits)) if exits else 0.0,
     }
 
+
+def _cagr_from_index(series: pd.Series | None) -> float:
+    if series is None or len(series) < 2:
+        return 0.0
+    start_val = _to_float(series.iloc[0], 0.0)
+    end_val = _to_float(series.iloc[-1], 0.0)
+    if not (start_val > 0 and end_val > 0):
+        return 0.0
+    try:
+        days = (series.index[-1] - series.index[0]).days
+    except Exception:
+        return 0.0
+    if days <= 0:
+        return 0.0
+    years = days / 365.25
+    if years <= 0:
+        return 0.0
+    return float((end_val / start_val) ** (1 / years) - 1.0)
+
+
+def summarize_costs(
+    trades_df: pd.DataFrame | None,
+    equity_curve_pre: pd.Series | None,
+    equity_curve_post: pd.Series | None,
+) -> dict:
+    turnover_gross = 0.0
+    turnover_avg_daily = 0.0
+    turnover_multiple = 0.0
+    turnover_ratio = 0.0
+    slippage_bps_weighted = 0.0
+    fees_bps_weighted = 0.0
+
+    if trades_df is not None and not trades_df.empty:
+        notional_entry = trades_df.get("notional_entry", pd.Series(dtype=float)).abs()
+        notional_exit = trades_df.get("notional_exit", pd.Series(dtype=float)).abs()
+        turnover_gross = float(notional_entry.sum() + notional_exit.sum())
+        total_days = 0
+        if equity_curve_post is not None and len(equity_curve_post) > 0:
+            total_days = len(equity_curve_post)
+        elif equity_curve_pre is not None and len(equity_curve_pre) > 0:
+            total_days = len(equity_curve_pre)
+        turnover_avg_daily = float(turnover_gross / total_days) if total_days else 0.0
+
+        total_notional = float(notional_entry.sum() + notional_exit.sum())
+        if total_notional > 0:
+            entry_slip_component = (
+                trades_df.get("entry_slippage_bps", pd.Series(dtype=float)) * notional_entry
+            ).sum()
+            exit_slip_component = (
+                trades_df.get("exit_slippage_bps", pd.Series(dtype=float)) * notional_exit
+            ).sum()
+            slippage_bps_weighted = float((entry_slip_component + exit_slip_component) / total_notional)
+
+            entry_fee_component = (
+                trades_df.get("entry_fee_bps", pd.Series(dtype=float)) * notional_entry
+            ).sum()
+            exit_fee_component = (
+                trades_df.get("exit_fee_bps", pd.Series(dtype=float)) * notional_exit
+            ).sum()
+            fees_bps_weighted = float((entry_fee_component + exit_fee_component) / total_notional)
+
+    start_equity = None
+    if equity_curve_pre is not None and len(equity_curve_pre) > 0:
+        start_equity = float(equity_curve_pre.iloc[0])
+    elif equity_curve_post is not None and len(equity_curve_post) > 0:
+        start_equity = float(equity_curve_post.iloc[0])
+    if start_equity and start_equity > 0:
+        turnover_multiple = float(turnover_gross / start_equity)
+
+    def _span_days(series: pd.Series | None) -> float:
+        if series is None or len(series) < 2:
+            return 0.0
+        try:
+            delta = series.index[-1] - series.index[0]
+        except Exception:
+            return 0.0
+        try:
+            return float(delta.days)
+        except Exception:
+            return 0.0
+
+    period_days = _span_days(equity_curve_pre)
+    if period_days <= 0.0:
+        period_days = _span_days(equity_curve_post)
+    years = period_days / 365.25 if period_days > 0 else 0.0
+    if years > 0 and turnover_multiple > 0:
+        turnover_ratio = float(turnover_multiple / years)
+
+    pre_cost_cagr = _cagr_from_index(equity_curve_pre)
+    post_cost_cagr = _cagr_from_index(equity_curve_post)
+    pre_len = len(equity_curve_pre) if equity_curve_pre is not None else 0
+    post_len = len(equity_curve_post) if equity_curve_post is not None else 0
+    if equity_curve_pre is None or equity_curve_post is None or pre_len == 0 or post_len == 0:
+        annualized_drag_bps: float | None = None
+    else:
+        annualized_drag_bps = float((pre_cost_cagr - post_cost_cagr) * 10_000.0)
+
+    returns_pre = None
+    returns_post = None
+    if equity_curve_pre is not None and len(equity_curve_pre) > 1:
+        returns_pre = equity_curve_pre.pct_change().dropna()
+    if equity_curve_post is not None and len(equity_curve_post) > 1:
+        returns_post = equity_curve_post.pct_change().dropna()
+    sharpe_gross = sharpe_ratio(returns_pre) if returns_pre is not None and len(returns_pre) else 0.0
+    sharpe_net = sharpe_ratio(returns_post) if returns_post is not None and len(returns_post) else 0.0
+
+    if logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "summarize_costs turnover=%.4f slip_bps=%.2f fees_bps=%.2f drag_bps=%s",
+            float(turnover_gross),
+            float(slippage_bps_weighted),
+            float(fees_bps_weighted),
+            "None" if annualized_drag_bps is None else f"{annualized_drag_bps:.2f}",
+        )
+
+    return {
+        "turnover_gross": float(turnover_gross),
+        "turnover_avg_daily": float(turnover_avg_daily),
+        "turnover_multiple": float(turnover_multiple),
+        "turnover_ratio": float(turnover_ratio),
+        "slippage_bps_weighted": float(slippage_bps_weighted),
+        "fees_bps_weighted": float(fees_bps_weighted),
+        "pre_cost_cagr": float(pre_cost_cagr),
+        "post_cost_cagr": float(post_cost_cagr),
+        "cagr_gross": float(pre_cost_cagr),
+        "cagr_net": float(post_cost_cagr),
+        "sharpe_gross": float(sharpe_gross),
+        "sharpe_net": float(sharpe_net),
+        "sharpe_pre_cost": float(sharpe_gross),
+        "sharpe_post_cost": float(sharpe_net),
+        "annualized_drag_bps": float(annualized_drag_bps) if annualized_drag_bps is not None else None,
+    }
+
+
 # ---------- One-shot summary ----------
 
 def compute_core_metrics(equity: pd.Series, daily_returns: pd.Series, trades: list[dict]) -> dict:
@@ -172,3 +320,5 @@ def compute_core_metrics(equity: pd.Series, daily_returns: pd.Series, trades: li
     out.update(mfe_mae_edge_ratio(trades))
     out.update(entry_exit_efficiency(trades))
     return out
+
+# QA Checklist: enable COST_ENABLED=1 to inspect summarize_costs output and compare to pre-cost curves.

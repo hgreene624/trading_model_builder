@@ -21,7 +21,8 @@ from __future__ import annotations
 import random
 import time
 import importlib
-from typing import Any, Dict, List, Tuple, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Tuple, Optional, Literal
 from datetime import date, datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -83,6 +84,15 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         if "trade_rate_max" in data: out["trade_rate_max"] = _getf("trade_rate_max")
         # new optional keys
         if "elite_by_return_frac" in data: out["elite_by_return_frac"] = _getf("elite_by_return_frac")
+        if "holdout_score_weight" in data: out["holdout_score_weight"] = _getf("holdout_score_weight")
+        if "holdout_train_weight" in data: out["holdout_train_weight"] = _getf("holdout_train_weight")
+        if "holdout_gap_tolerance" in data: out["holdout_gap_tolerance"] = _getf("holdout_gap_tolerance")
+        if "holdout_gap_penalty" in data: out["holdout_gap_penalty"] = _getf("holdout_gap_penalty")
+        if "holdout_shortfall_penalty" in data:
+            out["holdout_shortfall_penalty"] = _getf("holdout_shortfall_penalty")
+        if "holdout_train_floor" in data: out["holdout_train_floor"] = _getf("holdout_train_floor")
+        if "holdout_train_floor_penalty" in data:
+            out["holdout_train_floor_penalty"] = _getf("holdout_train_floor_penalty")
         if "rate_penalize_upper" in data:
             v = data["rate_penalize_upper"]
             out["rate_penalize_upper"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
@@ -91,7 +101,8 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
             "alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap",
             "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
             "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
-            "elite_by_return_frac",
+            "elite_by_return_frac","holdout_score_weight","holdout_train_weight","holdout_gap_tolerance","holdout_gap_penalty",
+            "holdout_shortfall_penalty","holdout_train_floor","holdout_train_floor_penalty",
         ]:
             if k in out and out[k] is None:
                 out.pop(k, None)
@@ -113,6 +124,110 @@ def _noop_progress(event: str, payload: Dict[str, Any]) -> None:
     return
 
 
+# --- EA configuration ------------------------------------------------------
+
+
+@dataclass
+class EAConfig:
+    """Typed configuration for evolutionary search (new-style knobs)."""
+
+    pop_size: int = 64
+    generations: int = 50
+    selection_method: Literal["tournament", "rank", "roulette"] = "tournament"
+    tournament_k: int = 3
+    replacement: Literal["generational", "mu+lambda"] = "mu+lambda"
+    elitism_fraction: float = 0.05
+    crossover_rate: float = 0.85
+    crossover_op: Literal["blend", "sbx", "one_point"] = "blend"
+    mutation_rate: float = 0.10
+    mutation_scale: float = 0.20
+    mutation_scheme: Literal["gaussian", "polynomial", "uniform_reset"] = "gaussian"
+    genewise_clip: bool = True
+    anneal_mutation: bool = True
+    anneal_floor: float = 0.05
+    fitness_patience: int = 8
+    no_improve_tol: Optional[float] = None
+    seed: Optional[int] = None
+    workers: Optional[int] = None
+    shuffle_eval: bool = True
+
+    def elite_count(self) -> int:
+        return max(1, int(max(1, self.pop_size) * max(0.0, float(self.elitism_fraction))))
+
+    def mutation_scale_for_gen(self, gen: int, total_gens: int) -> float:
+        if not self.anneal_mutation or total_gens <= 1:
+            return float(self.mutation_scale)
+        start = float(self.mutation_scale)
+        floor = max(0.0, float(self.anneal_floor))
+        span = max(0.0, start - floor)
+        frac = min(1.0, max(0.0, float(gen) / float(max(1, total_gens - 1))))
+        return max(floor, start - span * frac)
+
+    def resolved_tournament_k(self) -> int:
+        return max(2, int(self.tournament_k))
+
+    def resolved_no_improve_tol(self) -> float:
+        if self.no_improve_tol is None:
+            return 0.0
+        return max(0.0, float(self.no_improve_tol))
+
+    def to_log_payload(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["elite_count"] = self.elite_count()
+        data["mutation_scale_initial"] = float(self.mutation_scale)
+        data["mutation_scale_floor"] = self.mutation_scale_for_gen(
+            gen=max(0, self.generations - 1), total_gens=max(1, self.generations)
+        )
+        return data
+
+
+# Impact Map: EAConfig introduces optional new knobs; guarded usage keeps legacy
+# code paths intact when `config` is omitted. Rollback: drop EAConfig usage and
+# remove the conditional branch in `evolutionary_search`, reverting to legacy
+# parameters-only behaviour.
+
+
+@dataclass
+class HoldoutPolicy:
+    """Simple blending policy for combining train/test fitness values."""
+
+    holdout_weight: float = 0.7
+    train_weight: float = 0.3
+    gap_tolerance: float = 0.1
+    gap_penalty: float = 0.5
+    train_floor: float = -0.25
+    train_floor_penalty: float = 0.35
+
+    def normalised(self) -> "HoldoutPolicy":
+        holdout = max(0.0, float(self.holdout_weight))
+        train = max(0.0, float(self.train_weight))
+        total = holdout + train
+        if total <= 0.0:
+            holdout = 1.0
+            train = 0.0
+            total = 1.0
+        gap_tolerance = max(0.0, float(self.gap_tolerance))
+        gap_penalty = max(0.0, float(self.gap_penalty))
+        return HoldoutPolicy(
+            holdout_weight=holdout / total,
+            train_weight=train / total,
+            gap_tolerance=gap_tolerance,
+            gap_penalty=gap_penalty,
+            train_floor=float(self.train_floor),
+            train_floor_penalty=max(0.0, float(self.train_floor_penalty)),
+        )
+
+    def to_payload(self) -> Dict[str, Any]:
+        return {
+            "holdout_weight": self.holdout_weight,
+            "train_weight": self.train_weight,
+            "gap_tolerance": self.gap_tolerance,
+            "gap_penalty": self.gap_penalty,
+            "train_floor": self.train_floor,
+            "train_floor_penalty": self.train_floor_penalty,
+        }
+
+
 # ----------------------------- Sampling ops ------------------------------
 
 def random_param(param_space: Dict[str, Tuple]) -> Dict[str, Any]:
@@ -127,7 +242,7 @@ def random_param(param_space: Dict[str, Tuple]) -> Dict[str, Any]:
     return out
 
 
-def mutate(params: Dict[str, Any], param_space: Dict[str, Tuple], rate: float = 0.3) -> Dict[str, Any]:
+def _legacy_mutate(params: Dict[str, Any], param_space: Dict[str, Tuple], rate: float = 0.3) -> Dict[str, Any]:
     """Randomly tweak a subset of params according to `rate`."""
     new = dict(params)
     for k, v in param_space.items():
@@ -140,10 +255,181 @@ def mutate(params: Dict[str, Any], param_space: Dict[str, Tuple], rate: float = 
     return new
 
 
-def crossover(p1: Dict[str, Any], p2: Dict[str, Any]) -> Dict[str, Any]:
+def _legacy_crossover(p1: Dict[str, Any], p2: Dict[str, Any]) -> Dict[str, Any]:
     """Uniform crossover."""
     return {k: (p1[k] if random.random() < 0.5 else p2[k]) for k in p1}
 
+
+# --- Config-aware operators -----------------------------------------------
+
+
+def _coerce_ea_config(config: Optional[Any]) -> Optional[EAConfig]:
+    if config is None:
+        return None
+    if isinstance(config, EAConfig):
+        return config
+    if isinstance(config, dict):
+        allowed = {k: config[k] for k in EAConfig.__dataclass_fields__ if k in config}
+        return EAConfig(**allowed)
+    raise TypeError(f"Unsupported config type: {type(config)!r}")
+
+
+def _select_parent(
+    scored: List[Tuple[Dict[str, Any], float, float]],
+    method: Literal["tournament", "rank", "roulette"],
+    tournament_k: int,
+) -> Dict[str, Any]:
+    if not scored:
+        raise ValueError("Parent selection requires non-empty scored population")
+    if method == "tournament":
+        k = min(max(2, tournament_k), len(scored))
+        sample = random.sample(scored, k)
+        sample.sort(key=lambda x: x[1], reverse=True)
+        return dict(sample[0][0])
+    if method == "rank":
+        weights = list(range(len(scored), 0, -1))
+        total = sum(weights)
+        pick = random.uniform(0, total)
+        upto = 0.0
+        for idx, weight in enumerate(weights):
+            upto += weight
+            if upto >= pick:
+                return dict(scored[idx][0])
+        return dict(scored[0][0])
+    # roulette
+    scores = [max(0.0, float(rec[1])) for rec in scored]
+    total = sum(scores)
+    if total <= 0.0:
+        return dict(random.choice(scored)[0])
+    pick = random.uniform(0, total)
+    upto = 0.0
+    for idx, weight in enumerate(scores):
+        upto += weight
+        if upto >= pick:
+            return dict(scored[idx][0])
+    return dict(scored[-1][0])
+
+
+def _crossover_configured(
+    p1: Dict[str, Any],
+    p2: Dict[str, Any],
+    param_space: Dict[str, Tuple],
+    cfg: EAConfig,
+) -> Dict[str, Any]:
+    if random.random() > float(cfg.crossover_rate):
+        return dict(p1 if random.random() < 0.5 else p2)
+
+    op = cfg.crossover_op
+    keys = list(p1.keys())
+    child: Dict[str, Any] = {}
+    if op == "one_point":
+        if not keys:
+            return dict(p1)
+        pivot = random.randint(1, len(keys))
+        for idx, key in enumerate(keys):
+            child[key] = p1[key] if idx < pivot else p2[key]
+        return child
+
+    for key in keys:
+        v1 = p1[key]
+        v2 = p2[key]
+        bounds = param_space.get(key)
+        is_float = isinstance(v1, float) or isinstance(v2, float) or (
+            bounds and (isinstance(bounds[0], float) or isinstance(bounds[1], float))
+        )
+        if not bounds:
+            bounds = (v1, v2)
+        lo, hi = bounds
+        if op == "blend":
+            if is_float:
+                lo_f = float(min(v1, v2))
+                hi_f = float(max(v1, v2))
+                if lo_f == hi_f:
+                    child[key] = float(lo_f)
+                else:
+                    child[key] = float(random.uniform(lo_f, hi_f))
+            else:
+                child[key] = random.choice([v1, v2])
+        elif op == "sbx":
+            # Simulated binary crossover (eta=2 approximation)
+            if is_float:
+                v1f = float(v1)
+                v2f = float(v2)
+                if v1f == v2f:
+                    child[key] = v1f
+                else:
+                    u = random.random()
+                    eta = 2.0
+                    span = max(1e-9, abs(v2f - v1f))
+                    beta = 1.0 + (2.0 * min(v1f, v2f) - float(lo)) / span
+                    beta_prime = 1.0 + (2.0 * float(hi) - 2.0 * max(v1f, v2f)) / span
+                    # Guard against negative crossover coefficients which would yield complex values
+                    beta = max(1e-9, beta)
+                    beta_prime = max(1e-9, beta_prime)
+                    if u <= 0.5:
+                        beta_q = max(1e-9, u * beta) ** (1.0 / (eta + 1.0))
+                    else:
+                        denom = max(1e-9, 2.0 - u * beta_prime)
+                        beta_q = (1.0 / denom) ** (1.0 / (eta + 1.0))
+                    child_val = 0.5 * ((1 + beta_q) * v1f + (1 - beta_q) * v2f)
+                    child[key] = float(child_val)
+            else:
+                child[key] = random.choice([v1, v2])
+        else:
+            # fallback to blend semantics for unsupported op types
+            child[key] = random.choice([v1, v2]) if not is_float else float(
+                random.uniform(float(min(v1, v2)), float(max(v1, v2)))
+            )
+    return child
+
+
+def _mutate_configured(
+    params: Dict[str, Any],
+    param_space: Dict[str, Tuple],
+    cfg: EAConfig,
+    mutation_scale: float,
+) -> Dict[str, Any]:
+    new = dict(params)
+    for key, bounds in param_space.items():
+        if random.random() >= float(cfg.mutation_rate):
+            continue
+        low, high = bounds
+        is_float = isinstance(low, float) or isinstance(high, float) or isinstance(new.get(key), float)
+        span = float(high) - float(low)
+        if cfg.mutation_scheme == "uniform_reset":
+            if is_float:
+                new_val = random.uniform(float(low), float(high))
+            else:
+                new_val = random.randint(int(low), int(high))
+        elif cfg.mutation_scheme == "polynomial":
+            if is_float:
+                eta = 20.0
+                u = random.random()
+                if u < 0.5:
+                    delta = (2 * u) ** (1 / (eta + 1)) - 1
+                else:
+                    delta = 1 - (2 * (1 - u)) ** (1 / (eta + 1))
+                new_val = float(new.get(key, low)) + delta * span * mutation_scale
+            else:
+                delta = random.randint(-max(1, int(span * mutation_scale)), max(1, int(span * mutation_scale)))
+                new_val = int(new.get(key, low)) + delta
+        else:  # gaussian default
+            if is_float:
+                sigma = max(1e-9, span * mutation_scale)
+                new_val = float(new.get(key, low)) + random.gauss(0.0, sigma)
+            else:
+                step = max(1, int(round(span * mutation_scale)))
+                if step <= 0:
+                    step = 1
+                new_val = int(new.get(key, low)) + random.randint(-step, step)
+
+        if cfg.genewise_clip:
+            if is_float:
+                new_val = float(min(float(high), max(float(low), float(new_val))))
+            else:
+                new_val = int(min(int(high), max(int(low), int(new_val))))
+        new[key] = new_val
+    return new
 
 # ------------------------------ Penalties --------------------------------
 
@@ -294,6 +580,7 @@ def _eval_one(
     end,
     starting_equity: float,
     params: Dict[str, Any],
+    test_range: Optional[Tuple[Any, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Pure function suitable for multiprocessing.
@@ -305,12 +592,36 @@ def _eval_one(
     _loader_file = getattr(L, "__file__", "<??>")
     res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
     metrics = res.get("aggregate", {}).get("metrics", {}) or {}
-    return {
+
+    test_metrics: Optional[Dict[str, Any]] = None
+    test_error: Optional[str] = None
+    if test_range and test_range[0] is not None and test_range[1] is not None:
+        try:
+            test_start, test_end = test_range
+            test_res = train_general_model(
+                strategy_dotted,
+                tickers,
+                test_start,
+                test_end,
+                starting_equity,
+                params,
+            )
+            test_metrics = test_res.get("aggregate", {}).get("metrics", {}) or {}
+        except Exception as exc:
+            test_metrics = None
+            test_error = f"{type(exc).__name__}: {exc}"
+
+    payload: Dict[str, Any] = {
         "metrics": metrics,
         "elapsed_sec": time.time() - t1,
         "params": params,
         "loader_file": _loader_file,
     }
+    if test_metrics is not None:
+        payload["test_metrics"] = test_metrics
+    if test_error is not None:
+        payload["test_error"] = test_error
+    return payload
 
 
 # ----------------------------- Main EA loop ------------------------------
@@ -323,6 +634,8 @@ def evolutionary_search(
     starting_equity: float,
     param_space: Dict[str, Tuple],
     *,
+    test_start: Optional[Any] = None,
+    test_end: Optional[Any] = None,
     generations: int = 10,
     pop_size: int = 20,
     # EA knobs
@@ -360,25 +673,64 @@ def evolutionary_search(
     log_file: str = "training.log",
     # Reproducibility
     seed: Optional[int] = None,
+    # New-style config
+    config: Optional[Any] = None,
 ) -> List[Tuple[Dict[str, Any], float]]:
     """
     Run EA and return top parameter sets [(params, score)].
 
     Notes:
+    - When `config` is provided, the new-style EAConfig knobs drive mutation, crossover, and replacement.
+      Legacy kwargs remain in effect when `config` is None to maintain backward compatibility.
     - Survivor selection indirectly enforces `min_trades` and min_avg_holding_days_gate via fitness gating.
     - Diversity maintained via `random_inject_frac`.
     - Multiprocessing evaluates individuals in parallel per generation.
+    - If `test_start`/`test_end` are supplied, scoring and gating use the holdout metrics from that range,
+      while training metrics remain available for logging.
     """
     resolved_cb: Optional[ProgressCb] = progress_cb or console_progress
     if resolved_cb is None:
         resolved_cb = _noop_progress
     progress_cb = resolved_cb
 
-    if seed is not None:
+    holdout_weight = 0.65
+    holdout_train_weight = 0.35
+    holdout_gap_tolerance = 0.15
+    holdout_gap_penalty = 0.50
+    holdout_train_floor = -0.25
+    holdout_train_floor_penalty = 0.35
+
+    cfg = _coerce_ea_config(config)
+
+    if cfg and cfg.seed is not None:
+        random.seed(cfg.seed)
+    elif seed is not None:
         random.seed(seed)
 
+    if cfg and cfg.workers is not None:
+        try:
+            n_jobs = int(cfg.workers)
+        except Exception:
+            n_jobs = n_jobs
+
+    generations_total = int(cfg.generations if cfg else generations)
+    if generations_total <= 0:
+        generations_total = max(1, generations)
+    pop_size_effective = int(cfg.pop_size if cfg else pop_size)
+    if pop_size_effective <= 0:
+        pop_size_effective = max(2, pop_size)
+
+    mutation_rate_effective = float(cfg.mutation_rate if cfg else mutation_rate)
+    if cfg:
+        cfg.pop_size = pop_size_effective
+        cfg.generations = generations_total
+
+    test_range: Optional[Tuple[Any, Any]] = None
+    if test_start is not None and test_end is not None:
+        test_range = (test_start, test_end)
+
     logger = TrainingLogger(log_file)
-    population = [random_param(param_space) for _ in range(pop_size)]
+    population = [random_param(param_space) for _ in range(pop_size_effective)]
     scored: List[Tuple[Dict[str, Any], float]] = []
     t0 = time.time()
     best_run_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
@@ -401,6 +753,15 @@ def evolutionary_search(
         trade_rate_max = _cfg.get("trade_rate_max", trade_rate_max)
         rate_penalize_upper = _cfg.get("rate_penalize_upper", rate_penalize_upper)
         elite_by_return_frac = _cfg.get("elite_by_return_frac", elite_by_return_frac)
+        holdout_weight = _cfg.get("holdout_score_weight", holdout_weight)
+        holdout_train_weight = _cfg.get("holdout_train_weight", holdout_train_weight)
+        holdout_gap_tolerance = _cfg.get("holdout_gap_tolerance", holdout_gap_tolerance)
+        holdout_gap_penalty = _cfg.get("holdout_gap_penalty", holdout_gap_penalty)
+        holdout_train_floor = _cfg.get("holdout_train_floor", holdout_train_floor)
+        holdout_train_floor_penalty = _cfg.get(
+            "holdout_train_floor_penalty",
+            _cfg.get("holdout_shortfall_penalty", holdout_train_floor_penalty),
+        )
         # Emit a one-time breadcrumb so logs show which source set the weights
         logger.log("fitness_config", {
             "source": "storage/config/ea_fitness.json",
@@ -420,17 +781,37 @@ def evolutionary_search(
                 "trade_rate_max": trade_rate_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
+                "holdout_weight": holdout_weight,
+                "holdout_train_weight": holdout_train_weight,
+                "holdout_gap_tolerance": holdout_gap_tolerance,
+                "holdout_gap_penalty": holdout_gap_penalty,
+                "holdout_train_floor": holdout_train_floor,
+                "holdout_train_floor_penalty": holdout_train_floor_penalty,
             },
         })
 
+    holdout_policy = HoldoutPolicy(
+        holdout_weight=holdout_weight,
+        train_weight=holdout_train_weight,
+        gap_tolerance=holdout_gap_tolerance,
+        gap_penalty=holdout_gap_penalty,
+        train_floor=holdout_train_floor,
+        train_floor_penalty=holdout_train_floor_penalty,
+    ).normalised()
+    logger.log("holdout_policy", holdout_policy.to_payload())
+
     # One-time session metadata for inspector tooling
-    logger.log("session_meta", {
+    session_meta_payload = {
         "strategy": strategy_dotted,
         "tickers": list(tickers) if isinstance(tickers, (list, tuple)) else [str(tickers)],
         "starting_equity": float(starting_equity),
         "train_start": str(start),
         "train_end": str(end),
-    })
+    }
+    if test_range:
+        session_meta_payload["test_start"] = str(test_range[0])
+        session_meta_payload["test_end"] = str(test_range[1])
+    logger.log("session_meta", session_meta_payload)
     # years used for trade-rate normalization
     def _years(a, b) -> float:
         # support date/datetime/str
@@ -444,9 +825,220 @@ def evolutionary_search(
     years = _years(start, end)
     num_symbols = max(1, len(tickers))
 
-    for gen in range(generations):
+    def _score_metrics_block(metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        data: Dict[str, Any] = metrics or {}
+        trades = int(data.get("trades", 0) or 0)
+        avg_hold = float(data.get("avg_holding_days", 0.0) or 0.0)
+        gated_zero = (
+            trades < min_trades
+            or avg_hold < float(min_avg_holding_days_gate)
+            or (require_hold_days and avg_hold <= 0.0)
+        )
+
+        trade_rate = 0.0
+        if num_symbols > 0 and years > 0:
+            trade_rate = float(trades) / float(num_symbols) / float(years)
+
+        base_norm = 0.0
+        hold_dist = 0.0
+        rate_dist = 0.0
+        hold_pen = 0.0
+        rate_pen = 0.0
+        pen_raw = 0.0
+        pen_cap = 0.0
+        total_return = float(data.get("total_return", 0.0) or 0.0)
+
+        if gated_zero:
+            score = 0.0
+            fitness_dbg = {
+                "gated_zero": True,
+                "base_norm": 0.0,
+                "trade_rate": trade_rate,
+                "hold_dist": 0.0,
+                "rate_dist": 0.0,
+                "hold_pen": 0.0,
+                "rate_pen": 0.0,
+                "penalty_total_raw": 0.0,
+                "penalty_total_capped": 0.0,
+            }
+        else:
+            cagr = float(data.get("cagr", 0.0) or 0.0)
+            calmar = float(data.get("calmar", 0.0) or 0.0)
+            mdd = float(abs(data.get("max_drawdown", 0.0) or 0.0))
+            if mdd < eps_mdd:
+                calmar = 0.0
+            sharpe = float(data.get("sharpe", 0.0) or 0.0)
+            if abs(sharpe) < eps_sharpe:
+                sharpe = 0.0
+
+            def _clip01(x: float) -> float:
+                if x < 0.0:
+                    return 0.0
+                if x > 1.0:
+                    return 1.0
+                return x
+
+            tr_n = _clip01(total_return / 0.50)
+            cagr_n = _clip01(cagr / 0.30)
+            sh_n = _clip01(sharpe / 3.0)
+            if calmar_cap > 0:
+                calmar = max(-calmar_cap, min(calmar, calmar_cap))
+            cm_n = _clip01(max(0.0, calmar) / max(1e-9, calmar_cap))
+
+            base_norm = (
+                (alpha_cagr * cagr_n)
+                + (beta_calmar * cm_n)
+                + (gamma_sharpe * sh_n)
+                + (delta_total_return * tr_n)
+            )
+
+            _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
+            if not (min_holding_days <= avg_hold <= max_holding_days):
+                hold_dist = (min_holding_days - avg_hold) if avg_hold < min_holding_days else (avg_hold - max_holding_days)
+            hold_pen = holding_penalty_weight * (hold_dist / _bw_hold)
+
+            _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
+            if trade_rate < trade_rate_min:
+                rate_dist = (trade_rate_min - trade_rate)
+            elif rate_penalize_upper and trade_rate > trade_rate_max:
+                rate_dist = (trade_rate - trade_rate_max)
+            else:
+                rate_dist = 0.0
+            rate_pen = trade_rate_penalty_weight * (rate_dist / _bw_rate)
+
+            pen_raw = hold_pen + rate_pen
+            pen_cap = min(pen_raw, float(penalty_cap))
+
+            if use_normalized_scoring:
+                score = float(base_norm - pen_cap)
+            else:
+                score = float(
+                    (alpha_cagr * cagr)
+                    + (beta_calmar * calmar)
+                    + (gamma_sharpe * sharpe)
+                    + (delta_total_return * total_return)
+                    - pen_cap
+                )
+
+            fitness_dbg = {
+                "gated_zero": False,
+                "base_norm": base_norm,
+                "trade_rate": trade_rate,
+                "hold_dist": hold_dist,
+                "rate_dist": rate_dist,
+                "hold_pen": hold_pen,
+                "rate_pen": rate_pen,
+                "penalty_total_raw": pen_raw,
+                "penalty_total_capped": pen_cap,
+            }
+
+        return {
+            "score": float(score),
+            "debug": fitness_dbg,
+            "ret": total_return,
+            "trades": trades,
+            "avg_hold": avg_hold,
+            "metrics": data,
+        }
+
+    def _blend_scores(
+        train_eval: Dict[str, Any],
+        test_eval: Optional[Dict[str, Any]],
+    ) -> Tuple[float, Dict[str, Any], Optional[Dict[str, Any]]]:
+        if test_eval is None:
+            return (
+                float(train_eval["score"]),
+                dict(train_eval["debug"]),
+                None,
+            )
+
+        train_score = float(train_eval["score"])
+        test_score = float(test_eval["score"])
+        train_debug = dict(train_eval["debug"])
+        test_debug = dict(test_eval["debug"])
+
+        train_gated = bool(train_debug.get("gated_zero", False))
+        test_gated = bool(test_debug.get("gated_zero", False))
+
+        if test_gated:
+            test_debug["gated_zero"] = True
+            blend_payload = {
+                "mode": "holdout_gated",
+                "test_score": test_score,
+                "train_score": train_score,
+            }
+            return 0.0, test_debug, blend_payload
+
+        effective_train = 0.0 if train_gated else train_score
+        holdout_component = holdout_policy.holdout_weight * test_score
+        train_component = holdout_policy.train_weight * effective_train
+        blended = holdout_component + train_component
+
+        gap = max(0.0, effective_train - test_score - holdout_policy.gap_tolerance)
+        gap_penalty = holdout_policy.gap_penalty * gap
+        blended_after_gap = max(0.0, blended - gap_penalty)
+
+        floor_gap = max(0.0, holdout_policy.train_floor - effective_train)
+        floor_penalty = holdout_policy.train_floor_penalty * floor_gap
+        final_score = max(0.0, blended_after_gap - floor_penalty)
+
+        debug = dict(test_debug)
+        debug.update(
+            {
+                "holdout_blend": True,
+                "train_score": train_score,
+                "train_effective": effective_train,
+                "train_gated": train_gated,
+                "holdout_component": holdout_component,
+                "train_component": train_component,
+                "gap_excess": gap,
+                "gap_penalty": gap_penalty,
+                "train_floor_gap": floor_gap,
+                "train_floor_penalty": floor_penalty,
+                "blended_score": final_score,
+            }
+        )
+        ratio = None
+        if effective_train > 1e-9:
+            ratio = test_score / effective_train
+            debug["train_to_test_ratio"] = ratio
+
+        blend_payload = {
+            "mode": "blended",
+            "holdout_weight": holdout_policy.holdout_weight,
+            "train_weight": holdout_policy.train_weight,
+            "gap_tolerance": holdout_policy.gap_tolerance,
+            "gap_penalty": gap_penalty,
+            "train_floor": holdout_policy.train_floor,
+            "train_floor_penalty": holdout_policy.train_floor_penalty,
+            "train_score": train_score,
+            "train_effective": effective_train,
+            "test_score": test_score,
+            "holdout_component": holdout_component,
+            "train_component": train_component,
+            "gap_excess": gap,
+            "train_floor_gap": floor_gap,
+            "score": final_score,
+        }
+        if train_gated:
+            blend_payload["train_gated"] = True
+        if ratio is not None:
+            blend_payload["train_to_test_ratio"] = ratio
+
+        return final_score, debug, blend_payload
+
+    best_score_seen: Optional[float] = None
+    stale_generations = 0
+    stopped_early = False
+    last_gen = -1
+
+    for gen in range(generations_total):
+        last_gen = gen
         progress_cb("generation_start", {"gen": gen, "pop_size": len(population)})
         logger.log("generation_start", {"gen": gen, "pop_size": len(population)})
+
+        if cfg and gen == 0:
+            logger.log("ea_config", cfg.to_log_payload())
 
         gen_scores: List[Tuple[Dict[str, Any], float, float]] = []
         gen_trades: List[int] = []
@@ -461,11 +1053,24 @@ def evolutionary_search(
         # ---- Evaluate population (parallel or single) ----
         results: List[Dict[str, Any]] = []
 
+        eval_population = list(population)
+        if cfg and cfg.shuffle_eval:
+            random.shuffle(eval_population)
+
         if n_jobs and n_jobs > 1:
             with ProcessPoolExecutor(max_workers=n_jobs) as ex:
                 futures = [
-                    ex.submit(_eval_one, strategy_dotted, tickers, start, end, starting_equity, params)
-                    for params in population
+                    ex.submit(
+                        _eval_one,
+                        strategy_dotted,
+                        tickers,
+                        start,
+                        end,
+                        starting_equity,
+                        params,
+                        test_range,
+                    )
+                    for params in eval_population
                 ]
                 for i, fut in enumerate(as_completed(futures)):
                     try:
@@ -477,9 +1082,17 @@ def evolutionary_search(
                         out = {"metrics": {}, "elapsed_sec": 0.0, "params": ctx.get("params", {})}
                     results.append(out)
         else:
-            for params in population:
+            for params in eval_population:
                 try:
-                    out = _eval_one(strategy_dotted, tickers, start, end, starting_equity, params)
+                    out = _eval_one(
+                        strategy_dotted,
+                        tickers,
+                        start,
+                        end,
+                        starting_equity,
+                        params,
+                        test_range,
+                    )
                 except Exception as e:
                     logger.log_error({"gen": gen, "params": params}, e)
                     out = {"metrics": {}, "elapsed_sec": 0.0, "params": params}
@@ -495,106 +1108,47 @@ def evolutionary_search(
                     hit_idx = j
                     break
             if hit_idx is None:
-                metrics = {}
+                metrics_train: Dict[str, Any] = {}
+                metrics_test: Dict[str, Any] = {}
                 elapsed = 0.0
                 loader_file = None
+                test_error = None
             else:
                 rec = results.pop(hit_idx)
-                metrics = rec.get("metrics", {}) or {}
+                metrics_train = rec.get("metrics", {}) or {}
+                metrics_test = rec.get("test_metrics") or {}
+                if not isinstance(metrics_test, dict):
+                    metrics_test = {}
                 elapsed = rec.get("elapsed_sec", 0.0)
                 loader_file = rec.get("loader_file")
+                test_error = rec.get("test_error")
 
-            # --- fitness with debug details (mirrors _clamped_fitness) ----
-            trades = int(metrics.get("trades", 0) or 0)
-            avg_hold = float(metrics.get("avg_holding_days", 0.0) or 0.0)
-            gated_zero = (
-                trades < min_trades
-                or avg_hold < float(min_avg_holding_days_gate)
-                or (require_hold_days and avg_hold <= 0.0)
+            train_eval = _score_metrics_block(metrics_train)
+            test_eval = _score_metrics_block(metrics_test) if metrics_test else None
+
+            if test_error:
+                logger.log(
+                    "holdout_eval_failed",
+                    {
+                        "gen": gen,
+                        "idx": i,
+                        "params": params,
+                        "error": test_error,
+                    },
+                )
+
+            score_metrics = (
+                test_eval["metrics"] if test_eval is not None else train_eval["metrics"]
             )
-            if gated_zero:
-                score = 0.0
-                fitness_dbg = {
-                    "gated_zero": True,
-                    "base_norm": 0.0,
-                    "trade_rate": 0.0,
-                    "hold_dist": 0.0,
-                    "rate_dist": 0.0,
-                    "hold_pen": 0.0,
-                    "rate_pen": 0.0,
-                    "penalty_total_raw": 0.0,
-                    "penalty_total_capped": 0.0,
-                }
-            else:
-                # metrics & guards
-                cagr = float(metrics.get("cagr", 0.0) or 0.0)
-                calmar = float(metrics.get("calmar", 0.0) or 0.0)
-                mdd = float(abs(metrics.get("max_drawdown", 0.0) or 0.0))
-                if mdd < eps_mdd:
-                    calmar = 0.0
-                sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
-                if abs(sharpe) < eps_sharpe:
-                    sharpe = 0.0
-                total_return = float(metrics.get("total_return", 0.0) or 0.0)
+            if not isinstance(score_metrics, dict):
+                score_metrics = {}
 
-                # normalization (engine style)
-                def _clip01(x: float) -> float:
-                    return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
-                tr_n = _clip01(total_return / 0.50)  # 0..50% → 0..1
-                cagr_n = _clip01(cagr / 0.30)        # 0..30% → 0..1
-                sh_n = _clip01(sharpe / 3.0)         # 0..3   → 0..1 (negatives clip to 0)
-                if calmar_cap > 0:
-                    calmar = max(-calmar_cap, min(calmar, calmar_cap))
-                cm_n = _clip01(max(0.0, calmar) / max(1e-9, calmar_cap))
+            score = float(train_eval["score"])
+            fitness_dbg = dict(train_eval["debug"])
+            blend_info: Optional[Dict[str, Any]] = None
 
-                base_norm = (
-                    (alpha_cagr * cagr_n)
-                    + (beta_calmar * cm_n)
-                    + (gamma_sharpe * sh_n)
-                    + (delta_total_return * tr_n)
-                )
-
-                # penalties (normalized distances + cap)
-                _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
-                hold_dist = 0.0
-                if not (min_holding_days <= avg_hold <= max_holding_days):
-                    hold_dist = (min_holding_days - avg_hold) if avg_hold < min_holding_days else (avg_hold - max_holding_days)
-                hold_pen = holding_penalty_weight * (hold_dist / _bw_hold)
-
-                trade_rate = 0.0
-                if num_symbols > 0 and years > 0:
-                    trade_rate = float(trades) / float(num_symbols) / float(years)
-                _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
-                if trade_rate < trade_rate_min:
-                    rate_dist = (trade_rate_min - trade_rate)
-                elif rate_penalize_upper and trade_rate > trade_rate_max:
-                    rate_dist = (trade_rate - trade_rate_max)
-                else:
-                    rate_dist = 0.0
-                rate_pen = trade_rate_penalty_weight * (rate_dist / _bw_rate)
-
-                pen_raw = hold_pen + rate_pen
-                pen_cap = min(pen_raw, float(penalty_cap))
-
-                score = float(base_norm - pen_cap) if use_normalized_scoring else float(
-                    (alpha_cagr * cagr)
-                    + (beta_calmar * calmar)
-                    + (gamma_sharpe * sharpe)
-                    + (delta_total_return * total_return)
-                    - pen_cap
-                )
-
-                fitness_dbg = {
-                    "gated_zero": False,
-                    "base_norm": base_norm,
-                    "trade_rate": trade_rate,
-                    "hold_dist": hold_dist,
-                    "rate_dist": rate_dist,
-                    "hold_pen": hold_pen,
-                    "rate_pen": rate_pen,
-                    "penalty_total_raw": pen_raw,
-                    "penalty_total_capped": pen_cap,
-                }
+            if test_eval is not None:
+                score, fitness_dbg, blend_info = _blend_scores(train_eval, test_eval)
 
             # --- accumulate per-gen telemetry ---------------------------------
             if fitness_dbg.get("gated_zero", False):
@@ -605,10 +1159,10 @@ def evolutionary_search(
                 if pen_cap_val >= float(penalty_cap) - 1e-12:
                     gen_cap_hits += 1
 
-            trades = int(metrics.get("trades", 0) or 0)
+            trades = int(score_metrics.get("trades", 0) or 0)
             gen_trades.append(trades)
 
-            ret = float(metrics.get("total_return", 0.0) or 0.0)
+            ret = float(score_metrics.get("total_return", 0.0) or 0.0)
 
             # Track best-by-return for this generation
             if (best_gen_return_rec is None) or (ret > best_gen_return_rec[1]):
@@ -622,17 +1176,22 @@ def evolutionary_search(
                 "idx": i,
                 "params": params,
                 "score": score,
-                "metrics": metrics,
+                "metrics": score_metrics,
+                "train_metrics": metrics_train,
                 "elapsed_sec": elapsed,
                 "loader_file": loader_file,
                 "fitness_debug": fitness_dbg,
             }
+            if test_range is not None:
+                payload["test_metrics"] = metrics_test
+            if blend_info is not None:
+                payload["score_blend"] = blend_info
             progress_cb("individual_evaluated", payload)
             logger.log("individual_evaluated", payload)
 
             if trades < min_trades:
                 logger.log("under_min_trades", payload)
-                if trades == 0 and (metrics.get("calmar", 0) or 0) != 0:
+                if trades == 0 and (score_metrics.get("calmar", 0) or 0) != 0:
                     logger.log("degenerate_fitness", payload)
                 no_trade_count += (1 if trades == 0 else 0)
 
@@ -643,12 +1202,14 @@ def evolutionary_search(
         gen_scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
         scored.extend([(p, s) for (p, s, _ret) in gen_scores])
 
-        elite_n = max(1, int(pop_size * elite_frac))
-        inject_n = max(0, int(pop_size * random_inject_frac))
-        breed_n = pop_size - elite_n - inject_n
+        elite_n = max(1, int(pop_size_effective * elite_frac)) if not cfg else min(
+            pop_size_effective, cfg.elite_count()
+        )
+        inject_n = max(0, int(pop_size_effective * random_inject_frac))
+        breed_n = pop_size_effective - elite_n - inject_n
         if breed_n < 0:
-            inject_n = max(0, pop_size - elite_n)
-            breed_n = pop_size - elite_n - inject_n
+            inject_n = max(0, pop_size_effective - elite_n)
+            breed_n = pop_size_effective - elite_n - inject_n
 
         # Mixed elites: by score and by total_return to reduce oscillation
         elite_by_return_n = max(0, min(elite_n, int(round(elite_n * elite_by_return_frac))))
@@ -657,16 +1218,17 @@ def evolutionary_search(
         survivors: List[Dict[str, Any]] = []
         seen = set()
 
-        # 1) take top by score (positive scores only)
+        # 1) take top by score (positive scores only for legacy path)
         for p, s, _r in gen_scores:
             if elite_by_score_n <= 0:
                 break
-            if s <= 0:
+            if not cfg and s <= 0:
                 continue
             key = json.dumps(p, sort_keys=True)
             if key in seen:
                 continue
-            survivors.append(p); seen.add(key)
+            survivors.append(p)
+            seen.add(key)
             elite_by_score_n -= 1
 
         # 2) take top by return (regardless of score) until quota met
@@ -677,7 +1239,8 @@ def evolutionary_search(
             key = json.dumps(p, sort_keys=True)
             if key in seen:
                 continue
-            survivors.append(p); seen.add(key)
+            survivors.append(p)
+            seen.add(key)
             elite_by_return_n -= 1
 
         # 3) pad with remaining best by score to reach elite_n
@@ -687,24 +1250,86 @@ def evolutionary_search(
             key = json.dumps(p, sort_keys=True)
             if key in seen:
                 continue
-            survivors.append(p); seen.add(key)
+            survivors.append(p)
+            seen.add(key)
 
-        # breed children
         children: List[Dict[str, Any]] = []
-        parents = survivors if len(survivors) >= 2 else [random_param(param_space) for _ in range(2)]
-        for _ in range(max(0, breed_n)):
-            p1 = random.choice(parents)
-            p2 = random.choice(parents)
-            child = mutate(crossover(p1, p2), param_space, rate=mutation_rate)
-            children.append(child)
+        if cfg:
+            mutation_scale_gen = cfg.mutation_scale_for_gen(gen, generations_total)
+            parent_scores = gen_scores if gen_scores else [(random_param(param_space), 0.0, 0.0)]
+            for _ in range(max(0, breed_n)):
+                try:
+                    p1 = _select_parent(parent_scores, cfg.selection_method, cfg.resolved_tournament_k())
+                    p2 = _select_parent(parent_scores, cfg.selection_method, cfg.resolved_tournament_k())
+                except ValueError:
+                    p1 = random_param(param_space)
+                    p2 = random_param(param_space)
+                child = _mutate_configured(
+                    _crossover_configured(p1, p2, param_space, cfg),
+                    param_space,
+                    cfg,
+                    mutation_scale_gen,
+                )
+                children.append(child)
+        else:
+            parents = survivors if len(survivors) >= 2 else [random_param(param_space) for _ in range(2)]
+            for _ in range(max(0, breed_n)):
+                p1 = random.choice(parents)
+                p2 = random.choice(parents)
+                child = _legacy_mutate(
+                    _legacy_crossover(p1, p2), param_space, rate=mutation_rate_effective
+                )
+                children.append(child)
 
         injections = [random_param(param_space) for _ in range(max(0, inject_n))]
 
-        population = survivors + children + injections
-        while len(population) < pop_size:
-            population.append(random_param(param_space))
-        if len(population) > pop_size:
-            population = population[:pop_size]
+        if cfg and cfg.replacement == "mu+lambda":
+            next_population: List[Dict[str, Any]] = list(survivors)
+            mu_seen = {json.dumps(p, sort_keys=True) for p in next_population}
+
+            def _try_add(candidate: Dict[str, Any]) -> bool:
+                key = json.dumps(candidate, sort_keys=True)
+                if key in mu_seen:
+                    return False
+                next_population.append(candidate)
+                mu_seen.add(key)
+                return True
+
+            for child in children:
+                if len(next_population) >= pop_size_effective:
+                    break
+                _try_add(child)
+
+            for inj in injections:
+                if len(next_population) >= pop_size_effective:
+                    break
+                _try_add(inj)
+
+            if len(next_population) < pop_size_effective:
+                for p, _s, _r in gen_scores:
+                    if len(next_population) >= pop_size_effective:
+                        break
+                    _try_add(p)
+
+            attempts = 0
+            max_attempts = max(10 * pop_size_effective, 50)
+            while len(next_population) < pop_size_effective and attempts < max_attempts:
+                rnd = random_param(param_space)
+                if _try_add(rnd):
+                    attempts += 1
+                    continue
+                attempts += 1
+
+            while len(next_population) < pop_size_effective:
+                next_population.append(random_param(param_space))
+
+            population = next_population[:pop_size_effective]
+        else:
+            population = survivors + children + injections
+            while len(population) < pop_size_effective:
+                population.append(random_param(param_space))
+            if len(population) > pop_size_effective:
+                population = population[:pop_size_effective]
 
         avg_score = (sum(s for _, s, _ in gen_scores) / len(gen_scores)) if gen_scores else 0.0
         best_score = gen_scores[0][1] if gen_scores else 0.0
@@ -722,6 +1347,17 @@ def evolutionary_search(
         else:
             _pen_mean = 0.0
             _pen_p95 = 0.0
+
+        should_stop = False
+        if cfg:
+            tol = cfg.resolved_no_improve_tol()
+            if best_score_seen is None or best_score > (best_score_seen + tol):
+                best_score_seen = best_score
+                stale_generations = 0
+            else:
+                stale_generations += 1
+                if cfg.fitness_patience > 0 and stale_generations >= cfg.fitness_patience:
+                    should_stop = True
 
         end_payload = {
             "gen": gen,
@@ -763,6 +1399,10 @@ def evolutionary_search(
         progress_cb("generation_end", end_payload)
         logger.log("generation_end", end_payload)
 
+        if should_stop:
+            stopped_early = True
+            break
+
     elapsed_total = time.time() - t0
     scored.sort(key=lambda x: x[1], reverse=True)
     best = scored[0] if scored else ({}, 0.0)
@@ -790,7 +1430,16 @@ def evolutionary_search(
             "rate_penalize_upper": rate_penalize_upper,
             "elite_by_return_frac": elite_by_return_frac,
         },
+        "generations_ran": max(0, last_gen + 1),
+        "stopped_early": stopped_early,
+        "pop_size": pop_size_effective,
     }
+    if test_range:
+        done_payload["test_start"] = str(test_range[0])
+        done_payload["test_end"] = str(test_range[1])
+        done_payload["score_window"] = "test"
+    if cfg:
+        done_payload["ea_config"] = cfg.to_log_payload()
     progress_cb("done", done_payload)
     logger.log("session_end", done_payload)
     return scored[:5]
