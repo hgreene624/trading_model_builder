@@ -1,5 +1,8 @@
 # EA Implementation Audit
 
+## Changelog
+- 2025-10-06: Added EAConfig with mutation/elitism controls exposed through the Strategy Adapter UI, including mutation rate/scale, crossover, selection, annealing, and worker knobs. Legacy callers that omit `config` continue to use the previous defaults, and the Buy-the-Dip configuration UI has been consolidated into a single section.
+
 ## 1. Executive Summary
 The platform wires two evolutionary optimizers into the Streamlit research workflow: a multi-symbol portfolio tuner (`evolutionary_search`) that loops through the general trainer/backtest stack with JSONL logging, and a single-symbol helper (`evolve_params`) that powers the legacy tuning page; both reuse the ATR breakout engine and metrics pipeline without modifying strategy code.【F:src/optimization/evolutionary.py†L318-L796】【F:src/tuning/evolve.py†L287-L367】【F:src/models/general_trainer.py†L89-L265】
 

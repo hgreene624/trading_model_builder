@@ -21,7 +21,8 @@ from __future__ import annotations
 import random
 import time
 import importlib
-from typing import Any, Dict, List, Tuple, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Tuple, Optional, Literal
 from datetime import date, datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -113,6 +114,69 @@ def _noop_progress(event: str, payload: Dict[str, Any]) -> None:
     return
 
 
+# --- EA configuration ------------------------------------------------------
+
+
+@dataclass
+class EAConfig:
+    """Typed configuration for evolutionary search (new-style knobs)."""
+
+    pop_size: int = 64
+    generations: int = 50
+    selection_method: Literal["tournament", "rank", "roulette"] = "tournament"
+    tournament_k: int = 3
+    replacement: Literal["generational", "mu+lambda"] = "mu+lambda"
+    elitism_fraction: float = 0.05
+    crossover_rate: float = 0.85
+    crossover_op: Literal["blend", "sbx", "one_point"] = "blend"
+    mutation_rate: float = 0.10
+    mutation_scale: float = 0.20
+    mutation_scheme: Literal["gaussian", "polynomial", "uniform_reset"] = "gaussian"
+    genewise_clip: bool = True
+    anneal_mutation: bool = True
+    anneal_floor: float = 0.05
+    fitness_patience: int = 8
+    no_improve_tol: Optional[float] = None
+    seed: Optional[int] = None
+    workers: Optional[int] = None
+    shuffle_eval: bool = True
+
+    def elite_count(self) -> int:
+        return max(1, int(max(1, self.pop_size) * max(0.0, float(self.elitism_fraction))))
+
+    def mutation_scale_for_gen(self, gen: int, total_gens: int) -> float:
+        if not self.anneal_mutation or total_gens <= 1:
+            return float(self.mutation_scale)
+        start = float(self.mutation_scale)
+        floor = max(0.0, float(self.anneal_floor))
+        span = max(0.0, start - floor)
+        frac = min(1.0, max(0.0, float(gen) / float(max(1, total_gens - 1))))
+        return max(floor, start - span * frac)
+
+    def resolved_tournament_k(self) -> int:
+        return max(2, int(self.tournament_k))
+
+    def resolved_no_improve_tol(self) -> float:
+        if self.no_improve_tol is None:
+            return 0.0
+        return max(0.0, float(self.no_improve_tol))
+
+    def to_log_payload(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["elite_count"] = self.elite_count()
+        data["mutation_scale_initial"] = float(self.mutation_scale)
+        data["mutation_scale_floor"] = self.mutation_scale_for_gen(
+            gen=max(0, self.generations - 1), total_gens=max(1, self.generations)
+        )
+        return data
+
+
+# Impact Map: EAConfig introduces optional new knobs; guarded usage keeps legacy
+# code paths intact when `config` is omitted. Rollback: drop EAConfig usage and
+# remove the conditional branch in `evolutionary_search`, reverting to legacy
+# parameters-only behaviour.
+
+
 # ----------------------------- Sampling ops ------------------------------
 
 def random_param(param_space: Dict[str, Tuple]) -> Dict[str, Any]:
@@ -127,7 +191,7 @@ def random_param(param_space: Dict[str, Tuple]) -> Dict[str, Any]:
     return out
 
 
-def mutate(params: Dict[str, Any], param_space: Dict[str, Tuple], rate: float = 0.3) -> Dict[str, Any]:
+def _legacy_mutate(params: Dict[str, Any], param_space: Dict[str, Tuple], rate: float = 0.3) -> Dict[str, Any]:
     """Randomly tweak a subset of params according to `rate`."""
     new = dict(params)
     for k, v in param_space.items():
@@ -140,10 +204,176 @@ def mutate(params: Dict[str, Any], param_space: Dict[str, Tuple], rate: float = 
     return new
 
 
-def crossover(p1: Dict[str, Any], p2: Dict[str, Any]) -> Dict[str, Any]:
+def _legacy_crossover(p1: Dict[str, Any], p2: Dict[str, Any]) -> Dict[str, Any]:
     """Uniform crossover."""
     return {k: (p1[k] if random.random() < 0.5 else p2[k]) for k in p1}
 
+
+# --- Config-aware operators -----------------------------------------------
+
+
+def _coerce_ea_config(config: Optional[Any]) -> Optional[EAConfig]:
+    if config is None:
+        return None
+    if isinstance(config, EAConfig):
+        return config
+    if isinstance(config, dict):
+        allowed = {k: config[k] for k in EAConfig.__dataclass_fields__ if k in config}
+        return EAConfig(**allowed)
+    raise TypeError(f"Unsupported config type: {type(config)!r}")
+
+
+def _select_parent(
+    scored: List[Tuple[Dict[str, Any], float, float]],
+    method: Literal["tournament", "rank", "roulette"],
+    tournament_k: int,
+) -> Dict[str, Any]:
+    if not scored:
+        raise ValueError("Parent selection requires non-empty scored population")
+    if method == "tournament":
+        k = min(max(2, tournament_k), len(scored))
+        sample = random.sample(scored, k)
+        sample.sort(key=lambda x: x[1], reverse=True)
+        return dict(sample[0][0])
+    if method == "rank":
+        weights = list(range(len(scored), 0, -1))
+        total = sum(weights)
+        pick = random.uniform(0, total)
+        upto = 0.0
+        for idx, weight in enumerate(weights):
+            upto += weight
+            if upto >= pick:
+                return dict(scored[idx][0])
+        return dict(scored[0][0])
+    # roulette
+    scores = [max(0.0, float(rec[1])) for rec in scored]
+    total = sum(scores)
+    if total <= 0.0:
+        return dict(random.choice(scored)[0])
+    pick = random.uniform(0, total)
+    upto = 0.0
+    for idx, weight in enumerate(scores):
+        upto += weight
+        if upto >= pick:
+            return dict(scored[idx][0])
+    return dict(scored[-1][0])
+
+
+def _crossover_configured(
+    p1: Dict[str, Any],
+    p2: Dict[str, Any],
+    param_space: Dict[str, Tuple],
+    cfg: EAConfig,
+) -> Dict[str, Any]:
+    if random.random() > float(cfg.crossover_rate):
+        return dict(p1 if random.random() < 0.5 else p2)
+
+    op = cfg.crossover_op
+    keys = list(p1.keys())
+    child: Dict[str, Any] = {}
+    if op == "one_point":
+        if not keys:
+            return dict(p1)
+        pivot = random.randint(1, len(keys))
+        for idx, key in enumerate(keys):
+            child[key] = p1[key] if idx < pivot else p2[key]
+        return child
+
+    for key in keys:
+        v1 = p1[key]
+        v2 = p2[key]
+        bounds = param_space.get(key)
+        is_float = isinstance(v1, float) or isinstance(v2, float) or (
+            bounds and (isinstance(bounds[0], float) or isinstance(bounds[1], float))
+        )
+        if not bounds:
+            bounds = (v1, v2)
+        lo, hi = bounds
+        if op == "blend":
+            if is_float:
+                lo_f = float(min(v1, v2))
+                hi_f = float(max(v1, v2))
+                if lo_f == hi_f:
+                    child[key] = float(lo_f)
+                else:
+                    child[key] = float(random.uniform(lo_f, hi_f))
+            else:
+                child[key] = random.choice([v1, v2])
+        elif op == "sbx":
+            # Simulated binary crossover (eta=2 approximation)
+            if is_float:
+                v1f = float(v1)
+                v2f = float(v2)
+                if v1f == v2f:
+                    child[key] = v1f
+                else:
+                    u = random.random()
+                    eta = 2.0
+                    beta = 1.0 + (2.0 * min(v1f, v2f) - float(lo)) / max(1e-9, abs(v2f - v1f))
+                    beta_prime = 1.0 + (2.0 * float(hi) - 2.0 * max(v1f, v2f)) / max(1e-9, abs(v2f - v1f))
+                    if u <= 0.5:
+                        beta_q = (u * beta) ** (1.0 / (eta + 1.0))
+                    else:
+                        beta_q = (1.0 / (2.0 - u * beta_prime)) ** (1.0 / (eta + 1.0))
+                    child_val = 0.5 * ((1 + beta_q) * v1f + (1 - beta_q) * v2f)
+                    child[key] = float(child_val)
+            else:
+                child[key] = random.choice([v1, v2])
+        else:
+            # fallback to blend semantics for unsupported op types
+            child[key] = random.choice([v1, v2]) if not is_float else float(
+                random.uniform(float(min(v1, v2)), float(max(v1, v2)))
+            )
+    return child
+
+
+def _mutate_configured(
+    params: Dict[str, Any],
+    param_space: Dict[str, Tuple],
+    cfg: EAConfig,
+    mutation_scale: float,
+) -> Dict[str, Any]:
+    new = dict(params)
+    for key, bounds in param_space.items():
+        if random.random() >= float(cfg.mutation_rate):
+            continue
+        low, high = bounds
+        is_float = isinstance(low, float) or isinstance(high, float) or isinstance(new.get(key), float)
+        span = float(high) - float(low)
+        if cfg.mutation_scheme == "uniform_reset":
+            if is_float:
+                new_val = random.uniform(float(low), float(high))
+            else:
+                new_val = random.randint(int(low), int(high))
+        elif cfg.mutation_scheme == "polynomial":
+            if is_float:
+                eta = 20.0
+                u = random.random()
+                if u < 0.5:
+                    delta = (2 * u) ** (1 / (eta + 1)) - 1
+                else:
+                    delta = 1 - (2 * (1 - u)) ** (1 / (eta + 1))
+                new_val = float(new.get(key, low)) + delta * span * mutation_scale
+            else:
+                delta = random.randint(-max(1, int(span * mutation_scale)), max(1, int(span * mutation_scale)))
+                new_val = int(new.get(key, low)) + delta
+        else:  # gaussian default
+            if is_float:
+                sigma = max(1e-9, span * mutation_scale)
+                new_val = float(new.get(key, low)) + random.gauss(0.0, sigma)
+            else:
+                step = max(1, int(round(span * mutation_scale)))
+                if step <= 0:
+                    step = 1
+                new_val = int(new.get(key, low)) + random.randint(-step, step)
+
+        if cfg.genewise_clip:
+            if is_float:
+                new_val = float(min(float(high), max(float(low), float(new_val))))
+            else:
+                new_val = int(min(int(high), max(int(low), int(new_val))))
+        new[key] = new_val
+    return new
 
 # ------------------------------ Penalties --------------------------------
 
@@ -360,11 +590,15 @@ def evolutionary_search(
     log_file: str = "training.log",
     # Reproducibility
     seed: Optional[int] = None,
+    # New-style config
+    config: Optional[Any] = None,
 ) -> List[Tuple[Dict[str, Any], float]]:
     """
     Run EA and return top parameter sets [(params, score)].
 
     Notes:
+    - When `config` is provided, the new-style EAConfig knobs drive mutation, crossover, and replacement.
+      Legacy kwargs remain in effect when `config` is None to maintain backward compatibility.
     - Survivor selection indirectly enforces `min_trades` and min_avg_holding_days_gate via fitness gating.
     - Diversity maintained via `random_inject_frac`.
     - Multiprocessing evaluates individuals in parallel per generation.
@@ -374,11 +608,33 @@ def evolutionary_search(
         resolved_cb = _noop_progress
     progress_cb = resolved_cb
 
-    if seed is not None:
+    cfg = _coerce_ea_config(config)
+
+    if cfg and cfg.seed is not None:
+        random.seed(cfg.seed)
+    elif seed is not None:
         random.seed(seed)
 
+    if cfg and cfg.workers is not None:
+        try:
+            n_jobs = int(cfg.workers)
+        except Exception:
+            n_jobs = n_jobs
+
+    generations_total = int(cfg.generations if cfg else generations)
+    if generations_total <= 0:
+        generations_total = max(1, generations)
+    pop_size_effective = int(cfg.pop_size if cfg else pop_size)
+    if pop_size_effective <= 0:
+        pop_size_effective = max(2, pop_size)
+
+    mutation_rate_effective = float(cfg.mutation_rate if cfg else mutation_rate)
+    if cfg:
+        cfg.pop_size = pop_size_effective
+        cfg.generations = generations_total
+
     logger = TrainingLogger(log_file)
-    population = [random_param(param_space) for _ in range(pop_size)]
+    population = [random_param(param_space) for _ in range(pop_size_effective)]
     scored: List[Tuple[Dict[str, Any], float]] = []
     t0 = time.time()
     best_run_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
@@ -444,9 +700,18 @@ def evolutionary_search(
     years = _years(start, end)
     num_symbols = max(1, len(tickers))
 
-    for gen in range(generations):
+    best_score_seen: Optional[float] = None
+    stale_generations = 0
+    stopped_early = False
+    last_gen = -1
+
+    for gen in range(generations_total):
+        last_gen = gen
         progress_cb("generation_start", {"gen": gen, "pop_size": len(population)})
         logger.log("generation_start", {"gen": gen, "pop_size": len(population)})
+
+        if cfg and gen == 0:
+            logger.log("ea_config", cfg.to_log_payload())
 
         gen_scores: List[Tuple[Dict[str, Any], float, float]] = []
         gen_trades: List[int] = []
@@ -461,11 +726,15 @@ def evolutionary_search(
         # ---- Evaluate population (parallel or single) ----
         results: List[Dict[str, Any]] = []
 
+        eval_population = list(population)
+        if cfg and cfg.shuffle_eval:
+            random.shuffle(eval_population)
+
         if n_jobs and n_jobs > 1:
             with ProcessPoolExecutor(max_workers=n_jobs) as ex:
                 futures = [
                     ex.submit(_eval_one, strategy_dotted, tickers, start, end, starting_equity, params)
-                    for params in population
+                    for params in eval_population
                 ]
                 for i, fut in enumerate(as_completed(futures)):
                     try:
@@ -477,7 +746,7 @@ def evolutionary_search(
                         out = {"metrics": {}, "elapsed_sec": 0.0, "params": ctx.get("params", {})}
                     results.append(out)
         else:
-            for params in population:
+            for params in eval_population:
                 try:
                     out = _eval_one(strategy_dotted, tickers, start, end, starting_equity, params)
                 except Exception as e:
@@ -643,12 +912,14 @@ def evolutionary_search(
         gen_scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
         scored.extend([(p, s) for (p, s, _ret) in gen_scores])
 
-        elite_n = max(1, int(pop_size * elite_frac))
-        inject_n = max(0, int(pop_size * random_inject_frac))
-        breed_n = pop_size - elite_n - inject_n
+        elite_n = max(1, int(pop_size_effective * elite_frac)) if not cfg else min(
+            pop_size_effective, cfg.elite_count()
+        )
+        inject_n = max(0, int(pop_size_effective * random_inject_frac))
+        breed_n = pop_size_effective - elite_n - inject_n
         if breed_n < 0:
-            inject_n = max(0, pop_size - elite_n)
-            breed_n = pop_size - elite_n - inject_n
+            inject_n = max(0, pop_size_effective - elite_n)
+            breed_n = pop_size_effective - elite_n - inject_n
 
         # Mixed elites: by score and by total_return to reduce oscillation
         elite_by_return_n = max(0, min(elite_n, int(round(elite_n * elite_by_return_frac))))
@@ -657,16 +928,17 @@ def evolutionary_search(
         survivors: List[Dict[str, Any]] = []
         seen = set()
 
-        # 1) take top by score (positive scores only)
+        # 1) take top by score (positive scores only for legacy path)
         for p, s, _r in gen_scores:
             if elite_by_score_n <= 0:
                 break
-            if s <= 0:
+            if not cfg and s <= 0:
                 continue
             key = json.dumps(p, sort_keys=True)
             if key in seen:
                 continue
-            survivors.append(p); seen.add(key)
+            survivors.append(p)
+            seen.add(key)
             elite_by_score_n -= 1
 
         # 2) take top by return (regardless of score) until quota met
@@ -677,7 +949,8 @@ def evolutionary_search(
             key = json.dumps(p, sort_keys=True)
             if key in seen:
                 continue
-            survivors.append(p); seen.add(key)
+            survivors.append(p)
+            seen.add(key)
             elite_by_return_n -= 1
 
         # 3) pad with remaining best by score to reach elite_n
@@ -687,24 +960,86 @@ def evolutionary_search(
             key = json.dumps(p, sort_keys=True)
             if key in seen:
                 continue
-            survivors.append(p); seen.add(key)
+            survivors.append(p)
+            seen.add(key)
 
-        # breed children
         children: List[Dict[str, Any]] = []
-        parents = survivors if len(survivors) >= 2 else [random_param(param_space) for _ in range(2)]
-        for _ in range(max(0, breed_n)):
-            p1 = random.choice(parents)
-            p2 = random.choice(parents)
-            child = mutate(crossover(p1, p2), param_space, rate=mutation_rate)
-            children.append(child)
+        if cfg:
+            mutation_scale_gen = cfg.mutation_scale_for_gen(gen, generations_total)
+            parent_scores = gen_scores if gen_scores else [(random_param(param_space), 0.0, 0.0)]
+            for _ in range(max(0, breed_n)):
+                try:
+                    p1 = _select_parent(parent_scores, cfg.selection_method, cfg.resolved_tournament_k())
+                    p2 = _select_parent(parent_scores, cfg.selection_method, cfg.resolved_tournament_k())
+                except ValueError:
+                    p1 = random_param(param_space)
+                    p2 = random_param(param_space)
+                child = _mutate_configured(
+                    _crossover_configured(p1, p2, param_space, cfg),
+                    param_space,
+                    cfg,
+                    mutation_scale_gen,
+                )
+                children.append(child)
+        else:
+            parents = survivors if len(survivors) >= 2 else [random_param(param_space) for _ in range(2)]
+            for _ in range(max(0, breed_n)):
+                p1 = random.choice(parents)
+                p2 = random.choice(parents)
+                child = _legacy_mutate(
+                    _legacy_crossover(p1, p2), param_space, rate=mutation_rate_effective
+                )
+                children.append(child)
 
         injections = [random_param(param_space) for _ in range(max(0, inject_n))]
 
-        population = survivors + children + injections
-        while len(population) < pop_size:
-            population.append(random_param(param_space))
-        if len(population) > pop_size:
-            population = population[:pop_size]
+        if cfg and cfg.replacement == "mu+lambda":
+            next_population: List[Dict[str, Any]] = list(survivors)
+            mu_seen = {json.dumps(p, sort_keys=True) for p in next_population}
+            for p, _s, _r in gen_scores:
+                if len(next_population) >= pop_size_effective:
+                    break
+                key = json.dumps(p, sort_keys=True)
+                if key in mu_seen:
+                    continue
+                next_population.append(p)
+                mu_seen.add(key)
+            for child in children:
+                if len(next_population) >= pop_size_effective:
+                    break
+                key = json.dumps(child, sort_keys=True)
+                if key in mu_seen:
+                    continue
+                next_population.append(child)
+                mu_seen.add(key)
+            for inj in injections:
+                if len(next_population) >= pop_size_effective:
+                    break
+                key = json.dumps(inj, sort_keys=True)
+                if key in mu_seen:
+                    continue
+                next_population.append(inj)
+                mu_seen.add(key)
+            attempts = 0
+            max_attempts = max(10 * pop_size_effective, 50)
+            while len(next_population) < pop_size_effective and attempts < max_attempts:
+                rnd = random_param(param_space)
+                key = json.dumps(rnd, sort_keys=True)
+                if key in mu_seen and attempts < pop_size_effective * 5:
+                    attempts += 1
+                    continue
+                next_population.append(rnd)
+                mu_seen.add(key)
+                attempts += 1
+            while len(next_population) < pop_size_effective:
+                next_population.append(random_param(param_space))
+            population = next_population[:pop_size_effective]
+        else:
+            population = survivors + children + injections
+            while len(population) < pop_size_effective:
+                population.append(random_param(param_space))
+            if len(population) > pop_size_effective:
+                population = population[:pop_size_effective]
 
         avg_score = (sum(s for _, s, _ in gen_scores) / len(gen_scores)) if gen_scores else 0.0
         best_score = gen_scores[0][1] if gen_scores else 0.0
@@ -722,6 +1057,17 @@ def evolutionary_search(
         else:
             _pen_mean = 0.0
             _pen_p95 = 0.0
+
+        should_stop = False
+        if cfg:
+            tol = cfg.resolved_no_improve_tol()
+            if best_score_seen is None or best_score > (best_score_seen + tol):
+                best_score_seen = best_score
+                stale_generations = 0
+            else:
+                stale_generations += 1
+                if cfg.fitness_patience > 0 and stale_generations >= cfg.fitness_patience:
+                    should_stop = True
 
         end_payload = {
             "gen": gen,
@@ -763,6 +1109,10 @@ def evolutionary_search(
         progress_cb("generation_end", end_payload)
         logger.log("generation_end", end_payload)
 
+        if should_stop:
+            stopped_early = True
+            break
+
     elapsed_total = time.time() - t0
     scored.sort(key=lambda x: x[1], reverse=True)
     best = scored[0] if scored else ({}, 0.0)
@@ -790,7 +1140,12 @@ def evolutionary_search(
             "rate_penalize_upper": rate_penalize_upper,
             "elite_by_return_frac": elite_by_return_frac,
         },
+        "generations_ran": max(0, last_gen + 1),
+        "stopped_early": stopped_early,
+        "pop_size": pop_size_effective,
     }
+    if cfg:
+        done_payload["ea_config"] = cfg.to_log_payload()
     progress_cb("done", done_payload)
     logger.log("session_end", done_payload)
     return scored[:5]

@@ -449,8 +449,24 @@ for _k, _v in [
 ea_cfg = _ss_get_dict(
     "ea_cfg",
     {
-        "generations": 12,
-        "pop_size": 100,
+        "generations": 50,
+        "pop_size": 64,
+        "selection_method": "tournament",
+        "tournament_k": 3,
+        "replacement": "mu+lambda",
+        "elitism_fraction": 0.05,
+        "crossover_rate": 0.85,
+        "crossover_op": "blend",
+        "mutation_rate": 0.10,
+        "mutation_scale": 0.20,
+        "mutation_scheme": "gaussian",
+        "anneal_mutation": True,
+        "anneal_floor": 0.05,
+        "fitness_patience": 8,
+        "seed": None,
+        "workers": None,
+        "shuffle_eval": True,
+        "genewise_clip": True,
         "min_trades": 12,
         "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
         "breakout_n_min": 8,
@@ -496,61 +512,293 @@ for _k, _v in [
 ]:
     ea_cfg.setdefault(_k, _v)
 
-with st.expander("Evolutionary search (EA) controls", expanded=True):
-    st.markdown("**Search behaviour**")
-    search_cols = st.columns(3)
-    with search_cols[0]:
-        ea_cfg["generations"] = st.number_input("Generations", 1, 200, int(ea_cfg["generations"]), 1)
-    with search_cols[1]:
-        ea_cfg["pop_size"] = st.number_input("Population", 2, 400, int(ea_cfg["pop_size"]), 1)
-    with search_cols[2]:
-        ea_cfg["min_trades"] = st.number_input("Min trades (gate)", 0, 200, int(ea_cfg["min_trades"]), 1)
+for _k, _v in {
+    "selection_method": "tournament",
+    "tournament_k": 3,
+    "replacement": "mu+lambda",
+    "elitism_fraction": 0.05,
+    "crossover_rate": 0.85,
+    "crossover_op": "blend",
+    "mutation_rate": 0.10,
+    "mutation_scale": 0.20,
+    "mutation_scheme": "gaussian",
+    "anneal_mutation": True,
+    "anneal_floor": 0.05,
+    "fitness_patience": 8,
+    "seed": None,
+    "workers": None,
+    "shuffle_eval": True,
+    "genewise_clip": True,
+}.items():
+    ea_cfg.setdefault(_k, _v)
 
-    st.markdown("**Parallelism**")
-    ea_cfg["n_jobs"] = st.number_input(
-        "Jobs (EA)",
-        1,
-        max(1, (os.cpu_count() or 2)),
-        int(ea_cfg["n_jobs"]),
-        1,
-        help="Worker processes dedicated to the evolutionary search.",
-    )
+with st.expander("EA Parameters", expanded=False):
+    primary_cols = st.columns(3)
+    with primary_cols[0]:
+        ea_cfg["pop_size"] = st.number_input(
+            "Population size",
+            min_value=8,
+            max_value=400,
+            value=int(ea_cfg.get("pop_size", 64)),
+            step=1,
+            help="Population per generation. Larger explores more, costs more time.",
+        )
+        ea_cfg["generations"] = st.number_input(
+            "Generations",
+            min_value=1,
+            max_value=300,
+            value=int(ea_cfg.get("generations", 50)),
+            step=1,
+            help="Number of generations (iterations) to evolve.",
+        )
+        ea_cfg["selection_method"] = st.selectbox(
+            "Selection method",
+            options=["tournament", "rank", "roulette"],
+            index=["tournament", "rank", "roulette"].index(str(ea_cfg.get("selection_method", "tournament"))),
+            help="Parent selection pressure and bias.",
+        )
+    with primary_cols[1]:
+        tournament_disabled = ea_cfg["selection_method"] != "tournament"
+        ea_cfg["tournament_k"] = st.number_input(
+            "Tournament k",
+            min_value=2,
+            max_value=max(2, int(ea_cfg["pop_size"])),
+            value=int(ea_cfg.get("tournament_k", 3)),
+            step=1,
+            help="Higher k = stronger selection pressure.",
+            disabled=tournament_disabled,
+        )
+        replacement_labels = {"generational": "generational", "mu+lambda": "μ+λ"}
+        current_replacement = replacement_labels.get(str(ea_cfg.get("replacement", "mu+lambda")), "μ+λ")
+        selected_replacement = st.selectbox(
+            "Replacement",
+            options=["generational", "μ+λ"],
+            index=["generational", "μ+λ"].index(current_replacement),
+            help="How survivors are chosen into the next gen.",
+        )
+        ea_cfg["replacement"] = "mu+lambda" if selected_replacement == "μ+λ" else "generational"
+        ea_cfg["elitism_fraction"] = st.slider(
+            "Elitism fraction",
+            min_value=0.0,
+            max_value=0.20,
+            value=float(ea_cfg.get("elitism_fraction", 0.05)),
+            step=0.01,
+            help="Top X% copied unchanged to next generation.",
+        )
+    with primary_cols[2]:
+        ea_cfg["crossover_rate"] = st.slider(
+            "Crossover rate",
+            min_value=0.50,
+            max_value=1.0,
+            value=float(ea_cfg.get("crossover_rate", 0.85)),
+            step=0.01,
+            help="Chance to recombine parents into offspring.",
+        )
+        ea_cfg["crossover_op"] = st.selectbox(
+            "Crossover operator",
+            options=["blend", "sbx", "one_point"],
+            index=["blend", "sbx", "one_point"].index(str(ea_cfg.get("crossover_op", "blend"))),
+            help="Recombination operator for real/mixed genomes.",
+        )
+        ea_cfg["mutation_rate"] = st.slider(
+            "Mutation rate",
+            min_value=0.02,
+            max_value=0.30,
+            value=float(ea_cfg.get("mutation_rate", 0.10)),
+            step=0.01,
+            help="Per-gene chance to mutate. Higher = more exploration.",
+        )
+        ea_cfg["mutation_scale"] = st.slider(
+            "Mutation scale",
+            min_value=0.05,
+            max_value=0.50,
+            value=float(ea_cfg.get("mutation_scale", 0.20)),
+            step=0.01,
+            help="Typical mutation step as fraction of parameter range.",
+        )
 
-    st.markdown("**Parameter bounds**")
+    secondary_cols = st.columns(3)
+    with secondary_cols[0]:
+        ea_cfg["mutation_scheme"] = st.selectbox(
+            "Mutation scheme",
+            options=["gaussian", "polynomial", "uniform_reset"],
+            index=["gaussian", "polynomial", "uniform_reset"].index(str(ea_cfg.get("mutation_scheme", "gaussian"))),
+            help="Distribution used for mutations.",
+        )
+        ea_cfg["anneal_mutation"] = st.checkbox(
+            "Anneal mutation",
+            value=bool(ea_cfg.get("anneal_mutation", True)),
+            help="Gradually reduce mutation scale across generations.",
+        )
+    with secondary_cols[1]:
+        ea_cfg["anneal_floor"] = st.slider(
+            "Anneal floor",
+            min_value=0.0,
+            max_value=0.20,
+            value=float(ea_cfg.get("anneal_floor", 0.05)),
+            step=0.01,
+            help="Minimum mutation scale when annealing is enabled.",
+            disabled=not ea_cfg["anneal_mutation"],
+        )
+        ea_cfg["fitness_patience"] = st.number_input(
+            "Fitness patience",
+            min_value=0,
+            max_value=100,
+            value=int(ea_cfg.get("fitness_patience", 8)),
+            step=1,
+            help="Early stop if best score doesn’t improve for N generations.",
+        )
+    with secondary_cols[2]:
+        seed_default = "" if ea_cfg.get("seed") in (None, "") else str(ea_cfg.get("seed"))
+        seed_str = st.text_input(
+            "Seed (optional)",
+            value=seed_default,
+            help="Set for reproducible runs (may be approximate with multiprocessing).",
+        )
+        try:
+            ea_cfg["seed"] = int(seed_str.strip()) if seed_str.strip() else None
+        except ValueError:
+            ea_cfg["seed"] = None
+        workers_default = "" if ea_cfg.get("workers") in (None, "") else str(ea_cfg.get("workers"))
+        workers_str = st.text_input(
+            "Workers (optional)",
+            value=workers_default,
+            help="Parallel workers. Leave blank for auto.",
+        )
+        try:
+            ea_cfg["workers"] = int(workers_str.strip()) if workers_str.strip() else None
+        except ValueError:
+            ea_cfg["workers"] = None
+
+    guard_cols = st.columns(3)
+    with guard_cols[0]:
+        ea_cfg["min_trades"] = st.number_input(
+            "Min trades (gate)",
+            min_value=0,
+            max_value=500,
+            value=int(ea_cfg.get("min_trades", 12)),
+            step=1,
+            help="Discard chromosomes with fewer executed trades.",
+        )
+    with guard_cols[1]:
+        ea_cfg["n_jobs"] = st.number_input(
+            "Jobs (EA)",
+            min_value=1,
+            max_value=max(1, (os.cpu_count() or 2)),
+            value=int(ea_cfg.get("n_jobs", 1)),
+            step=1,
+            help="Worker processes dedicated to the evolutionary search.",
+        )
+    with guard_cols[2]:
+        ea_cfg["shuffle_eval"] = st.checkbox(
+            "Shuffle evaluations",
+            value=bool(ea_cfg.get("shuffle_eval", True)),
+            help="Randomize eval order to reduce hot-spot skew in parallel runs.",
+        )
+
+    ea_cfg["genewise_clip"] = True
+
+with st.expander("Optimization parameter bounds", expanded=True):
     bounds_cols = st.columns(3)
     with bounds_cols[0]:
-        bnm_lo = st.number_input("breakout_n min", 1, 400, int(ea_cfg["breakout_n_min"]), 1)
-        bnm_hi = st.number_input("breakout_n max", bnm_lo, 400, int(ea_cfg["breakout_n_max"]), 1)
-        enm_lo = st.number_input("exit_n min", 1, 400, int(ea_cfg["exit_n_min"]), 1)
-        enm_hi = st.number_input("exit_n max", enm_lo, 400, int(ea_cfg["exit_n_max"]), 1)
+        bnm_lo = st.number_input(
+            "breakout_n min",
+            1,
+            400,
+            int(ea_cfg["breakout_n_min"]),
+            1,
+            help="Lower breakout lookback bound searched by the EA.",
+        )
+        bnm_hi = st.number_input(
+            "breakout_n max",
+            int(bnm_lo),
+            400,
+            int(ea_cfg["breakout_n_max"]),
+            1,
+            help="Upper breakout lookback bound searched by the EA.",
+        )
+        enm_lo = st.number_input(
+            "exit_n min",
+            1,
+            400,
+            int(ea_cfg["exit_n_min"]),
+            1,
+            help="Smallest exit lookback considered during evolution.",
+        )
+        enm_hi = st.number_input(
+            "exit_n max",
+            int(enm_lo),
+            400,
+            int(ea_cfg["exit_n_max"]),
+            1,
+            help="Largest exit lookback considered during evolution.",
+        )
     with bounds_cols[1]:
-        atm_lo = st.number_input("atr_n min", 1, 200, int(ea_cfg["atr_n_min"]), 1)
-        atm_hi = st.number_input("atr_n max", atm_lo, 200, int(ea_cfg["atr_n_max"]), 1)
-        atm_mul_lo = st.number_input("atr_multiple min", 0.1, 20.0, float(ea_cfg["atr_multiple_min"]), 0.1)
-        atm_mul_hi = st.number_input("atr_multiple max", atm_mul_lo, 20.0, float(ea_cfg["atr_multiple_max"]), 0.1)
+        atm_lo = st.number_input(
+            "atr_n min",
+            1,
+            200,
+            int(ea_cfg["atr_n_min"]),
+            1,
+            help="Minimum ATR window for volatility sizing.",
+        )
+        atm_hi = st.number_input(
+            "atr_n max",
+            int(atm_lo),
+            200,
+            int(ea_cfg["atr_n_max"]),
+            1,
+            help="Maximum ATR window for volatility sizing.",
+        )
+        atm_mul_lo = st.number_input(
+            "atr_multiple min",
+            0.1,
+            20.0,
+            float(ea_cfg["atr_multiple_min"]),
+            0.1,
+            help="Smallest ATR multiple sampled for stops.",
+        )
+        atm_mul_hi = st.number_input(
+            "atr_multiple max",
+            float(atm_mul_lo),
+            20.0,
+            float(ea_cfg["atr_multiple_max"]),
+            0.1,
+            help="Largest ATR multiple sampled for stops.",
+        )
     with bounds_cols[2]:
-        tpm_lo = st.number_input("tp_multiple min", 0.1, 20.0, float(ea_cfg["tp_multiple_min"]), 0.1)
-        tpm_hi = st.number_input("tp_multiple max", tpm_lo, 20.0, float(ea_cfg["tp_multiple_max"]), 0.1)
-        hold_lo = st.number_input("hold min", 1, 600, int(ea_cfg["hold_min"]), 1)
-        hold_hi = st.number_input("hold max", hold_lo, 600, int(ea_cfg["hold_max"]), 1)
-
-    st.markdown("**Dip parameter bounds**")
-    dip_bounds = st.columns(3)
-    with dip_bounds[0]:
-        trend_lo = st.number_input("trend_ma min", 20, 600, int(ea_cfg["trend_ma_min"]), 1)
-        trend_hi = st.number_input("trend_ma max", trend_lo, 600, int(ea_cfg["trend_ma_max"]), 1)
-        dlh_lo = st.number_input("dip_lookback_high min", 5, 600, int(ea_cfg["dip_lookback_high_min"]), 1)
-        dlh_hi = st.number_input("dip_lookback_high max", dlh_lo, 600, int(ea_cfg["dip_lookback_high_max"]), 1)
-    with dip_bounds[1]:
-        dah_lo = st.number_input("dip_atr_from_high min", 0.0, 20.0, float(ea_cfg["dip_atr_from_high_min"]), 0.1)
-        dah_hi = st.number_input("dip_atr_from_high max", dah_lo, 20.0, float(ea_cfg["dip_atr_from_high_max"]), 0.1)
-        drs_lo = st.number_input("dip_rsi_max min", 0.0, 100.0, float(ea_cfg["dip_rsi_max_min"]), 1.0)
-        drs_hi = st.number_input("dip_rsi_max max", drs_lo, 100.0, float(ea_cfg["dip_rsi_max_max"]), 1.0)
-    with dip_bounds[2]:
-        dcf_lo = st.number_input("dip_confirm min", 0, 1, int(ea_cfg["dip_confirm_min"]), 1)
-        dcf_hi = st.number_input("dip_confirm max", dcf_lo, 1, int(ea_cfg["dip_confirm_max"]), 1)
-        dcd_lo = st.number_input("dip_cooldown_days min", 0, 240, int(ea_cfg["dip_cooldown_min"]), 1)
-        dcd_hi = st.number_input("dip_cooldown_days max", dcd_lo, 240, int(ea_cfg["dip_cooldown_max"]), 1)
+        tpm_lo = st.number_input(
+            "tp_multiple min",
+            0.1,
+            20.0,
+            float(ea_cfg["tp_multiple_min"]),
+            0.1,
+            help="Lower bound for take-profit multiples.",
+        )
+        tpm_hi = st.number_input(
+            "tp_multiple max",
+            float(tpm_lo),
+            20.0,
+            float(ea_cfg["tp_multiple_max"]),
+            0.1,
+            help="Upper bound for take-profit multiples.",
+        )
+        hold_lo = st.number_input(
+            "hold min",
+            1,
+            600,
+            int(ea_cfg["hold_min"]),
+            1,
+            help="Shortest holding period allowed during tuning.",
+        )
+        hold_hi = st.number_input(
+            "hold max",
+            int(hold_lo),
+            600,
+            int(ea_cfg["hold_max"]),
+            1,
+            help="Longest holding period allowed during tuning.",
+        )
 
     ea_cfg["breakout_n_min"], ea_cfg["breakout_n_max"] = int(bnm_lo), int(bnm_hi)
     ea_cfg["exit_n_min"], ea_cfg["exit_n_max"] = int(enm_lo), int(enm_hi)
@@ -558,12 +806,170 @@ with st.expander("Evolutionary search (EA) controls", expanded=True):
     ea_cfg["atr_multiple_min"], ea_cfg["atr_multiple_max"] = float(atm_mul_lo), float(atm_mul_hi)
     ea_cfg["tp_multiple_min"], ea_cfg["tp_multiple_max"] = float(tpm_lo), float(tpm_hi)
     ea_cfg["hold_min"], ea_cfg["hold_max"] = int(hold_lo), int(hold_hi)
+
+dip_active = str(base.get("entry_mode", "")).strip().lower() == "dip"
+with st.expander("Buy-the-Dip Parameters", expanded=dip_active):
+    st.markdown("**Optimization bounds**")
+    dip_bounds = st.columns(3)
+    with dip_bounds[0]:
+        trend_lo = st.number_input(
+            "trend_ma min",
+            20,
+            600,
+            int(ea_cfg["trend_ma_min"]),
+            1,
+            help="Minimum trend moving average length to qualify dip entries.",
+        )
+        trend_hi = st.number_input(
+            "trend_ma max",
+            int(trend_lo),
+            600,
+            int(ea_cfg["trend_ma_max"]),
+            1,
+            help="Maximum trend moving average length tested for dip entries.",
+        )
+        dlh_lo = st.number_input(
+            "dip_lookback_high min",
+            5,
+            600,
+            int(ea_cfg["dip_lookback_high_min"]),
+            1,
+            help="Shortest window for measuring prior highs in dip mode.",
+        )
+        dlh_hi = st.number_input(
+            "dip_lookback_high max",
+            int(dlh_lo),
+            600,
+            int(ea_cfg["dip_lookback_high_max"]),
+            1,
+            help="Longest window for measuring prior highs in dip mode.",
+        )
+    with dip_bounds[1]:
+        dah_lo = st.number_input(
+            "dip_atr_from_high min",
+            0.0,
+            20.0,
+            float(ea_cfg["dip_atr_from_high_min"]),
+            0.1,
+            help="Smallest ATR pullback from recent highs to trigger dip entries.",
+        )
+        dah_hi = st.number_input(
+            "dip_atr_from_high max",
+            float(dah_lo),
+            20.0,
+            float(ea_cfg["dip_atr_from_high_max"]),
+            0.1,
+            help="Largest ATR pullback from highs to consider for dip entries.",
+        )
+        drs_lo = st.number_input(
+            "dip_rsi_max min",
+            0.0,
+            100.0,
+            float(ea_cfg["dip_rsi_max_min"]),
+            1.0,
+            help="Lower bound for RSI filter during dip setup qualification.",
+        )
+        drs_hi = st.number_input(
+            "dip_rsi_max max",
+            float(drs_lo),
+            100.0,
+            float(ea_cfg["dip_rsi_max_max"]),
+            1.0,
+            help="Upper bound for RSI filter during dip setup qualification.",
+        )
+    with dip_bounds[2]:
+        dcf_lo = st.number_input(
+            "dip_confirm min",
+            0,
+            1,
+            int(ea_cfg["dip_confirm_min"]),
+            1,
+            help="Minimum confirmation flag (0/1) permitted for dip entries.",
+        )
+        dcf_hi = st.number_input(
+            "dip_confirm max",
+            int(dcf_lo),
+            1,
+            int(ea_cfg["dip_confirm_max"]),
+            1,
+            help="Maximum confirmation flag (0/1) permitted for dip entries.",
+        )
+        dcd_lo = st.number_input(
+            "dip_cooldown_days min",
+            0,
+            240,
+            int(ea_cfg["dip_cooldown_min"]),
+            1,
+            help="Minimum cooldown between dip entries in days.",
+        )
+        dcd_hi = st.number_input(
+            "dip_cooldown_days max",
+            int(dcd_lo),
+            240,
+            int(ea_cfg["dip_cooldown_max"]),
+            1,
+            help="Maximum cooldown between dip entries in days.",
+        )
+
     ea_cfg["trend_ma_min"], ea_cfg["trend_ma_max"] = int(trend_lo), int(trend_hi)
-    ea_cfg["dip_atr_from_high_min"], ea_cfg["dip_atr_from_high_max"] = float(dah_lo), float(dah_hi)
     ea_cfg["dip_lookback_high_min"], ea_cfg["dip_lookback_high_max"] = int(dlh_lo), int(dlh_hi)
+    ea_cfg["dip_atr_from_high_min"], ea_cfg["dip_atr_from_high_max"] = float(dah_lo), float(dah_hi)
     ea_cfg["dip_rsi_max_min"], ea_cfg["dip_rsi_max_max"] = float(drs_lo), float(drs_hi)
     ea_cfg["dip_confirm_min"], ea_cfg["dip_confirm_max"] = int(dcf_lo), int(dcf_hi)
     ea_cfg["dip_cooldown_min"], ea_cfg["dip_cooldown_max"] = int(dcd_lo), int(dcd_hi)
+
+    st.markdown("**Default dip behaviour**")
+    if dip_active:
+        dip_cols = st.columns(2)
+        with dip_cols[0]:
+            base["dip_atr_from_high"] = st.number_input(
+                "dip_atr_from_high",
+                0.0,
+                20.0,
+                float(base.get("dip_atr_from_high", 2.0)),
+                0.1,
+                help="ATR distance from recent high to trigger a dip setup.",
+            )
+            base["dip_lookback_high"] = st.number_input(
+                "dip_lookback_high",
+                5,
+                600,
+                int(base.get("dip_lookback_high", 60)),
+                1,
+                help="Lookback window for recent highs when screening dip entries.",
+            )
+            base["dip_cooldown_days"] = st.number_input(
+                "dip_cooldown_days",
+                0,
+                240,
+                int(base.get("dip_cooldown_days", 5)),
+                1,
+                help="Bars to wait between dip entries for the same symbol.",
+            )
+        with dip_cols[1]:
+            base["dip_rsi_max"] = st.number_input(
+                "dip_rsi_max",
+                0.0,
+                100.0,
+                float(base.get("dip_rsi_max", 55.0)),
+                0.5,
+                help="Upper RSI bound required to qualify a dip entry.",
+            )
+            base["dip_confirm"] = st.checkbox(
+                "dip_confirm",
+                value=bool(base.get("dip_confirm", False)),
+                help="Require confirmation (e.g., reversal bar) before dip entry.",
+            )
+            base["trend_ma"] = st.number_input(
+                "trend_ma",
+                20,
+                600,
+                int(base.get("trend_ma", 200)),
+                1,
+                help="Trend moving average length used to gate dip entries.",
+            )
+    else:
+        st.info("Switch entry mode to 'Dip' to configure dip-specific defaults.")
 
 with st.expander("Strategy parameter defaults (optional)", expanded=False):
     entry_modes = ["breakout", "dip"]
@@ -690,56 +1096,7 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
             help="Execution price proxy used in backtest.",
         )
 
-    dip_active = str(base.get("entry_mode", "breakout")).strip().lower() == "dip"
-    with st.expander("Dip Settings", expanded=dip_active):
-        if dip_active:
-            base["trend_ma"] = st.number_input(
-                "trend_ma",
-                20,
-                400,
-                int(base.get("trend_ma", 200)),
-                1,
-                help="Minimum trend moving average length to qualify dip entries.",
-            )
-            base["dip_atr_from_high"] = st.number_input(
-                "dip_atr_from_high",
-                0.0,
-                10.0,
-                float(base.get("dip_atr_from_high", 2.0)),
-                0.1,
-                help="ATR distance from recent high to trigger a dip setup.",
-            )
-            base["dip_lookback_high"] = st.number_input(
-                "dip_lookback_high",
-                5,
-                400,
-                int(base.get("dip_lookback_high", 60)),
-                1,
-                help="Lookback window for defining the reference high.",
-            )
-            base["dip_rsi_max"] = st.number_input(
-                "dip_rsi_max",
-                0.0,
-                100.0,
-                float(base.get("dip_rsi_max", 55.0)),
-                1.0,
-                help="Upper RSI bound required to qualify a dip entry.",
-            )
-            base["dip_confirm"] = st.checkbox(
-                "dip_confirm",
-                value=bool(base.get("dip_confirm", False)),
-                help="Require confirmation (e.g., reversal bar) before dip entry.",
-            )
-            base["dip_cooldown_days"] = st.number_input(
-                "dip_cooldown_days",
-                0,
-                60,
-                int(base.get("dip_cooldown_days", 5)),
-                1,
-                help="Bars to wait between dip entries for the same symbol.",
-            )
-        else:
-            st.info("Switch entry mode to 'Dip' to configure dip-specific defaults.")
+    # Dip defaults are now managed in the Buy-the-Dip Parameters section above.
 
 with st.expander("Advanced run settings", expanded=False):
     folds = st.number_input("CV folds", 2, 10, 4, 1, help="Cross-validation splits for the base model trainer.")
@@ -939,6 +1296,28 @@ if run_btn:
             }
         )
 
+    ea_config_payload = {
+        "pop_size": int(cfg.get("pop_size", 64)),
+        "generations": int(cfg.get("generations", 50)),
+        "selection_method": str(cfg.get("selection_method", "tournament")),
+        "tournament_k": max(2, int(cfg.get("tournament_k", 3) or 3)),
+        "replacement": str(cfg.get("replacement", "mu+lambda")),
+        "elitism_fraction": float(cfg.get("elitism_fraction", 0.05)),
+        "crossover_rate": float(cfg.get("crossover_rate", 0.85)),
+        "crossover_op": str(cfg.get("crossover_op", "blend")),
+        "mutation_rate": float(cfg.get("mutation_rate", 0.10)),
+        "mutation_scale": float(cfg.get("mutation_scale", 0.20)),
+        "mutation_scheme": str(cfg.get("mutation_scheme", "gaussian")),
+        "genewise_clip": bool(cfg.get("genewise_clip", True)),
+        "anneal_mutation": bool(cfg.get("anneal_mutation", True)),
+        "anneal_floor": float(cfg.get("anneal_floor", 0.05)),
+        "fitness_patience": int(cfg.get("fitness_patience", 8)),
+        "no_improve_tol": None,
+        "seed": cfg.get("seed"),
+        "workers": cfg.get("workers"),
+        "shuffle_eval": bool(cfg.get("shuffle_eval", True)),
+    }
+
     # Optional richer progress sink
     ui_cb = getattr(progmod, "ui_progress", lambda *_args, **_kw: (lambda *_a, **_k: None))(st)
     # Track best-of-generation and last plotted score
@@ -1100,12 +1479,11 @@ if run_btn:
             end=end,
             starting_equity=float(equity),
             param_space=param_space,
-            generations=int(cfg["generations"]),
-            pop_size=int(cfg["pop_size"]),
             min_trades=int(cfg["min_trades"]),
             n_jobs=int(n_jobs),
             progress_cb=_cb,
             log_file=log_file,
+            config=ea_config_payload,
         )
     except Exception as e:
         st.error(f"Training failed: {e}")
