@@ -984,7 +984,7 @@ def evolutionary_search(
 
             if trades < min_trades:
                 logger.log("under_min_trades", payload)
-                if trades == 0 and (metrics.get("calmar", 0) or 0) != 0:
+                if trades == 0 and (score_metrics.get("calmar", 0) or 0) != 0:
                     logger.log("degenerate_fitness", payload)
                 no_trade_count += (1 if trades == 0 else 0)
 
