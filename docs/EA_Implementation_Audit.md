@@ -1,6 +1,7 @@
 # EA Implementation Audit
 
 ## Changelog
+- 2025-10-08: Portfolio EA scoring now prioritizes holdout/test metrics when a test window is supplied, logging both train and test metric payloads so inspector tooling reflects the same numbers used for fitness. Legacy callers without a holdout remain unchanged.
 - 2025-10-07: Corrected the μ+λ replacement path to keep mutated offspring and injections in the next population so later generations meaningfully explore the search space.
 - 2025-10-06: Added EAConfig with mutation/elitism controls exposed through the Strategy Adapter UI, including mutation rate/scale, crossover, selection, annealing, and worker knobs. Legacy callers that omit `config` continue to use the previous defaults, and the Buy-the-Dip configuration UI has been consolidated into a single section.
 

@@ -529,6 +529,7 @@ def _eval_one(
     end,
     starting_equity: float,
     params: Dict[str, Any],
+    test_range: Optional[Tuple[Any, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Pure function suitable for multiprocessing.
@@ -540,12 +541,36 @@ def _eval_one(
     _loader_file = getattr(L, "__file__", "<??>")
     res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
     metrics = res.get("aggregate", {}).get("metrics", {}) or {}
-    return {
+
+    test_metrics: Optional[Dict[str, Any]] = None
+    test_error: Optional[str] = None
+    if test_range and test_range[0] is not None and test_range[1] is not None:
+        try:
+            test_start, test_end = test_range
+            test_res = train_general_model(
+                strategy_dotted,
+                tickers,
+                test_start,
+                test_end,
+                starting_equity,
+                params,
+            )
+            test_metrics = test_res.get("aggregate", {}).get("metrics", {}) or {}
+        except Exception as exc:
+            test_metrics = None
+            test_error = f"{type(exc).__name__}: {exc}"
+
+    payload: Dict[str, Any] = {
         "metrics": metrics,
         "elapsed_sec": time.time() - t1,
         "params": params,
         "loader_file": _loader_file,
     }
+    if test_metrics is not None:
+        payload["test_metrics"] = test_metrics
+    if test_error is not None:
+        payload["test_error"] = test_error
+    return payload
 
 
 # ----------------------------- Main EA loop ------------------------------
@@ -558,6 +583,8 @@ def evolutionary_search(
     starting_equity: float,
     param_space: Dict[str, Tuple],
     *,
+    test_start: Optional[Any] = None,
+    test_end: Optional[Any] = None,
     generations: int = 10,
     pop_size: int = 20,
     # EA knobs
@@ -607,6 +634,8 @@ def evolutionary_search(
     - Survivor selection indirectly enforces `min_trades` and min_avg_holding_days_gate via fitness gating.
     - Diversity maintained via `random_inject_frac`.
     - Multiprocessing evaluates individuals in parallel per generation.
+    - If `test_start`/`test_end` are supplied, scoring and gating use the holdout metrics from that range,
+      while training metrics remain available for logging.
     """
     resolved_cb: Optional[ProgressCb] = progress_cb or console_progress
     if resolved_cb is None:
@@ -637,6 +666,10 @@ def evolutionary_search(
     if cfg:
         cfg.pop_size = pop_size_effective
         cfg.generations = generations_total
+
+    test_range: Optional[Tuple[Any, Any]] = None
+    if test_start is not None and test_end is not None:
+        test_range = (test_start, test_end)
 
     logger = TrainingLogger(log_file)
     population = [random_param(param_space) for _ in range(pop_size_effective)]
@@ -685,13 +718,17 @@ def evolutionary_search(
         })
 
     # One-time session metadata for inspector tooling
-    logger.log("session_meta", {
+    session_meta_payload = {
         "strategy": strategy_dotted,
         "tickers": list(tickers) if isinstance(tickers, (list, tuple)) else [str(tickers)],
         "starting_equity": float(starting_equity),
         "train_start": str(start),
         "train_end": str(end),
-    })
+    }
+    if test_range:
+        session_meta_payload["test_start"] = str(test_range[0])
+        session_meta_payload["test_end"] = str(test_range[1])
+    logger.log("session_meta", session_meta_payload)
     # years used for trade-rate normalization
     def _years(a, b) -> float:
         # support date/datetime/str
@@ -738,7 +775,16 @@ def evolutionary_search(
         if n_jobs and n_jobs > 1:
             with ProcessPoolExecutor(max_workers=n_jobs) as ex:
                 futures = [
-                    ex.submit(_eval_one, strategy_dotted, tickers, start, end, starting_equity, params)
+                    ex.submit(
+                        _eval_one,
+                        strategy_dotted,
+                        tickers,
+                        start,
+                        end,
+                        starting_equity,
+                        params,
+                        test_range,
+                    )
                     for params in eval_population
                 ]
                 for i, fut in enumerate(as_completed(futures)):
@@ -753,7 +799,15 @@ def evolutionary_search(
         else:
             for params in eval_population:
                 try:
-                    out = _eval_one(strategy_dotted, tickers, start, end, starting_equity, params)
+                    out = _eval_one(
+                        strategy_dotted,
+                        tickers,
+                        start,
+                        end,
+                        starting_equity,
+                        params,
+                        test_range,
+                    )
                 except Exception as e:
                     logger.log_error({"gen": gen, "params": params}, e)
                     out = {"metrics": {}, "elapsed_sec": 0.0, "params": params}
@@ -769,18 +823,39 @@ def evolutionary_search(
                     hit_idx = j
                     break
             if hit_idx is None:
-                metrics = {}
+                metrics_train: Dict[str, Any] = {}
+                metrics_test: Dict[str, Any] = {}
                 elapsed = 0.0
                 loader_file = None
+                test_error = None
             else:
                 rec = results.pop(hit_idx)
-                metrics = rec.get("metrics", {}) or {}
+                metrics_train = rec.get("metrics", {}) or {}
+                metrics_test = rec.get("test_metrics") or {}
+                if not isinstance(metrics_test, dict):
+                    metrics_test = {}
                 elapsed = rec.get("elapsed_sec", 0.0)
                 loader_file = rec.get("loader_file")
+                test_error = rec.get("test_error")
+
+            score_metrics = metrics_test if metrics_test else metrics_train
+            if not isinstance(score_metrics, dict):
+                score_metrics = {}
+
+            if test_error:
+                logger.log(
+                    "holdout_eval_failed",
+                    {
+                        "gen": gen,
+                        "idx": i,
+                        "params": params,
+                        "error": test_error,
+                    },
+                )
 
             # --- fitness with debug details (mirrors _clamped_fitness) ----
-            trades = int(metrics.get("trades", 0) or 0)
-            avg_hold = float(metrics.get("avg_holding_days", 0.0) or 0.0)
+            trades = int(score_metrics.get("trades", 0) or 0)
+            avg_hold = float(score_metrics.get("avg_holding_days", 0.0) or 0.0)
             gated_zero = (
                 trades < min_trades
                 or avg_hold < float(min_avg_holding_days_gate)
@@ -801,15 +876,15 @@ def evolutionary_search(
                 }
             else:
                 # metrics & guards
-                cagr = float(metrics.get("cagr", 0.0) or 0.0)
-                calmar = float(metrics.get("calmar", 0.0) or 0.0)
-                mdd = float(abs(metrics.get("max_drawdown", 0.0) or 0.0))
+                cagr = float(score_metrics.get("cagr", 0.0) or 0.0)
+                calmar = float(score_metrics.get("calmar", 0.0) or 0.0)
+                mdd = float(abs(score_metrics.get("max_drawdown", 0.0) or 0.0))
                 if mdd < eps_mdd:
                     calmar = 0.0
-                sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+                sharpe = float(score_metrics.get("sharpe", 0.0) or 0.0)
                 if abs(sharpe) < eps_sharpe:
                     sharpe = 0.0
-                total_return = float(metrics.get("total_return", 0.0) or 0.0)
+                total_return = float(score_metrics.get("total_return", 0.0) or 0.0)
 
                 # normalization (engine style)
                 def _clip01(x: float) -> float:
@@ -879,10 +954,10 @@ def evolutionary_search(
                 if pen_cap_val >= float(penalty_cap) - 1e-12:
                     gen_cap_hits += 1
 
-            trades = int(metrics.get("trades", 0) or 0)
+            trades = int(score_metrics.get("trades", 0) or 0)
             gen_trades.append(trades)
 
-            ret = float(metrics.get("total_return", 0.0) or 0.0)
+            ret = float(score_metrics.get("total_return", 0.0) or 0.0)
 
             # Track best-by-return for this generation
             if (best_gen_return_rec is None) or (ret > best_gen_return_rec[1]):
@@ -896,11 +971,14 @@ def evolutionary_search(
                 "idx": i,
                 "params": params,
                 "score": score,
-                "metrics": metrics,
+                "metrics": score_metrics,
+                "train_metrics": metrics_train,
                 "elapsed_sec": elapsed,
                 "loader_file": loader_file,
                 "fitness_debug": fitness_dbg,
             }
+            if test_range is not None:
+                payload["test_metrics"] = metrics_test
             progress_cb("individual_evaluated", payload)
             logger.log("individual_evaluated", payload)
 
@@ -1149,6 +1227,10 @@ def evolutionary_search(
         "stopped_early": stopped_early,
         "pop_size": pop_size_effective,
     }
+    if test_range:
+        done_payload["test_start"] = str(test_range[0])
+        done_payload["test_end"] = str(test_range[1])
+        done_payload["score_window"] = "test"
     if cfg:
         done_payload["ea_config"] = cfg.to_log_payload()
     progress_cb("done", done_payload)

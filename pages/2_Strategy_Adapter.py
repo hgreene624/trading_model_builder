@@ -1479,6 +1479,8 @@ if run_btn:
             end=end,
             starting_equity=float(equity),
             param_space=param_space,
+            test_start=holdout_start,
+            test_end=holdout_end,
             min_trades=int(cfg["min_trades"]),
             n_jobs=int(n_jobs),
             progress_cb=_cb,

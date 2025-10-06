@@ -163,3 +163,99 @@ def test_mu_plus_lambda_keeps_children(monkeypatch):
     assert first_gen, "Generation 0 should have evaluated individuals"
     later_diversity = set().union(*(per_gen_params[g] for g in per_gen_params if g >= 1))
     assert later_diversity - first_gen, "Later generations should include new parameter combinations"
+
+
+def test_scoring_prefers_test_metrics(monkeypatch, tmp_path):
+    """Scoring should favor holdout metrics when a test range is provided."""
+
+    call_log: list[tuple[str, str, int]] = []
+
+    def _fake_train_general_model(_strategy, _tickers, start, end, _equity, params):
+        # Track order and window so we can confirm both train/test windows are used.
+        call_log.append((str(start), str(end), params.get("x", 0)))
+        base = {
+            "trades": 8,
+            "avg_holding_days": 4.0,
+        }
+        x_val = float(params.get("x", 0))
+        if str(start).startswith("2020-04"):
+            score = 0.15 + 0.35 * x_val  # holdout rewards higher x
+        else:
+            score = 0.60 - 0.30 * x_val  # training prefers lower x
+        base.update(
+            {
+                "total_return": score,
+                "cagr": score,
+                "calmar": score,
+                "sharpe": score,
+            }
+        )
+        return {"aggregate": {"metrics": base}}
+
+    pop_values = iter([
+        {"x": 1},
+        {"x": 2},
+        {"x": 1},
+        {"x": 2},
+    ])
+
+    def _fake_random_param(space):
+        try:
+            value = next(pop_values)
+        except StopIteration:
+            value = {"x": 2}
+        return dict(value)
+
+    monkeypatch.setattr(evolutionary, "train_general_model", _fake_train_general_model)
+    monkeypatch.setattr(evolutionary, "random_param", _fake_random_param)
+
+    log_file = tmp_path / "ea_holdout.jsonl"
+
+    cfg = {
+        "pop_size": 2,
+        "generations": 1,
+        "selection_method": "tournament",
+        "tournament_k": 2,
+        "replacement": "generational",
+        "elitism_fraction": 0.5,
+        "crossover_rate": 0.0,
+        "mutation_rate": 0.0,
+        "mutation_scale": 0.1,
+        "anneal_mutation": False,
+        "fitness_patience": 0,
+        "shuffle_eval": False,
+        "seed": 1,
+    }
+
+    results = evolutionary.evolutionary_search(
+        strategy_dotted="tests.fake",
+        tickers=["AAPL"],
+        start="2020-01-01",
+        end="2020-03-31",
+        test_start="2020-04-01",
+        test_end="2020-06-30",
+        starting_equity=10000.0,
+        param_space={"x": (1, 2)},
+        min_trades=0,
+        n_jobs=1,
+        random_inject_frac=0.0,
+        log_file=str(log_file),
+        config=cfg,
+    )
+
+    assert results, "EA should produce scored candidates"
+    best_params, best_score = results[0]
+    assert best_params["x"] == 2, "Holdout metrics should drive selection"
+    assert best_score > 0.0
+
+    # Each individual should have triggered both train and test evaluations
+    assert len(call_log) == 4
+    assert any(start.startswith("2020-04") for start, _end, _ in call_log)
+
+    log_lines = [json.loads(line) for line in log_file.read_text().splitlines() if line.strip()]
+    eval_payloads = [rec["payload"] for rec in log_lines if rec.get("event") == "individual_evaluated"]
+    assert eval_payloads
+    for payload in eval_payloads:
+        assert "train_metrics" in payload
+        if "test_metrics" in payload:
+            assert payload["metrics"] == payload["test_metrics"], "Metrics should reflect holdout values"
