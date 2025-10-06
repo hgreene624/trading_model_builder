@@ -84,6 +84,9 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         if "trade_rate_max" in data: out["trade_rate_max"] = _getf("trade_rate_max")
         # new optional keys
         if "elite_by_return_frac" in data: out["elite_by_return_frac"] = _getf("elite_by_return_frac")
+        if "holdout_score_weight" in data: out["holdout_score_weight"] = _getf("holdout_score_weight")
+        if "holdout_gap_tolerance" in data: out["holdout_gap_tolerance"] = _getf("holdout_gap_tolerance")
+        if "holdout_gap_penalty" in data: out["holdout_gap_penalty"] = _getf("holdout_gap_penalty")
         if "rate_penalize_upper" in data:
             v = data["rate_penalize_upper"]
             out["rate_penalize_upper"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
@@ -92,7 +95,7 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
             "alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap",
             "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
             "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
-            "elite_by_return_frac",
+            "elite_by_return_frac","holdout_score_weight","holdout_gap_tolerance","holdout_gap_penalty",
         ]:
             if k in out and out[k] is None:
                 out.pop(k, None)
@@ -642,6 +645,10 @@ def evolutionary_search(
         resolved_cb = _noop_progress
     progress_cb = resolved_cb
 
+    holdout_weight = 0.65
+    holdout_gap_tolerance = 0.15
+    holdout_gap_penalty = 0.50
+
     cfg = _coerce_ea_config(config)
 
     if cfg and cfg.seed is not None:
@@ -695,6 +702,9 @@ def evolutionary_search(
         trade_rate_max = _cfg.get("trade_rate_max", trade_rate_max)
         rate_penalize_upper = _cfg.get("rate_penalize_upper", rate_penalize_upper)
         elite_by_return_frac = _cfg.get("elite_by_return_frac", elite_by_return_frac)
+        holdout_weight = _cfg.get("holdout_score_weight", holdout_weight)
+        holdout_gap_tolerance = _cfg.get("holdout_gap_tolerance", holdout_gap_tolerance)
+        holdout_gap_penalty = _cfg.get("holdout_gap_penalty", holdout_gap_penalty)
         # Emit a one-time breadcrumb so logs show which source set the weights
         logger.log("fitness_config", {
             "source": "storage/config/ea_fitness.json",
@@ -716,6 +726,19 @@ def evolutionary_search(
                 "elite_by_return_frac": elite_by_return_frac,
             },
         })
+
+    try:
+        holdout_weight = max(0.0, min(1.0, float(holdout_weight)))
+    except Exception:
+        holdout_weight = 0.65
+    try:
+        holdout_gap_tolerance = max(0.0, float(holdout_gap_tolerance))
+    except Exception:
+        holdout_gap_tolerance = 0.15
+    try:
+        holdout_gap_penalty = max(0.0, float(holdout_gap_penalty))
+    except Exception:
+        holdout_gap_penalty = 0.50
 
     # One-time session metadata for inspector tooling
     session_meta_payload = {
@@ -741,6 +764,122 @@ def evolutionary_search(
 
     years = _years(start, end)
     num_symbols = max(1, len(tickers))
+
+    def _score_metrics_block(metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        data: Dict[str, Any] = metrics or {}
+        trades = int(data.get("trades", 0) or 0)
+        avg_hold = float(data.get("avg_holding_days", 0.0) or 0.0)
+        gated_zero = (
+            trades < min_trades
+            or avg_hold < float(min_avg_holding_days_gate)
+            or (require_hold_days and avg_hold <= 0.0)
+        )
+
+        trade_rate = 0.0
+        if num_symbols > 0 and years > 0:
+            trade_rate = float(trades) / float(num_symbols) / float(years)
+
+        base_norm = 0.0
+        hold_dist = 0.0
+        rate_dist = 0.0
+        hold_pen = 0.0
+        rate_pen = 0.0
+        pen_raw = 0.0
+        pen_cap = 0.0
+        total_return = float(data.get("total_return", 0.0) or 0.0)
+
+        if gated_zero:
+            score = 0.0
+            fitness_dbg = {
+                "gated_zero": True,
+                "base_norm": 0.0,
+                "trade_rate": trade_rate,
+                "hold_dist": 0.0,
+                "rate_dist": 0.0,
+                "hold_pen": 0.0,
+                "rate_pen": 0.0,
+                "penalty_total_raw": 0.0,
+                "penalty_total_capped": 0.0,
+            }
+        else:
+            cagr = float(data.get("cagr", 0.0) or 0.0)
+            calmar = float(data.get("calmar", 0.0) or 0.0)
+            mdd = float(abs(data.get("max_drawdown", 0.0) or 0.0))
+            if mdd < eps_mdd:
+                calmar = 0.0
+            sharpe = float(data.get("sharpe", 0.0) or 0.0)
+            if abs(sharpe) < eps_sharpe:
+                sharpe = 0.0
+
+            def _clip01(x: float) -> float:
+                if x < 0.0:
+                    return 0.0
+                if x > 1.0:
+                    return 1.0
+                return x
+
+            tr_n = _clip01(total_return / 0.50)
+            cagr_n = _clip01(cagr / 0.30)
+            sh_n = _clip01(sharpe / 3.0)
+            if calmar_cap > 0:
+                calmar = max(-calmar_cap, min(calmar, calmar_cap))
+            cm_n = _clip01(max(0.0, calmar) / max(1e-9, calmar_cap))
+
+            base_norm = (
+                (alpha_cagr * cagr_n)
+                + (beta_calmar * cm_n)
+                + (gamma_sharpe * sh_n)
+                + (delta_total_return * tr_n)
+            )
+
+            _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
+            if not (min_holding_days <= avg_hold <= max_holding_days):
+                hold_dist = (min_holding_days - avg_hold) if avg_hold < min_holding_days else (avg_hold - max_holding_days)
+            hold_pen = holding_penalty_weight * (hold_dist / _bw_hold)
+
+            _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
+            if trade_rate < trade_rate_min:
+                rate_dist = (trade_rate_min - trade_rate)
+            elif rate_penalize_upper and trade_rate > trade_rate_max:
+                rate_dist = (trade_rate - trade_rate_max)
+            else:
+                rate_dist = 0.0
+            rate_pen = trade_rate_penalty_weight * (rate_dist / _bw_rate)
+
+            pen_raw = hold_pen + rate_pen
+            pen_cap = min(pen_raw, float(penalty_cap))
+
+            if use_normalized_scoring:
+                score = float(base_norm - pen_cap)
+            else:
+                score = float(
+                    (alpha_cagr * cagr)
+                    + (beta_calmar * calmar)
+                    + (gamma_sharpe * sharpe)
+                    + (delta_total_return * total_return)
+                    - pen_cap
+                )
+
+            fitness_dbg = {
+                "gated_zero": False,
+                "base_norm": base_norm,
+                "trade_rate": trade_rate,
+                "hold_dist": hold_dist,
+                "rate_dist": rate_dist,
+                "hold_pen": hold_pen,
+                "rate_pen": rate_pen,
+                "penalty_total_raw": pen_raw,
+                "penalty_total_capped": pen_cap,
+            }
+
+        return {
+            "score": float(score),
+            "debug": fitness_dbg,
+            "ret": total_return,
+            "trades": trades,
+            "avg_hold": avg_hold,
+            "metrics": data,
+        }
 
     best_score_seen: Optional[float] = None
     stale_generations = 0
@@ -838,9 +977,8 @@ def evolutionary_search(
                 loader_file = rec.get("loader_file")
                 test_error = rec.get("test_error")
 
-            score_metrics = metrics_test if metrics_test else metrics_train
-            if not isinstance(score_metrics, dict):
-                score_metrics = {}
+            train_eval = _score_metrics_block(metrics_train)
+            test_eval = _score_metrics_block(metrics_test) if metrics_test else None
 
             if test_error:
                 logger.log(
@@ -853,97 +991,76 @@ def evolutionary_search(
                     },
                 )
 
-            # --- fitness with debug details (mirrors _clamped_fitness) ----
-            trades = int(score_metrics.get("trades", 0) or 0)
-            avg_hold = float(score_metrics.get("avg_holding_days", 0.0) or 0.0)
-            gated_zero = (
-                trades < min_trades
-                or avg_hold < float(min_avg_holding_days_gate)
-                or (require_hold_days and avg_hold <= 0.0)
+            score_metrics = (
+                test_eval["metrics"] if test_eval is not None else train_eval["metrics"]
             )
-            if gated_zero:
-                score = 0.0
-                fitness_dbg = {
-                    "gated_zero": True,
-                    "base_norm": 0.0,
-                    "trade_rate": 0.0,
-                    "hold_dist": 0.0,
-                    "rate_dist": 0.0,
-                    "hold_pen": 0.0,
-                    "rate_pen": 0.0,
-                    "penalty_total_raw": 0.0,
-                    "penalty_total_capped": 0.0,
+            if not isinstance(score_metrics, dict):
+                score_metrics = {}
+
+            score = train_eval["score"]
+            fitness_dbg = dict(train_eval["debug"])
+            blend_info: Optional[Dict[str, Any]] = None
+
+            if test_eval is not None:
+                score = test_eval["score"]
+                fitness_dbg = dict(test_eval["debug"])
+                train_score = float(train_eval["score"])
+                test_score = float(test_eval["score"])
+                train_gated = bool(train_eval["debug"].get("gated_zero", False))
+                test_gated = bool(test_eval["debug"].get("gated_zero", False))
+                weight_train = max(0.0, min(1.0, 1.0 - holdout_weight))
+                blend_info = {
+                    "train_score": train_score,
+                    "test_score": test_score,
+                    "train_gated": train_gated,
+                    "test_gated": test_gated,
+                    "holdout_weight": holdout_weight,
+                    "train_weight": weight_train,
+                    "gap_tolerance": holdout_gap_tolerance,
+                    "gap_penalty": holdout_gap_penalty,
                 }
-            else:
-                # metrics & guards
-                cagr = float(score_metrics.get("cagr", 0.0) or 0.0)
-                calmar = float(score_metrics.get("calmar", 0.0) or 0.0)
-                mdd = float(abs(score_metrics.get("max_drawdown", 0.0) or 0.0))
-                if mdd < eps_mdd:
-                    calmar = 0.0
-                sharpe = float(score_metrics.get("sharpe", 0.0) or 0.0)
-                if abs(sharpe) < eps_sharpe:
-                    sharpe = 0.0
-                total_return = float(score_metrics.get("total_return", 0.0) or 0.0)
 
-                # normalization (engine style)
-                def _clip01(x: float) -> float:
-                    return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
-                tr_n = _clip01(total_return / 0.50)  # 0..50% → 0..1
-                cagr_n = _clip01(cagr / 0.30)        # 0..30% → 0..1
-                sh_n = _clip01(sharpe / 3.0)         # 0..3   → 0..1 (negatives clip to 0)
-                if calmar_cap > 0:
-                    calmar = max(-calmar_cap, min(calmar, calmar_cap))
-                cm_n = _clip01(max(0.0, calmar) / max(1e-9, calmar_cap))
-
-                base_norm = (
-                    (alpha_cagr * cagr_n)
-                    + (beta_calmar * cm_n)
-                    + (gamma_sharpe * sh_n)
-                    + (delta_total_return * tr_n)
-                )
-
-                # penalties (normalized distances + cap)
-                _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
-                hold_dist = 0.0
-                if not (min_holding_days <= avg_hold <= max_holding_days):
-                    hold_dist = (min_holding_days - avg_hold) if avg_hold < min_holding_days else (avg_hold - max_holding_days)
-                hold_pen = holding_penalty_weight * (hold_dist / _bw_hold)
-
-                trade_rate = 0.0
-                if num_symbols > 0 and years > 0:
-                    trade_rate = float(trades) / float(num_symbols) / float(years)
-                _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
-                if trade_rate < trade_rate_min:
-                    rate_dist = (trade_rate_min - trade_rate)
-                elif rate_penalize_upper and trade_rate > trade_rate_max:
-                    rate_dist = (trade_rate - trade_rate_max)
+                if test_gated:
+                    score = 0.0
+                    fitness_dbg["gated_zero"] = True
+                    blend_info["reason"] = "holdout_gated"
                 else:
-                    rate_dist = 0.0
-                rate_pen = trade_rate_penalty_weight * (rate_dist / _bw_rate)
-
-                pen_raw = hold_pen + rate_pen
-                pen_cap = min(pen_raw, float(penalty_cap))
-
-                score = float(base_norm - pen_cap) if use_normalized_scoring else float(
-                    (alpha_cagr * cagr)
-                    + (beta_calmar * calmar)
-                    + (gamma_sharpe * sharpe)
-                    + (delta_total_return * total_return)
-                    - pen_cap
-                )
-
-                fitness_dbg = {
-                    "gated_zero": False,
-                    "base_norm": base_norm,
-                    "trade_rate": trade_rate,
-                    "hold_dist": hold_dist,
-                    "rate_dist": rate_dist,
-                    "hold_pen": hold_pen,
-                    "rate_pen": rate_pen,
-                    "penalty_total_raw": pen_raw,
-                    "penalty_total_capped": pen_cap,
-                }
+                    effective_train_score = 0.0 if train_gated else train_score
+                    test_component = holdout_weight * test_score
+                    train_bonus = weight_train * min(effective_train_score, test_score)
+                    ratio = None
+                    if effective_train_score > 1e-9:
+                        ratio = test_score / effective_train_score
+                    gap = max(0.0, effective_train_score - test_score - holdout_gap_tolerance)
+                    penalty = holdout_gap_penalty * gap
+                    score = max(0.0, test_component + train_bonus - penalty)
+                    fitness_dbg.update(
+                        {
+                            "holdout_blended": True,
+                            "train_score": train_score,
+                            "train_component": effective_train_score,
+                            "train_gated": train_gated,
+                            "holdout_weight": holdout_weight,
+                            "train_bonus": train_bonus,
+                            "holdout_component": test_component,
+                            "blend_penalty": penalty,
+                            "gap_excess": gap,
+                            "blended_score": score,
+                        }
+                    )
+                    if ratio is not None:
+                        fitness_dbg["train_to_test_ratio"] = ratio
+                    blend_info.update(
+                        {
+                            "train_bonus": train_bonus,
+                            "holdout_component": test_component,
+                            "gap_excess": gap,
+                            "penalty": penalty,
+                            "blended_score": score,
+                        }
+                    )
+                    if ratio is not None:
+                        blend_info["train_to_test_ratio"] = ratio
 
             # --- accumulate per-gen telemetry ---------------------------------
             if fitness_dbg.get("gated_zero", False):
@@ -979,6 +1096,8 @@ def evolutionary_search(
             }
             if test_range is not None:
                 payload["test_metrics"] = metrics_test
+            if blend_info is not None:
+                payload["score_blend"] = blend_info
             progress_cb("individual_evaluated", payload)
             logger.log("individual_evaluated", payload)
 
