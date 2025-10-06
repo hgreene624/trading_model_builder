@@ -62,7 +62,18 @@ def cagr(equity: pd.Series) -> float:
     if days <= 0:
         return 0.0
     years = days / 365.25
-    return float((end_val / start_val) ** (1 / years) - 1.0)
+    if years <= 0:
+        return 0.0
+    ratio = end_val / start_val
+    if ratio <= 0:
+        return 0.0
+    try:
+        value = ratio ** (1 / years) - 1.0
+    except (OverflowError, ValueError):
+        return 0.0
+    if isinstance(value, complex):
+        return 0.0
+    return float(value)
 
 def max_drawdown(equity: pd.Series) -> float:
     if equity is None or len(equity) == 0:
