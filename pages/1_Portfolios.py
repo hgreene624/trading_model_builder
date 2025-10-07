@@ -337,17 +337,40 @@ st.subheader("Filter by liquidity")
 col_l1, col_l2 = st.columns(2)
 with col_l1:
     min_price = st.number_input("Min median close (priors)", value=0.0, step=1.0)
+    max_price = st.number_input(
+        "Max median close (priors)",
+        value=0.0,
+        step=1.0,
+        help="Set to 0 to disable the max filter.",
+    )
 with col_l2:
     min_dvol = st.number_input("Min median $ volume (priors)", value=0.0, step=1.0)
+    max_dvol = st.number_input(
+        "Max median $ volume (priors)",
+        value=0.0,
+        step=1.0,
+        help="Set to 0 to disable the max filter.",
+    )
 
 if not enriched.empty:
     work = enriched.copy()
     work["median_close_priors"] = pd.to_numeric(work["median_close_priors"], errors="coerce")
-    work["median_dollar_vol_priors"] = pd.to_numeric(work["median_dollar_vol_priors"], errors="coerce")
-
-    mask2 = (work["median_close_priors"].fillna(0) >= float(min_price)) & (
-        work["median_dollar_vol_priors"].fillna(0) >= float(min_dvol)
+    work["median_dollar_vol_priors"] = pd.to_numeric(
+        work["median_dollar_vol_priors"], errors="coerce"
     )
+
+    price_series = work["median_close_priors"]
+    dvol_series = work["median_dollar_vol_priors"]
+
+    mask_price = price_series.fillna(0) >= float(min_price)
+    if float(max_price) > 0:
+        mask_price &= price_series.fillna(float("inf")) <= float(max_price)
+
+    mask_dvol = dvol_series.fillna(0) >= float(min_dvol)
+    if float(max_dvol) > 0:
+        mask_dvol &= dvol_series.fillna(float("inf")) <= float(max_dvol)
+
+    mask2 = mask_price & mask_dvol
     filtered = work.loc[mask2].reset_index(drop=True)
 
     st.write(f"After liquidity filters: **{len(filtered)} / {len(work)}** tickers remain.")
@@ -370,11 +393,18 @@ with col_s2:
 
 to_save_df = ss.get("universe_enriched", meta_filt_capped.copy())
 if include_current_filters and not to_save_df.empty:
-    mask_save = (
-        pd.to_numeric(to_save_df["median_close_priors"], errors="coerce").fillna(0) >= float(min_price)
-    ) & (
-        pd.to_numeric(to_save_df["median_dollar_vol_priors"], errors="coerce").fillna(0) >= float(min_dvol)
-    )
+    save_price = pd.to_numeric(to_save_df["median_close_priors"], errors="coerce")
+    save_dvol = pd.to_numeric(to_save_df["median_dollar_vol_priors"], errors="coerce")
+
+    mask_save_price = save_price.fillna(0) >= float(min_price)
+    if float(max_price) > 0:
+        mask_save_price &= save_price.fillna(float("inf")) <= float(max_price)
+
+    mask_save_dvol = save_dvol.fillna(0) >= float(min_dvol)
+    if float(max_dvol) > 0:
+        mask_save_dvol &= save_dvol.fillna(float("inf")) <= float(max_dvol)
+
+    mask_save = mask_save_price & mask_save_dvol
     to_save_df = to_save_df.loc[mask_save].reset_index(drop=True)
 
 tickers_to_save = _normalize_symbols(to_save_df["symbol"].tolist()) if not to_save_df.empty else []
@@ -386,7 +416,9 @@ meta_payload = {
         "search": q,
         "sectors": chosen_sectors,
         "min_median_close_priors": float(min_price),
+        "max_median_close_priors": float(max_price),
         "min_median_dollar_vol_priors": float(min_dvol),
+        "max_median_dollar_vol_priors": float(max_dvol),
     },
     "windows": {
         "priors": [_to_dt(priors_start).date().isoformat(), _to_dt(priors_end).date().isoformat()],
