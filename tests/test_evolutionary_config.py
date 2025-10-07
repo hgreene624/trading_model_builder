@@ -81,12 +81,6 @@ def test_ea_config_smoke(monkeypatch, tmp_path, fitness_value):
     elite_count = cfg_payloads[0].get("elite_count")
     assert isinstance(elite_count, int) and elite_count >= 1
 
-    policy_payloads = [rec["payload"] for rec in log_lines if rec.get("event") == "holdout_policy"]
-    assert policy_payloads, "Holdout policy should be logged once per run"
-    policy = policy_payloads[0]
-    assert 0.0 < policy.get("holdout_weight", 0.0) <= 1.0
-    assert policy.get("train_weight", 0.0) >= 0.0
-
     done_payloads = [rec["payload"] for rec in log_lines if rec.get("event") == "session_end"]
     assert done_payloads, "session_end event should be logged"
     done = done_payloads[0]
@@ -278,16 +272,10 @@ def test_scoring_prefers_test_metrics(monkeypatch, tmp_path):
             assert payload["metrics"] == payload["test_metrics"], "Metrics should reflect holdout values"
         blend = payload.get("score_blend") or {}
         if blend:
-            assert blend.get("mode") in {"blended", "holdout_gated"}
-            if blend.get("mode") == "blended":
-                assert blend.get("holdout_component") == pytest.approx(
-                    blend.get("holdout_weight", 0.0) * blend.get("test_score", 0.0)
-                )
-                assert blend.get("train_component") == pytest.approx(
-                    blend.get("train_weight", 0.0) * blend.get("train_effective", 0.0)
-                )
-                assert blend.get("gap_penalty", 0.0) >= 0.0
-                assert blend.get("score", 0.0) >= 0.0
+            assert blend.get("holdout_component", 0.0) >= blend.get("train_bonus", 0.0)
+            assert blend.get("penalty", 0.0) >= 0.0
+            expected_component = blend.get("holdout_weight", 0.0) * blend.get("test_score", 0.0)
+            assert blend.get("holdout_component") == pytest.approx(expected_component)
 
 
 def test_holdout_blend_penalizes_overfit(monkeypatch):

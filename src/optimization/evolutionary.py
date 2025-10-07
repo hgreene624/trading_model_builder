@@ -85,14 +85,10 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         # new optional keys
         if "elite_by_return_frac" in data: out["elite_by_return_frac"] = _getf("elite_by_return_frac")
         if "holdout_score_weight" in data: out["holdout_score_weight"] = _getf("holdout_score_weight")
-        if "holdout_train_weight" in data: out["holdout_train_weight"] = _getf("holdout_train_weight")
         if "holdout_gap_tolerance" in data: out["holdout_gap_tolerance"] = _getf("holdout_gap_tolerance")
         if "holdout_gap_penalty" in data: out["holdout_gap_penalty"] = _getf("holdout_gap_penalty")
         if "holdout_shortfall_penalty" in data:
             out["holdout_shortfall_penalty"] = _getf("holdout_shortfall_penalty")
-        if "holdout_train_floor" in data: out["holdout_train_floor"] = _getf("holdout_train_floor")
-        if "holdout_train_floor_penalty" in data:
-            out["holdout_train_floor_penalty"] = _getf("holdout_train_floor_penalty")
         if "rate_penalize_upper" in data:
             v = data["rate_penalize_upper"]
             out["rate_penalize_upper"] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in {"1","true","yes","on"}
@@ -101,8 +97,8 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
             "alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap",
             "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
             "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
-            "elite_by_return_frac","holdout_score_weight","holdout_train_weight","holdout_gap_tolerance","holdout_gap_penalty",
-            "holdout_shortfall_penalty","holdout_train_floor","holdout_train_floor_penalty",
+            "elite_by_return_frac","holdout_score_weight","holdout_gap_tolerance","holdout_gap_penalty",
+            "holdout_shortfall_penalty",
         ]:
             if k in out and out[k] is None:
                 out.pop(k, None)
@@ -185,47 +181,6 @@ class EAConfig:
 # code paths intact when `config` is omitted. Rollback: drop EAConfig usage and
 # remove the conditional branch in `evolutionary_search`, reverting to legacy
 # parameters-only behaviour.
-
-
-@dataclass
-class HoldoutPolicy:
-    """Simple blending policy for combining train/test fitness values."""
-
-    holdout_weight: float = 0.7
-    train_weight: float = 0.3
-    gap_tolerance: float = 0.1
-    gap_penalty: float = 0.5
-    train_floor: float = -0.25
-    train_floor_penalty: float = 0.35
-
-    def normalised(self) -> "HoldoutPolicy":
-        holdout = max(0.0, float(self.holdout_weight))
-        train = max(0.0, float(self.train_weight))
-        total = holdout + train
-        if total <= 0.0:
-            holdout = 1.0
-            train = 0.0
-            total = 1.0
-        gap_tolerance = max(0.0, float(self.gap_tolerance))
-        gap_penalty = max(0.0, float(self.gap_penalty))
-        return HoldoutPolicy(
-            holdout_weight=holdout / total,
-            train_weight=train / total,
-            gap_tolerance=gap_tolerance,
-            gap_penalty=gap_penalty,
-            train_floor=float(self.train_floor),
-            train_floor_penalty=max(0.0, float(self.train_floor_penalty)),
-        )
-
-    def to_payload(self) -> Dict[str, Any]:
-        return {
-            "holdout_weight": self.holdout_weight,
-            "train_weight": self.train_weight,
-            "gap_tolerance": self.gap_tolerance,
-            "gap_penalty": self.gap_penalty,
-            "train_floor": self.train_floor,
-            "train_floor_penalty": self.train_floor_penalty,
-        }
 
 
 # ----------------------------- Sampling ops ------------------------------
@@ -694,6 +649,9 @@ def evolutionary_search(
     progress_cb = resolved_cb
 
     holdout_weight = 0.65
+    holdout_gap_tolerance = 0.15
+    holdout_gap_penalty = 0.50
+    holdout_shortfall_penalty = 0.35
     holdout_train_weight = 0.35
     holdout_gap_tolerance = 0.15
     holdout_gap_penalty = 0.50
@@ -754,13 +712,10 @@ def evolutionary_search(
         rate_penalize_upper = _cfg.get("rate_penalize_upper", rate_penalize_upper)
         elite_by_return_frac = _cfg.get("elite_by_return_frac", elite_by_return_frac)
         holdout_weight = _cfg.get("holdout_score_weight", holdout_weight)
-        holdout_train_weight = _cfg.get("holdout_train_weight", holdout_train_weight)
         holdout_gap_tolerance = _cfg.get("holdout_gap_tolerance", holdout_gap_tolerance)
         holdout_gap_penalty = _cfg.get("holdout_gap_penalty", holdout_gap_penalty)
-        holdout_train_floor = _cfg.get("holdout_train_floor", holdout_train_floor)
-        holdout_train_floor_penalty = _cfg.get(
-            "holdout_train_floor_penalty",
-            _cfg.get("holdout_shortfall_penalty", holdout_train_floor_penalty),
+        holdout_shortfall_penalty = _cfg.get(
+            "holdout_shortfall_penalty", holdout_shortfall_penalty
         )
         # Emit a one-time breadcrumb so logs show which source set the weights
         logger.log("fitness_config", {
@@ -781,24 +736,26 @@ def evolutionary_search(
                 "trade_rate_max": trade_rate_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
-                "holdout_weight": holdout_weight,
-                "holdout_train_weight": holdout_train_weight,
-                "holdout_gap_tolerance": holdout_gap_tolerance,
-                "holdout_gap_penalty": holdout_gap_penalty,
-                "holdout_train_floor": holdout_train_floor,
-                "holdout_train_floor_penalty": holdout_train_floor_penalty,
+                "holdout_shortfall_penalty": holdout_shortfall_penalty,
             },
         })
 
-    holdout_policy = HoldoutPolicy(
-        holdout_weight=holdout_weight,
-        train_weight=holdout_train_weight,
-        gap_tolerance=holdout_gap_tolerance,
-        gap_penalty=holdout_gap_penalty,
-        train_floor=holdout_train_floor,
-        train_floor_penalty=holdout_train_floor_penalty,
-    ).normalised()
-    logger.log("holdout_policy", holdout_policy.to_payload())
+    try:
+        holdout_weight = max(0.0, min(1.0, float(holdout_weight)))
+    except Exception:
+        holdout_weight = 0.65
+    try:
+        holdout_gap_tolerance = max(0.0, float(holdout_gap_tolerance))
+    except Exception:
+        holdout_gap_tolerance = 0.15
+    try:
+        holdout_gap_penalty = max(0.0, float(holdout_gap_penalty))
+    except Exception:
+        holdout_gap_penalty = 0.50
+    try:
+        holdout_shortfall_penalty = max(0.0, float(holdout_shortfall_penalty))
+    except Exception:
+        holdout_shortfall_penalty = 0.35
 
     # One-time session metadata for inspector tooling
     session_meta_payload = {
@@ -941,92 +898,6 @@ def evolutionary_search(
             "metrics": data,
         }
 
-    def _blend_scores(
-        train_eval: Dict[str, Any],
-        test_eval: Optional[Dict[str, Any]],
-    ) -> Tuple[float, Dict[str, Any], Optional[Dict[str, Any]]]:
-        if test_eval is None:
-            return (
-                float(train_eval["score"]),
-                dict(train_eval["debug"]),
-                None,
-            )
-
-        train_score = float(train_eval["score"])
-        test_score = float(test_eval["score"])
-        train_debug = dict(train_eval["debug"])
-        test_debug = dict(test_eval["debug"])
-
-        train_gated = bool(train_debug.get("gated_zero", False))
-        test_gated = bool(test_debug.get("gated_zero", False))
-
-        if test_gated:
-            test_debug["gated_zero"] = True
-            blend_payload = {
-                "mode": "holdout_gated",
-                "test_score": test_score,
-                "train_score": train_score,
-            }
-            return 0.0, test_debug, blend_payload
-
-        effective_train = 0.0 if train_gated else train_score
-        holdout_component = holdout_policy.holdout_weight * test_score
-        train_component = holdout_policy.train_weight * effective_train
-        blended = holdout_component + train_component
-
-        gap = max(0.0, effective_train - test_score - holdout_policy.gap_tolerance)
-        gap_penalty = holdout_policy.gap_penalty * gap
-        blended_after_gap = max(0.0, blended - gap_penalty)
-
-        floor_gap = max(0.0, holdout_policy.train_floor - effective_train)
-        floor_penalty = holdout_policy.train_floor_penalty * floor_gap
-        final_score = max(0.0, blended_after_gap - floor_penalty)
-
-        debug = dict(test_debug)
-        debug.update(
-            {
-                "holdout_blend": True,
-                "train_score": train_score,
-                "train_effective": effective_train,
-                "train_gated": train_gated,
-                "holdout_component": holdout_component,
-                "train_component": train_component,
-                "gap_excess": gap,
-                "gap_penalty": gap_penalty,
-                "train_floor_gap": floor_gap,
-                "train_floor_penalty": floor_penalty,
-                "blended_score": final_score,
-            }
-        )
-        ratio = None
-        if effective_train > 1e-9:
-            ratio = test_score / effective_train
-            debug["train_to_test_ratio"] = ratio
-
-        blend_payload = {
-            "mode": "blended",
-            "holdout_weight": holdout_policy.holdout_weight,
-            "train_weight": holdout_policy.train_weight,
-            "gap_tolerance": holdout_policy.gap_tolerance,
-            "gap_penalty": gap_penalty,
-            "train_floor": holdout_policy.train_floor,
-            "train_floor_penalty": holdout_policy.train_floor_penalty,
-            "train_score": train_score,
-            "train_effective": effective_train,
-            "test_score": test_score,
-            "holdout_component": holdout_component,
-            "train_component": train_component,
-            "gap_excess": gap,
-            "train_floor_gap": floor_gap,
-            "score": final_score,
-        }
-        if train_gated:
-            blend_payload["train_gated"] = True
-        if ratio is not None:
-            blend_payload["train_to_test_ratio"] = ratio
-
-        return final_score, debug, blend_payload
-
     best_score_seen: Optional[float] = None
     stale_generations = 0
     stopped_early = False
@@ -1143,12 +1014,78 @@ def evolutionary_search(
             if not isinstance(score_metrics, dict):
                 score_metrics = {}
 
-            score = float(train_eval["score"])
+            score = train_eval["score"]
             fitness_dbg = dict(train_eval["debug"])
             blend_info: Optional[Dict[str, Any]] = None
 
             if test_eval is not None:
-                score, fitness_dbg, blend_info = _blend_scores(train_eval, test_eval)
+                score = test_eval["score"]
+                fitness_dbg = dict(test_eval["debug"])
+                train_score = float(train_eval["score"])
+                test_score = float(test_eval["score"])
+                train_gated = bool(train_eval["debug"].get("gated_zero", False))
+                test_gated = bool(test_eval["debug"].get("gated_zero", False))
+                weight_train = max(0.0, min(1.0, 1.0 - holdout_weight))
+                blend_info = {
+                    "train_score": train_score,
+                    "test_score": test_score,
+                    "train_gated": train_gated,
+                    "test_gated": test_gated,
+                    "holdout_weight": holdout_weight,
+                    "train_weight": weight_train,
+                    "gap_tolerance": holdout_gap_tolerance,
+                    "gap_penalty": holdout_gap_penalty,
+                }
+
+                if test_gated:
+                    score = 0.0
+                    fitness_dbg["gated_zero"] = True
+                    blend_info["reason"] = "holdout_gated"
+                else:
+                    effective_train_score = 0.0 if train_gated else train_score
+                    test_component = holdout_weight * test_score
+                    train_bonus = weight_train * min(effective_train_score, test_score)
+                    ratio = None
+                    if effective_train_score > 1e-9:
+                        ratio = test_score / effective_train_score
+                    gap = max(0.0, effective_train_score - test_score - holdout_gap_tolerance)
+                    penalty = holdout_gap_penalty * gap
+                    train_shortfall = max(
+                        0.0, test_score - effective_train_score - holdout_gap_tolerance
+                    )
+                    shortfall_penalty = holdout_shortfall_penalty * train_shortfall
+                    score = max(0.0, test_component + train_bonus - penalty - shortfall_penalty)
+                    fitness_dbg.update(
+                        {
+                            "holdout_blended": True,
+                            "train_score": train_score,
+                            "train_component": effective_train_score,
+                            "train_gated": train_gated,
+                            "holdout_weight": holdout_weight,
+                            "train_bonus": train_bonus,
+                            "holdout_component": test_component,
+                            "blend_penalty": penalty,
+                            "gap_excess": gap,
+                            "train_shortfall": train_shortfall,
+                            "shortfall_penalty": shortfall_penalty,
+                            "blended_score": score,
+                        }
+                    )
+                    if ratio is not None:
+                        fitness_dbg["train_to_test_ratio"] = ratio
+                    blend_info.update(
+                        {
+                            "train_bonus": train_bonus,
+                            "holdout_component": test_component,
+                            "gap_excess": gap,
+                            "penalty": penalty,
+                            "train_shortfall": train_shortfall,
+                            "shortfall_penalty": shortfall_penalty,
+                            "blended_score": score,
+                        }
+                    )
+                    if ratio is not None:
+                        blend_info["train_to_test_ratio"] = ratio
 
             # --- accumulate per-gen telemetry ---------------------------------
             if fitness_dbg.get("gated_zero", False):

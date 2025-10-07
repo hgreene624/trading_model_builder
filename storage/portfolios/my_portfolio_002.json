@@ -1,0 +1,60 @@
+{
+  "name": "my_portfolio_002",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "AMZN",
+    "GOOG",
+    "META",
+    "TSLA"
+  ],
+  "meta": {
+    "source": "1_Portfolios",
+    "index_key": null,
+    "filters": {
+      "search": "",
+      "sectors": [
+        "Auto",
+        "Consumer",
+        "Tech"
+      ],
+      "min_median_close_priors": 0.0,
+      "min_median_dollar_vol_priors": 0.0
+    },
+    "windows": {
+      "priors": [
+        "2020-09-27",
+        "2025-09-26"
+      ]
+    },
+    "count": 6,
+    "last_prefetch_at": "2025-09-26T16:50:03+00:00",
+    "per_symbol_ranges": {
+      "AAPL": {
+        "start": "2020-09-28",
+        "end": "2025-09-26"
+      },
+      "MSFT": {
+        "start": "2020-09-28",
+        "end": "2025-09-26"
+      },
+      "AMZN": {
+        "start": "2020-09-28",
+        "end": "2025-09-26"
+      },
+      "GOOG": {
+        "start": "2020-09-28",
+        "end": "2025-09-26"
+      },
+      "META": {
+        "start": "2020-09-28",
+        "end": "2025-09-26"
+      },
+      "TSLA": {
+        "start": "2020-09-28",
+        "end": "2025-09-26"
+      }
+    }
+  },
+  "saved_at": "2025-09-26T16:50:03.690226+00:00"
+}

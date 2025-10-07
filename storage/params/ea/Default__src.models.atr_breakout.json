@@ -1,0 +1,14 @@
+{
+  "portfolio": "Default",
+  "strategy": "src.models.atr_breakout",
+  "scope": "ea",
+  "params": {
+    "breakout_n": 47,
+    "exit_n": 21,
+    "atr_n": 16,
+    "atr_multiple": 1.6750077717542144,
+    "tp_multiple": 0.8516079138173623,
+    "holding_period_limit": 7
+  },
+  "saved_at": "2025-09-27T18:29:30.512416Z"
+}
