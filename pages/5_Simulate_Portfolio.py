@@ -370,11 +370,18 @@ def _aggregate_cost_summary(results: dict[str, dict]) -> dict:
 
     turnover_gross = float(summary.get("turnover_gross", 0.0))
     start_equity_total = start_equity_total or 0.0
-    turnover_ratio = (turnover_gross / start_equity_total) if start_equity_total else 0.0
+    turnover_ratio = float(summary.get("turnover_ratio", 0.0) or 0.0)
+    if turnover_ratio == 0.0 and start_equity_total:
+        turnover_ratio = (turnover_gross / start_equity_total) if start_equity_total else 0.0
+
+    turnover_multiple = float(summary.get("turnover_multiple", 0.0) or 0.0)
+    if turnover_multiple == 0.0 and start_equity_total:
+        turnover_multiple = turnover_gross / start_equity_total if start_equity_total else 0.0
 
     out = {k: float(v) for k, v in summary.items()}
     out["turnover_ratio"] = float(turnover_ratio)
     out["turnover"] = float(turnover_ratio)
+    out["turnover_multiple"] = float(turnover_multiple)
     out["weighted_slippage_bps"] = float(out.get("slippage_bps_weighted", 0.0))
     out["weighted_fees_bps"] = float(out.get("fees_bps_weighted", 0.0))
     if "annualized_drag_bps" in out:
@@ -382,6 +389,25 @@ def _aggregate_cost_summary(results: dict[str, dict]) -> dict:
     out["total_slippage_cost"] = float(total_slip_cost)
     out["total_fee_cost"] = float(total_fee_cost)
     out["total_cost"] = float(total_slip_cost + total_fee_cost)
+
+    alpha_retention = None
+    sharpe_gross = out.get("sharpe_gross", summary.get("sharpe_gross"))
+    sharpe_net = out.get("sharpe_net", summary.get("sharpe_net"))
+    try:
+        if sharpe_gross is not None and sharpe_net is not None and abs(float(sharpe_gross)) > 1e-12:
+            alpha_retention = float(sharpe_net) / float(sharpe_gross)
+    except (TypeError, ValueError):
+        alpha_retention = None
+    if alpha_retention is None:
+        cagr_gross = out.get("cagr_gross", out.get("pre_cost_cagr"))
+        cagr_net = out.get("cagr_net", out.get("post_cost_cagr"))
+        try:
+            if cagr_gross is not None and cagr_net is not None and abs(float(cagr_gross)) > 1e-12:
+                alpha_retention = float(cagr_net) / float(cagr_gross)
+        except (TypeError, ValueError):
+            alpha_retention = None
+    out["alpha_retention_ratio"] = float(alpha_retention) if alpha_retention is not None else None
+
     return out
 
 
@@ -391,12 +417,28 @@ def _format_cost_table(summary: dict) -> pd.DataFrame:
     rows = [
         ("Turnover (gross $)", f"${summary.get('turnover_gross', 0.0):,.2f}"),
         ("Turnover (avg daily $)", f"${summary.get('turnover_avg_daily', 0.0):,.2f}"),
-        ("Turnover (x start)", f"{summary.get('turnover_ratio', summary.get('turnover', 0.0)):.2f}"),
+        ("Turnover (x start)", f"{summary.get('turnover_multiple', summary.get('turnover_ratio', summary.get('turnover', 0.0))):.2f}"),
+        (
+            "Turnover (×/yr)",
+            f"{summary.get('turnover_ratio', summary.get('turnover', 0.0)):.2f}",
+        ),
+        (
+            "Alpha Retention %",
+            f"{(summary.get('alpha_retention_ratio') or 0.0) * 100:.0f}%"
+            if summary.get("alpha_retention_ratio") is not None
+            else "—",
+        ),
         ("Weighted Slippage (bps)", f"{summary.get('weighted_slippage_bps', 0.0):.2f}"),
         ("Weighted Fees (bps)", f"{summary.get('weighted_fees_bps', 0.0):.2f}"),
         ("Pre-Cost CAGR", f"{summary.get('pre_cost_cagr', 0.0):.2%}"),
         ("Post-Cost CAGR", f"{summary.get('post_cost_cagr', 0.0):.2%}"),
         ("Annualized Drag (bps)", f"{summary.get('annualized_drag_bps', summary.get('annualized_drag', 0.0) * 10_000):.1f}"),
+        (
+            "Cost per Turnover (bps/1×)",
+            f"{summary.get('cost_per_turnover_bps', 0.0):.1f}"
+            if summary.get("cost_per_turnover_bps") is not None
+            else "—",
+        ),
         ("Total Slippage Cost", f"${summary.get('total_slippage_cost', 0.0):,.2f}"),
         ("Total Fee Cost", f"${summary.get('total_fee_cost', 0.0):,.2f}"),
         ("Total Cost", f"${summary.get('total_cost', 0.0):,.2f}"),

@@ -27,6 +27,8 @@ _COST_ENV_KEYS = (
     "COST_MIN_HS_BPS",
     "COST_USE_RANGE_IMPACT",
     "CAP_RANGE_IMPACT_BPS",
+    "FEE_BPS",
+    "FEE_PER_TRADE_USD",
 )
 
 
@@ -61,6 +63,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cost-min-hs-bps", type=float, default=0.5)
     parser.add_argument("--cost-use-range-impact", type=int, choices=[0, 1], default=0)
     parser.add_argument("--cap-range-impact-bps", type=float, default=10.0)
+    parser.add_argument("--per-trade-fee-usd", type=float, default=0.0)
     parser.add_argument(
         "--include-filtA",
         action="store_true",
@@ -117,6 +120,8 @@ def _set_cost_env(args: argparse.Namespace) -> Dict[str, Optional[str]]:
     os.environ["COST_MIN_HS_BPS"] = str(float(args.cost_min_hs_bps))
     os.environ["COST_USE_RANGE_IMPACT"] = str(int(bool(args.cost_use_range_impact)))
     os.environ["CAP_RANGE_IMPACT_BPS"] = str(float(args.cap_range_impact_bps))
+    os.environ["FEE_BPS"] = str(float(args.cost_fixed_bps))
+    os.environ["FEE_PER_TRADE_USD"] = str(float(args.per_trade_fee_usd))
     return previous
 
 
@@ -147,7 +152,14 @@ def _env_snapshot() -> Dict[str, float | int]:
 def _cost_inputs_from_meta(meta: Dict) -> Dict[str, float | int | bool]:
     cost_inputs = meta.get("cost_inputs", {}) if isinstance(meta, dict) else {}
     normalized: Dict[str, float | int | bool] = {}
-    for key in ("atr_k", "min_half_spread_bps", "use_range_impact", "cap_range_impact_bps"):
+    for key in (
+        "atr_k",
+        "min_half_spread_bps",
+        "use_range_impact",
+        "cap_range_impact_bps",
+        "fee_bps",
+        "per_trade_fee_usd",
+    ):
         if key in cost_inputs:
             value = cost_inputs[key]
             if key == "use_range_impact":
@@ -179,17 +191,31 @@ def _summarize_result(meta: Dict, trades: Iterable[Dict]) -> Dict[str, object]:
     except (TypeError, ValueError):
         slip_bps = 0.0
 
+    fee_bps = cost_summary.get("weighted_fees_bps", cost_summary.get("fees_bps_weighted"))
+    try:
+        fee_bps = float(fee_bps)
+    except (TypeError, ValueError):
+        fee_bps = 0.0
+
     turnover_gross = cost_summary.get("turnover_gross", 0.0)
     try:
         turnover_gross = float(turnover_gross)
     except (TypeError, ValueError):
         turnover_gross = 0.0
 
+    cost_per_turnover = cost_summary.get("cost_per_turnover_bps", 0.0)
+    try:
+        cost_per_turnover = float(cost_per_turnover)
+    except (TypeError, ValueError):
+        cost_per_turnover = 0.0
+
     result_summary = {
         "slip_bps": slip_bps,
         "drag_bps": drag_bps,
+        "fee_bps": fee_bps,
         "turnover_gross": turnover_gross,
         "turnover_ratio": float(cost_summary.get("turnover_ratio", 0.0) or 0.0),
+        "cost_per_turnover_bps": cost_per_turnover,
         "trades": len(list(trades)),
         "entry_count": int(runtime.get("entry_count", 0) or 0),
         "exit_count": int(runtime.get("exit_count", 0) or 0),
@@ -263,6 +289,7 @@ def main() -> None:
                 )
                 params.k_atr_buffer = float(scenario.k_atr_buffer)
                 params.persist_n = int(max(1, scenario.persist_n))
+                params.per_trade_fee = float(max(0.0, args.per_trade_fee_usd))
                 params.enable_costs = bool(args.cost_enabled)
                 params.delay_bars = int(max(0, args.delay_bars))
                 try:

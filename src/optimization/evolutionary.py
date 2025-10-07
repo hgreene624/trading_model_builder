@@ -652,6 +652,11 @@ def evolutionary_search(
     holdout_gap_tolerance = 0.15
     holdout_gap_penalty = 0.50
     holdout_shortfall_penalty = 0.35
+    holdout_train_weight = 0.35
+    holdout_gap_tolerance = 0.15
+    holdout_gap_penalty = 0.50
+    holdout_train_floor = -0.25
+    holdout_train_floor_penalty = 0.35
 
     cfg = _coerce_ea_config(config)
 

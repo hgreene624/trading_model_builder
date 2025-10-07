@@ -1,6 +1,7 @@
 # EA Implementation Audit
 
 ## Changelog
+- 2025-10-13: Simplified the holdout scoring path with a normalised holdout policy that logs the resolved weights, gap tolerance, and train-floor guard so tuning stays transparent while reducing configuration friction.
 - 2025-10-11: Introduced a configurable penalty when the training window severely lags the holdout, preventing high-scoring holdout runs with outsized in-sample losses from dominating selections.
 - 2025-10-12: Allow overriding the holdout shortfall penalty via `storage/config/ea_fitness.json` so tuning can be aligned with portfolio risk appetite.
 - 2025-10-10: Holdout-aware fitness now blends test and training scores with a configurable weight and shortfall penalty, so strategies must perform on both windows to rank highly while preserving overall portfolio quality.
