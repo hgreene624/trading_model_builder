@@ -1,0 +1,280 @@
+{
+  "ea_parameters": {
+    "Explore-Heavy": {
+      "population_size": 120,
+      "generations": 120,
+      "crossover_prob": 0.6,
+      "mutation_prob": 0.3,
+      "mutation_sigma": 0.25,
+      "elite_frac": 0.05,
+      "tournament_k": 3,
+      "early_stopping_gens": 20,
+      "seed": null
+    },
+    "Balanced Default": {
+      "population_size": 60,
+      "generations": 60,
+      "crossover_prob": 0.7,
+      "mutation_prob": 0.2,
+      "mutation_sigma": 0.2,
+      "elite_frac": 0.1,
+      "tournament_k": 3,
+      "early_stopping_gens": 15,
+      "seed": null
+    },
+    "Exploit-Anneal": {
+      "population_size": 50,
+      "generations": 80,
+      "crossover_prob": 0.8,
+      "mutation_prob": 0.15,
+      "mutation_sigma": 0.15,
+      "elite_frac": 0.15,
+      "tournament_k": 4,
+      "early_stopping_gens": 18,
+      "seed": null
+    },
+    "Quick Smoke Test": {
+      "population_size": 20,
+      "generations": 10,
+      "crossover_prob": 0.6,
+      "mutation_prob": 0.35,
+      "mutation_sigma": 0.3,
+      "elite_frac": 0.05,
+      "tournament_k": 2,
+      "early_stopping_gens": 5,
+      "seed": 123
+    },
+    "Deterministic Repro": {
+      "population_size": 50,
+      "generations": 40,
+      "crossover_prob": 0.7,
+      "mutation_prob": 0.15,
+      "mutation_sigma": 0.15,
+      "elite_frac": 0.1,
+      "tournament_k": 3,
+      "early_stopping_gens": 12,
+      "seed": 42
+    }
+  },
+  "optimization_bounds": {
+    "Narrow Donchian": {
+      "entry_lookback_n_min": 20,
+      "entry_lookback_n_max": 40,
+      "exit_lookback_n_min": 10,
+      "exit_lookback_n_max": 30,
+      "atr_period_min": 10,
+      "atr_period_max": 20,
+      "stop_atr_mult_min": 1.5,
+      "stop_atr_mult_max": 3.0,
+      "take_profit_atr_mult_min": 2.0,
+      "take_profit_atr_mult_max": 6.0,
+      "trailing_atr_mult_min": 1.0,
+      "trailing_atr_mult_max": 3.0,
+      "max_hold_days_min": 20,
+      "max_hold_days_max": 80
+    },
+    "Wide Swing-Trend": {
+      "entry_lookback_n_min": 10,
+      "entry_lookback_n_max": 120,
+      "exit_lookback_n_min": 5,
+      "exit_lookback_n_max": 80,
+      "atr_period_min": 10,
+      "atr_period_max": 50,
+      "stop_atr_mult_min": 1.0,
+      "stop_atr_mult_max": 5.0,
+      "take_profit_atr_mult_min": 1.5,
+      "take_profit_atr_mult_max": 10.0,
+      "trailing_atr_mult_min": 0.0,
+      "trailing_atr_mult_max": 5.0,
+      "max_hold_days_min": 10,
+      "max_hold_days_max": 250
+    },
+    "Active-Tight Risk": {
+      "entry_lookback_n_min": 10,
+      "entry_lookback_n_max": 30,
+      "exit_lookback_n_min": 5,
+      "exit_lookback_n_max": 20,
+      "atr_period_min": 10,
+      "atr_period_max": 20,
+      "stop_atr_mult_min": 1.0,
+      "stop_atr_mult_max": 2.0,
+      "take_profit_atr_mult_min": 1.5,
+      "take_profit_atr_mult_max": 3.0,
+      "trailing_atr_mult_min": 0.5,
+      "trailing_atr_mult_max": 2.0,
+      "max_hold_days_min": 5,
+      "max_hold_days_max": 30
+    },
+    "Ride-The-Trend": {
+      "entry_lookback_n_min": 40,
+      "entry_lookback_n_max": 120,
+      "exit_lookback_n_min": 20,
+      "exit_lookback_n_max": 80,
+      "atr_period_min": 14,
+      "atr_period_max": 50,
+      "stop_atr_mult_min": 2.0,
+      "stop_atr_mult_max": 5.0,
+      "take_profit_atr_mult_min": 3.0,
+      "take_profit_atr_mult_max": 10.0,
+      "trailing_atr_mult_min": 2.0,
+      "trailing_atr_mult_max": 5.0,
+      "max_hold_days_min": 60,
+      "max_hold_days_max": 300
+    },
+    "TP-Light, Exit-Led": {
+      "entry_lookback_n_min": 20,
+      "entry_lookback_n_max": 80,
+      "exit_lookback_n_min": 10,
+      "exit_lookback_n_max": 60,
+      "atr_period_min": 14,
+      "atr_period_max": 30,
+      "stop_atr_mult_min": 1.5,
+      "stop_atr_mult_max": 3.0,
+      "take_profit_atr_mult_min": 1.0,
+      "take_profit_atr_mult_max": 2.5,
+      "trailing_atr_mult_min": 1.0,
+      "trailing_atr_mult_max": 4.0,
+      "max_hold_days_min": 20,
+      "max_hold_days_max": 120
+    }
+  },
+  "buy_the_dip": {
+    "Shallow Pullbacks": {
+      "trend_ma": 100,
+      "dip_atr_from_high": 1.5,
+      "dip_lookback_high": 40,
+      "dip_rsi_max": 45.0,
+      "dip_confirm": 0,
+      "dip_cooldown_days": 2
+    },
+    "Deep Corrections Only": {
+      "trend_ma": 200,
+      "dip_atr_from_high": 4.0,
+      "dip_lookback_high": 126,
+      "dip_rsi_max": 30.0,
+      "dip_confirm": 1,
+      "dip_cooldown_days": 7
+    },
+    "RSI-Gated Weakness": {
+      "trend_ma": 150,
+      "dip_atr_from_high": 2.0,
+      "dip_lookback_high": 60,
+      "dip_rsi_max": 35.0,
+      "dip_confirm": 1,
+      "dip_cooldown_days": 4
+    },
+    "V-Reversal Hunter": {
+      "trend_ma": 100,
+      "dip_atr_from_high": 3.0,
+      "dip_lookback_high": 20,
+      "dip_rsi_max": 40.0,
+      "dip_confirm": 0,
+      "dip_cooldown_days": 2
+    },
+    "Trend-First": {
+      "trend_ma": 200,
+      "dip_atr_from_high": 2.5,
+      "dip_lookback_high": 60,
+      "dip_rsi_max": 45.0,
+      "dip_confirm": 1,
+      "dip_cooldown_days": 3
+    }
+  },
+  "strategy_defaults": {
+    "Classic ATR Breakout": {
+      "entry_lookback_n": 20,
+      "exit_lookback_n": 10,
+      "atr_period": 14,
+      "stop_atr_mult": 3.0,
+      "take_profit_atr_mult": 6.0,
+      "trailing_atr_mult": 2.0,
+      "risk_per_trade_pct": 1.0,
+      "allow_short": false,
+      "slippage_bps": 6,
+      "fee_per_trade": 0.0,
+      "trend_filter": {
+        "enable": false,
+        "ma_fast": 0,
+        "ma_slow": 0,
+        "ma_long": 0,
+        "slope_window": 0
+      }
+    },
+    "Trend-Filtered ATR": {
+      "entry_lookback_n": 20,
+      "exit_lookback_n": 10,
+      "atr_period": 14,
+      "stop_atr_mult": 2.5,
+      "take_profit_atr_mult": 5.0,
+      "trailing_atr_mult": 2.5,
+      "risk_per_trade_pct": 0.75,
+      "allow_short": false,
+      "slippage_bps": 6,
+      "fee_per_trade": 0.0,
+      "trend_filter": {
+        "enable": true,
+        "ma_fast": 50,
+        "ma_slow": 150,
+        "ma_long": 200,
+        "slope_window": 20
+      }
+    },
+    "Tight-Stop Scalper": {
+      "entry_lookback_n": 10,
+      "exit_lookback_n": 5,
+      "atr_period": 14,
+      "stop_atr_mult": 1.5,
+      "take_profit_atr_mult": 2.5,
+      "trailing_atr_mult": 1.5,
+      "risk_per_trade_pct": 0.5,
+      "allow_short": false,
+      "slippage_bps": 8,
+      "fee_per_trade": 0.0,
+      "trend_filter": {
+        "enable": false,
+        "ma_fast": 0,
+        "ma_slow": 0,
+        "ma_long": 0,
+        "slope_window": 0
+      }
+    },
+    "Loose-Stop Trend Rider": {
+      "entry_lookback_n": 55,
+      "exit_lookback_n": 20,
+      "atr_period": 20,
+      "stop_atr_mult": 4.0,
+      "take_profit_atr_mult": 8.0,
+      "trailing_atr_mult": 3.0,
+      "risk_per_trade_pct": 1.2,
+      "allow_short": false,
+      "slippage_bps": 6,
+      "fee_per_trade": 0.0,
+      "trend_filter": {
+        "enable": true,
+        "ma_fast": 50,
+        "ma_slow": 150,
+        "ma_long": 200,
+        "slope_window": 20
+      }
+    },
+    "Capital-Conservative": {
+      "entry_lookback_n": 20,
+      "exit_lookback_n": 10,
+      "atr_period": 14,
+      "stop_atr_mult": 2.5,
+      "take_profit_atr_mult": 5.0,
+      "trailing_atr_mult": 2.0,
+      "risk_per_trade_pct": 0.35,
+      "allow_short": false,
+      "slippage_bps": 12,
+      "fee_per_trade": 0.0,
+      "trend_filter": {
+        "enable": true,
+        "ma_fast": 100,
+        "ma_slow": 200,
+        "ma_long": 250,
+        "slope_window": 30
+      }
+    }
+  }
+}
