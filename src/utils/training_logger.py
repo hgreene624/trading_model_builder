@@ -4,12 +4,18 @@ import json
 import time
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 class TrainingLogger:
     """Append-only JSONL logger for EA/WFO runs. No Streamlit calls here."""
 
-    def __init__(self, log_file: str | Path, *, level: int = logging.INFO) -> None:
+    def __init__(
+        self,
+        log_file: str | Path,
+        *,
+        level: int = logging.INFO,
+        tags: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.path = Path(log_file)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._logger = logging.getLogger(f"ea.{self.path.name}")
@@ -19,9 +25,17 @@ class TrainingLogger:
             fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
             h.setFormatter(fmt)
             self._logger.addHandler(h)
+        self._tags = dict(tags or {})
 
     def _write(self, record: Dict[str, Any]) -> None:
         record.setdefault("ts", time.time())
+        if self._tags:
+            tags_section = record.setdefault("tags", {})
+            if not isinstance(tags_section, dict):
+                tags_section = {}
+                record["tags"] = tags_section
+            for key, value in self._tags.items():
+                tags_section.setdefault(key, value)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 

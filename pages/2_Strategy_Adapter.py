@@ -15,6 +15,109 @@ from src.utils.training_logger import TrainingLogger
 from src.data.portfolio_prefetch import intersection_range
 from src.storage import append_to_portfolio, list_portfolios, load_portfolio, save_strategy_params
 
+DIP_STRATEGY_MODULE = "src.models.atr_dip_breakout"
+STRATEGY_OPTIONS: List[Tuple[str, str]] = [
+    ("ATR Breakout", "src.models.atr_breakout"),
+    ("ATR + Buy-the-Dip Overlay", DIP_STRATEGY_MODULE),
+]
+
+BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
+    "src.models.atr_breakout": {
+        "breakout_n": 70,
+        "exit_n": 16,
+        "atr_n": 8,
+        "atr_multiple": 2.20,
+        "tp_multiple": 1.78,
+        "holding_period_limit": 20,
+        "risk_per_trade": 0.005,
+        "use_trend_filter": False,
+        "sma_fast": 20,
+        "sma_slow": 50,
+        "sma_long": 200,
+        "long_slope_len": 20,
+        "cost_bps": 1.0,
+        "execution": "close",
+        "entry_mode": "breakout",
+    },
+    DIP_STRATEGY_MODULE: {
+        "breakout_n": 70,
+        "exit_n": 16,
+        "atr_n": 8,
+        "atr_multiple": 2.20,
+        "tp_multiple": 1.78,
+        "holding_period_limit": 20,
+        "risk_per_trade": 0.005,
+        "use_trend_filter": False,
+        "sma_fast": 20,
+        "sma_slow": 50,
+        "sma_long": 200,
+        "long_slope_len": 20,
+        "cost_bps": 1.0,
+        "execution": "close",
+        "entry_mode": "dip",
+        "trend_ma": 200,
+        "dip_atr_from_high": 2.0,
+        "dip_lookback_high": 60,
+        "dip_rsi_max": 55.0,
+        "dip_confirm": False,
+        "dip_cooldown_days": 5,
+    },
+}
+
+EA_DEFAULTS_BASE: Dict[str, Any] = {
+    "generations": 50,
+    "pop_size": 64,
+    "selection_method": "tournament",
+    "tournament_k": 3,
+    "replacement": "mu+lambda",
+    "elitism_fraction": 0.05,
+    "crossover_rate": 0.85,
+    "crossover_op": "blend",
+    "mutation_rate": 0.10,
+    "mutation_scale": 0.20,
+    "mutation_scheme": "gaussian",
+    "anneal_mutation": True,
+    "anneal_floor": 0.05,
+    "fitness_patience": 8,
+    "seed": None,
+    "workers": None,
+    "shuffle_eval": True,
+    "genewise_clip": True,
+    "min_trades": 12,
+    "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
+    "breakout_n_min": 8,
+    "breakout_n_max": 80,
+    "exit_n_min": 4,
+    "exit_n_max": 40,
+    "atr_n_min": 7,
+    "atr_n_max": 35,
+    "atr_multiple_min": 0.8,
+    "atr_multiple_max": 4.0,
+    "tp_multiple_min": 0.8,
+    "tp_multiple_max": 4.0,
+    "hold_min": 5,
+    "hold_max": 60,
+}
+
+EA_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
+    "src.models.atr_breakout": dict(EA_DEFAULTS_BASE),
+    DIP_STRATEGY_MODULE: {
+        **EA_DEFAULTS_BASE,
+        "trend_ma_min": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["trend_ma"],
+        "trend_ma_max": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["trend_ma"],
+        "dip_atr_from_high_min": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_atr_from_high"],
+        "dip_atr_from_high_max": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_atr_from_high"],
+        "dip_lookback_high_min": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_lookback_high"],
+        "dip_lookback_high_max": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_lookback_high"],
+        "dip_rsi_max_min": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_rsi_max"],
+        "dip_rsi_max_max": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_rsi_max"],
+        "dip_confirm_min": int(bool(BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_confirm"])),
+        "dip_confirm_max": int(bool(BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_confirm"])),
+        "dip_cooldown_min": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_cooldown_days"],
+        "dip_cooldown_max": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_cooldown_days"],
+    },
+}
+
 # --- Page chrome ---
 st.set_page_config(page_title="Strategy Adapter", layout="wide")
 st.title("🧪 Strategy Adapter")
@@ -401,116 +504,55 @@ timing_cols[2].metric("Holdout days", f"{holdout_days} ({holdout_fraction_actual
 st.divider()
 st.subheader("2️⃣ Strategy & Search Controls")
 
-strategy_dotted = st.selectbox(
+strategy_labels = [label for label, _ in STRATEGY_OPTIONS]
+strategy_modules = [module for _, module in STRATEGY_OPTIONS]
+default_strategy = st.session_state.get("adapter_strategy", strategy_modules[0])
+try:
+    default_strategy_index = strategy_modules.index(default_strategy)
+except ValueError:
+    default_strategy_index = 0
+selected_label = st.selectbox(
     "Strategy",
-    ["src.models.atr_breakout"],
-    index=0,
+    strategy_labels,
+    index=default_strategy_index,
     help="Select the strategy module to adapt.",
 )
+strategy_dotted = strategy_modules[strategy_labels.index(selected_label)]
+st.session_state["adapter_strategy"] = strategy_dotted
+dip_strategy = strategy_dotted == DIP_STRATEGY_MODULE
 
-base = _ss_get_dict(
-    "adapter_base_params",
-    {
-        "breakout_n": 70,
-        "exit_n": 16,
-        "atr_n": 8,
-        "atr_multiple": 2.20,
-        "tp_multiple": 1.78,
-        "holding_period_limit": 20,
-        "risk_per_trade": 0.005,
-        "use_trend_filter": False,
-        "sma_fast": 20,
-        "sma_slow": 50,
-        "sma_long": 200,
-        "long_slope_len": 20,
-        "cost_bps": 1.0,
-        "execution": "close",
-        "entry_mode": "breakout",
-        "trend_ma": 200,
-        "dip_atr_from_high": 2.0,
-        "dip_lookback_high": 60,
-        "dip_rsi_max": 55.0,
-        "dip_confirm": False,
-        "dip_cooldown_days": 5,
-    },
-)
+base_defaults_map = {key: dict(value) for key, value in BASE_DEFAULTS_BY_STRATEGY.items()}
+base_map = _ss_get_dict("adapter_base_params_map", base_defaults_map)
+if strategy_dotted not in base_map:
+    base_map[strategy_dotted] = dict(BASE_DEFAULTS_BY_STRATEGY[strategy_dotted])
+base = base_map[strategy_dotted]
+base["entry_mode"] = "dip" if dip_strategy else "breakout"
+if dip_strategy:
+    for field, value in BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE].items():
+        base.setdefault(field, value)
 
-for _k, _v in [
-    ("entry_mode", "breakout"),
-    ("trend_ma", 200),
-    ("dip_atr_from_high", 2.0),
-    ("dip_lookback_high", 60),
-    ("dip_rsi_max", 55.0),
-    ("dip_confirm", False),
-    ("dip_cooldown_days", 5),
-]:
-    base.setdefault(_k, _v)
+ea_defaults_map = {key: dict(value) for key, value in EA_DEFAULTS_BY_STRATEGY.items()}
+ea_cfg_map = _ss_get_dict("ea_cfg_map", ea_defaults_map)
+if strategy_dotted not in ea_cfg_map:
+    ea_cfg_map[strategy_dotted] = dict(EA_DEFAULTS_BY_STRATEGY[strategy_dotted])
+ea_cfg = ea_cfg_map[strategy_dotted]
 
-ea_cfg = _ss_get_dict(
-    "ea_cfg",
-    {
-        "generations": 50,
-        "pop_size": 64,
-        "selection_method": "tournament",
-        "tournament_k": 3,
-        "replacement": "mu+lambda",
-        "elitism_fraction": 0.05,
-        "crossover_rate": 0.85,
-        "crossover_op": "blend",
-        "mutation_rate": 0.10,
-        "mutation_scale": 0.20,
-        "mutation_scheme": "gaussian",
-        "anneal_mutation": True,
-        "anneal_floor": 0.05,
-        "fitness_patience": 8,
-        "seed": None,
-        "workers": None,
-        "shuffle_eval": True,
-        "genewise_clip": True,
-        "min_trades": 12,
-        "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
-        "breakout_n_min": 8,
-        "breakout_n_max": 80,
-        "exit_n_min": 4,
-        "exit_n_max": 40,
-        "atr_n_min": 7,
-        "atr_n_max": 35,
-        "atr_multiple_min": 0.8,
-        "atr_multiple_max": 4.0,
-        "tp_multiple_min": 0.8,
-        "tp_multiple_max": 4.0,
-        "hold_min": 5,
-        "hold_max": 60,
-        "trend_ma_min": int(base.get("trend_ma", 200)),
-        "trend_ma_max": int(base.get("trend_ma", 200)),
-        "dip_atr_from_high_min": float(base.get("dip_atr_from_high", 2.0)),
-        "dip_atr_from_high_max": float(base.get("dip_atr_from_high", 2.0)),
-        "dip_lookback_high_min": int(base.get("dip_lookback_high", 60)),
-        "dip_lookback_high_max": int(base.get("dip_lookback_high", 60)),
-        "dip_rsi_max_min": float(base.get("dip_rsi_max", 55.0)),
-        "dip_rsi_max_max": float(base.get("dip_rsi_max", 55.0)),
-        "dip_confirm_min": int(bool(base.get("dip_confirm", False))),
-        "dip_confirm_max": int(bool(base.get("dip_confirm", False))),
-        "dip_cooldown_min": int(base.get("dip_cooldown_days", 5)),
-        "dip_cooldown_max": int(base.get("dip_cooldown_days", 5)),
-    },
-)
-
-for _k, _v in [
-    ("trend_ma_min", int(base.get("trend_ma", 200))),
-    ("trend_ma_max", int(base.get("trend_ma", 200))),
-    ("dip_atr_from_high_min", float(base.get("dip_atr_from_high", 2.0))),
-    ("dip_atr_from_high_max", float(base.get("dip_atr_from_high", 2.0))),
-    ("dip_lookback_high_min", int(base.get("dip_lookback_high", 60))),
-    ("dip_lookback_high_max", int(base.get("dip_lookback_high", 60))),
-    ("dip_rsi_max_min", float(base.get("dip_rsi_max", 55.0))),
-    ("dip_rsi_max_max", float(base.get("dip_rsi_max", 55.0))),
-    ("dip_confirm_min", int(bool(base.get("dip_confirm", False)))),
-    ("dip_confirm_max", int(bool(base.get("dip_confirm", False)))),
-    ("dip_cooldown_min", int(base.get("dip_cooldown_days", 5))),
-    ("dip_cooldown_max", int(base.get("dip_cooldown_days", 5))),
-]:
-    ea_cfg.setdefault(_k, _v)
+if dip_strategy:
+    for _k, _v in [
+        ("trend_ma_min", int(base.get("trend_ma", 200))),
+        ("trend_ma_max", int(base.get("trend_ma", 200))),
+        ("dip_atr_from_high_min", float(base.get("dip_atr_from_high", 2.0))),
+        ("dip_atr_from_high_max", float(base.get("dip_atr_from_high", 2.0))),
+        ("dip_lookback_high_min", int(base.get("dip_lookback_high", 60))),
+        ("dip_lookback_high_max", int(base.get("dip_lookback_high", 60))),
+        ("dip_rsi_max_min", float(base.get("dip_rsi_max", 55.0))),
+        ("dip_rsi_max_max", float(base.get("dip_rsi_max", 55.0))),
+        ("dip_confirm_min", int(bool(base.get("dip_confirm", False)))),
+        ("dip_confirm_max", int(bool(base.get("dip_confirm", False)))),
+        ("dip_cooldown_min", int(base.get("dip_cooldown_days", 5))),
+        ("dip_cooldown_max", int(base.get("dip_cooldown_days", 5))),
+    ]:
+        ea_cfg.setdefault(_k, _v)
 
 for _k, _v in {
     "selection_method": "tournament",
@@ -807,119 +849,118 @@ with st.expander("Optimization parameter bounds", expanded=True):
     ea_cfg["tp_multiple_min"], ea_cfg["tp_multiple_max"] = float(tpm_lo), float(tpm_hi)
     ea_cfg["hold_min"], ea_cfg["hold_max"] = int(hold_lo), int(hold_hi)
 
-dip_active = str(base.get("entry_mode", "")).strip().lower() == "dip"
-with st.expander("Buy-the-Dip Parameters", expanded=dip_active):
-    st.markdown("**Optimization bounds**")
-    dip_bounds = st.columns(3)
-    with dip_bounds[0]:
-        trend_lo = st.number_input(
-            "trend_ma min",
-            20,
-            600,
-            int(ea_cfg["trend_ma_min"]),
-            1,
-            help="Minimum trend moving average length to qualify dip entries.",
-        )
-        trend_hi = st.number_input(
-            "trend_ma max",
-            int(trend_lo),
-            600,
-            int(ea_cfg["trend_ma_max"]),
-            1,
-            help="Maximum trend moving average length tested for dip entries.",
-        )
-        dlh_lo = st.number_input(
-            "dip_lookback_high min",
-            5,
-            600,
-            int(ea_cfg["dip_lookback_high_min"]),
-            1,
-            help="Shortest window for measuring prior highs in dip mode.",
-        )
-        dlh_hi = st.number_input(
-            "dip_lookback_high max",
-            int(dlh_lo),
-            600,
-            int(ea_cfg["dip_lookback_high_max"]),
-            1,
-            help="Longest window for measuring prior highs in dip mode.",
-        )
-    with dip_bounds[1]:
-        dah_lo = st.number_input(
-            "dip_atr_from_high min",
-            0.0,
-            20.0,
-            float(ea_cfg["dip_atr_from_high_min"]),
-            0.1,
-            help="Smallest ATR pullback from recent highs to trigger dip entries.",
-        )
-        dah_hi = st.number_input(
-            "dip_atr_from_high max",
-            float(dah_lo),
-            20.0,
-            float(ea_cfg["dip_atr_from_high_max"]),
-            0.1,
-            help="Largest ATR pullback from highs to consider for dip entries.",
-        )
-        drs_lo = st.number_input(
-            "dip_rsi_max min",
-            0.0,
-            100.0,
-            float(ea_cfg["dip_rsi_max_min"]),
-            1.0,
-            help="Lower bound for RSI filter during dip setup qualification.",
-        )
-        drs_hi = st.number_input(
-            "dip_rsi_max max",
-            float(drs_lo),
-            100.0,
-            float(ea_cfg["dip_rsi_max_max"]),
-            1.0,
-            help="Upper bound for RSI filter during dip setup qualification.",
-        )
-    with dip_bounds[2]:
-        dcf_lo = st.number_input(
-            "dip_confirm min",
-            0,
-            1,
-            int(ea_cfg["dip_confirm_min"]),
-            1,
-            help="Minimum confirmation flag (0/1) permitted for dip entries.",
-        )
-        dcf_hi = st.number_input(
-            "dip_confirm max",
-            int(dcf_lo),
-            1,
-            int(ea_cfg["dip_confirm_max"]),
-            1,
-            help="Maximum confirmation flag (0/1) permitted for dip entries.",
-        )
-        dcd_lo = st.number_input(
-            "dip_cooldown_days min",
-            0,
-            240,
-            int(ea_cfg["dip_cooldown_min"]),
-            1,
-            help="Minimum cooldown between dip entries in days.",
-        )
-        dcd_hi = st.number_input(
-            "dip_cooldown_days max",
-            int(dcd_lo),
-            240,
-            int(ea_cfg["dip_cooldown_max"]),
-            1,
-            help="Maximum cooldown between dip entries in days.",
-        )
+if dip_strategy:
+    with st.expander("Buy-the-Dip Parameters", expanded=True):
+        st.markdown("**Optimization bounds**")
+        dip_bounds = st.columns(3)
+        with dip_bounds[0]:
+            trend_lo = st.number_input(
+                "trend_ma min",
+                20,
+                600,
+                int(ea_cfg.get("trend_ma_min", base.get("trend_ma", 200))),
+                1,
+                help="Minimum trend moving average length to qualify dip entries.",
+            )
+            trend_hi = st.number_input(
+                "trend_ma max",
+                int(trend_lo),
+                600,
+                int(ea_cfg.get("trend_ma_max", base.get("trend_ma", 200))),
+                1,
+                help="Maximum trend moving average length tested for dip entries.",
+            )
+            dlh_lo = st.number_input(
+                "dip_lookback_high min",
+                5,
+                600,
+                int(ea_cfg.get("dip_lookback_high_min", base.get("dip_lookback_high", 60))),
+                1,
+                help="Shortest window for measuring prior highs in dip mode.",
+            )
+            dlh_hi = st.number_input(
+                "dip_lookback_high max",
+                int(dlh_lo),
+                600,
+                int(ea_cfg.get("dip_lookback_high_max", base.get("dip_lookback_high", 60))),
+                1,
+                help="Longest window for measuring prior highs in dip mode.",
+            )
+        with dip_bounds[1]:
+            dah_lo = st.number_input(
+                "dip_atr_from_high min",
+                0.0,
+                20.0,
+                float(ea_cfg.get("dip_atr_from_high_min", base.get("dip_atr_from_high", 2.0))),
+                0.1,
+                help="Smallest ATR pullback from recent highs to trigger dip entries.",
+            )
+            dah_hi = st.number_input(
+                "dip_atr_from_high max",
+                float(dah_lo),
+                20.0,
+                float(ea_cfg.get("dip_atr_from_high_max", base.get("dip_atr_from_high", 2.0))),
+                0.1,
+                help="Largest ATR pullback from highs to consider for dip entries.",
+            )
+            drs_lo = st.number_input(
+                "dip_rsi_max min",
+                0.0,
+                100.0,
+                float(ea_cfg.get("dip_rsi_max_min", base.get("dip_rsi_max", 55.0))),
+                1.0,
+                help="Lower bound for RSI filter during dip setup qualification.",
+            )
+            drs_hi = st.number_input(
+                "dip_rsi_max max",
+                float(drs_lo),
+                100.0,
+                float(ea_cfg.get("dip_rsi_max_max", base.get("dip_rsi_max", 55.0))),
+                1.0,
+                help="Upper bound for RSI filter during dip setup qualification.",
+            )
+        with dip_bounds[2]:
+            dcf_lo = st.number_input(
+                "dip_confirm min",
+                0,
+                1,
+                int(ea_cfg.get("dip_confirm_min", int(bool(base.get("dip_confirm", False))))),
+                1,
+                help="Minimum confirmation flag (0/1) permitted for dip entries.",
+            )
+            dcf_hi = st.number_input(
+                "dip_confirm max",
+                int(dcf_lo),
+                1,
+                int(ea_cfg.get("dip_confirm_max", int(bool(base.get("dip_confirm", False))))),
+                1,
+                help="Maximum confirmation flag (0/1) permitted for dip entries.",
+            )
+            dcd_lo = st.number_input(
+                "dip_cooldown_days min",
+                0,
+                240,
+                int(ea_cfg.get("dip_cooldown_min", base.get("dip_cooldown_days", 5))),
+                1,
+                help="Minimum cooldown period (in days) between dip entries.",
+            )
+            dcd_hi = st.number_input(
+                "dip_cooldown_days max",
+                int(dcd_lo),
+                240,
+                int(ea_cfg.get("dip_cooldown_max", base.get("dip_cooldown_days", 5))),
+                1,
+                help="Maximum cooldown period (in days) between dip entries.",
+            )
 
-    ea_cfg["trend_ma_min"], ea_cfg["trend_ma_max"] = int(trend_lo), int(trend_hi)
-    ea_cfg["dip_lookback_high_min"], ea_cfg["dip_lookback_high_max"] = int(dlh_lo), int(dlh_hi)
-    ea_cfg["dip_atr_from_high_min"], ea_cfg["dip_atr_from_high_max"] = float(dah_lo), float(dah_hi)
-    ea_cfg["dip_rsi_max_min"], ea_cfg["dip_rsi_max_max"] = float(drs_lo), float(drs_hi)
-    ea_cfg["dip_confirm_min"], ea_cfg["dip_confirm_max"] = int(dcf_lo), int(dcf_hi)
-    ea_cfg["dip_cooldown_min"], ea_cfg["dip_cooldown_max"] = int(dcd_lo), int(dcd_hi)
+        ea_cfg["trend_ma_min"], ea_cfg["trend_ma_max"] = int(trend_lo), int(trend_hi)
+        ea_cfg["dip_lookback_high_min"], ea_cfg["dip_lookback_high_max"] = int(dlh_lo), int(dlh_hi)
+        ea_cfg["dip_atr_from_high_min"], ea_cfg["dip_atr_from_high_max"] = float(dah_lo), float(dah_hi)
+        ea_cfg["dip_rsi_max_min"], ea_cfg["dip_rsi_max_max"] = float(drs_lo), float(drs_hi)
+        ea_cfg["dip_confirm_min"], ea_cfg["dip_confirm_max"] = int(dcf_lo), int(dcf_hi)
+        ea_cfg["dip_cooldown_min"], ea_cfg["dip_cooldown_max"] = int(dcd_lo), int(dcd_hi)
 
-    st.markdown("**Default dip behaviour**")
-    if dip_active:
+        st.markdown("**Default dip behaviour**")
         dip_cols = st.columns(2)
         with dip_cols[0]:
             base["dip_atr_from_high"] = st.number_input(
@@ -928,7 +969,7 @@ with st.expander("Buy-the-Dip Parameters", expanded=dip_active):
                 20.0,
                 float(base.get("dip_atr_from_high", 2.0)),
                 0.1,
-                help="ATR distance from recent high to trigger a dip setup.",
+                help="Minimum ATR pullback from highs required to enter.",
             )
             base["dip_lookback_high"] = st.number_input(
                 "dip_lookback_high",
@@ -936,7 +977,7 @@ with st.expander("Buy-the-Dip Parameters", expanded=dip_active):
                 600,
                 int(base.get("dip_lookback_high", 60)),
                 1,
-                help="Lookback window for recent highs when screening dip entries.",
+                help="Lookback window for recent highs when detecting dips.",
             )
             base["dip_cooldown_days"] = st.number_input(
                 "dip_cooldown_days",
@@ -944,7 +985,7 @@ with st.expander("Buy-the-Dip Parameters", expanded=dip_active):
                 240,
                 int(base.get("dip_cooldown_days", 5)),
                 1,
-                help="Bars to wait between dip entries for the same symbol.",
+                help="Cooldown (days) before allowing another dip entry.",
             )
         with dip_cols[1]:
             base["dip_rsi_max"] = st.number_input(
@@ -952,38 +993,26 @@ with st.expander("Buy-the-Dip Parameters", expanded=dip_active):
                 0.0,
                 100.0,
                 float(base.get("dip_rsi_max", 55.0)),
-                0.5,
-                help="Upper RSI bound required to qualify a dip entry.",
+                1.0,
+                help="RSI threshold dip setups must stay below.",
             )
             base["dip_confirm"] = st.checkbox(
                 "dip_confirm",
                 value=bool(base.get("dip_confirm", False)),
-                help="Require confirmation (e.g., reversal bar) before dip entry.",
+                help="Require confirmation (close above prior close) before entry.",
             )
-            base["trend_ma"] = st.number_input(
-                "trend_ma",
-                20,
-                600,
-                int(base.get("trend_ma", 200)),
-                1,
-                help="Trend moving average length used to gate dip entries.",
-            )
-    else:
-        st.info("Switch entry mode to 'Dip' to configure dip-specific defaults.")
+        base["trend_ma"] = st.number_input(
+            "trend_ma",
+            20,
+            600,
+            int(base.get("trend_ma", 200)),
+            1,
+            help="Trend moving average length for dip qualification.",
+        )
+else:
+    st.info("Select the ATR + Buy-the-Dip Overlay strategy to configure dip parameters.")
 
 with st.expander("Strategy parameter defaults (optional)", expanded=False):
-    entry_modes = ["breakout", "dip"]
-    entry_mode_clean = str(base.get("entry_mode", "breakout")).strip().lower()
-    if entry_mode_clean not in entry_modes:
-        entry_mode_clean = "breakout"
-    base["entry_mode"] = st.radio(
-        "Entry mode",
-        entry_modes,
-        index=entry_modes.index(entry_mode_clean),
-        horizontal=True,
-        help="Choose the entry logic to seed training runs.",
-    )
-
     base_cols = st.columns(2)
     with base_cols[0]:
         base["breakout_n"] = st.number_input(
@@ -1278,7 +1307,7 @@ if run_btn:
         "holding_period_limit": _clamp_int(cfg["hold_min"], cfg["hold_max"]),
     }
 
-    if str(base.get("entry_mode", "")).strip().lower() == "dip":
+    if dip_strategy:
         param_space.update(
             {
                 "trend_ma": _clamp_int(cfg["trend_ma_min"], cfg["trend_ma_max"]),
@@ -1435,7 +1464,7 @@ if run_btn:
 
     # Log the holdout (simulation) window so tools can detect train→test boundary
     try:
-        TrainingLogger(log_file).log(
+        TrainingLogger(log_file, tags={"model_key": strategy_dotted}).log(
             "holdout_meta",
             {
                 "gen": 0,
@@ -1495,8 +1524,7 @@ if run_btn:
         st.error("EA returned no candidates.")
         st.stop()
 
-    dip_mode = str(base.get("entry_mode", "")).strip().lower() == "dip"
-    if dip_mode:
+    if dip_strategy:
         enriched_top: list[tuple[dict[str, Any], float]] = []
         for params, score in top:
             merged = dict(params)
@@ -1513,23 +1541,28 @@ if run_btn:
     prog.progress(0.95, text="Rendering EA leaderboard…")
 
     rows = []
+    leaderboard_keys = [
+        "breakout_n",
+        "exit_n",
+        "atr_n",
+        "atr_multiple",
+        "tp_multiple",
+        "holding_period_limit",
+    ]
+    if dip_strategy:
+        leaderboard_keys.extend(
+            [
+                "trend_ma",
+                "dip_atr_from_high",
+                "dip_lookback_high",
+                "dip_rsi_max",
+                "dip_confirm",
+                "dip_cooldown_days",
+                "entry_mode",
+            ]
+        )
     for params, score in top[: min(50, len(top))]:
         r = {"score": float(score)}
-        leaderboard_keys = (
-            "breakout_n",
-            "exit_n",
-            "atr_n",
-            "atr_multiple",
-            "tp_multiple",
-            "holding_period_limit",
-            "trend_ma",
-            "dip_atr_from_high",
-            "dip_lookback_high",
-            "dip_rsi_max",
-            "dip_confirm",
-            "dip_cooldown_days",
-            "entry_mode",
-        )
         r.update({k: params.get(k) for k in leaderboard_keys if k in params})
         rows.append(r)
     lb = pd.DataFrame(rows).sort_values("score", ascending=False)

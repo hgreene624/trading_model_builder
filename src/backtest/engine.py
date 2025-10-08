@@ -392,6 +392,17 @@ class ATRParams:
     prob_gate_threshold: float = 0.0  # minimum probability to allow entry
     prob_model_id: str = ""           # identifier for stored calibrated model
 
+# Defaults for optional dip overlay when strategies request it via extra_params.
+DIP_OVERLAY_DEFAULTS: Dict[str, Any] = {
+    "trend_ma": 200,
+    "dip_atr_from_high": 2.0,
+    "dip_lookback_high": 60,
+    "dip_rsi_max": 55.0,
+    "dip_confirm": False,
+    "dip_cooldown_days": 5,
+}
+DIP_RSI_PERIOD = 14
+
 # ---------- Indicators ----------
 
 def wilder_atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
@@ -403,6 +414,21 @@ def wilder_atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.ewm(alpha=1.0 / n, adjust=False).mean()
+
+
+def _relative_strength_index(close: pd.Series, period: int = DIP_RSI_PERIOD) -> pd.Series:
+    """Compute RSI using Wilder's smoothing with defensive guards."""
+
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    avg_loss = avg_loss.where(avg_loss != 0.0, np.nan)
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    rsi = rsi.clip(lower=0.0, upper=100.0)
+    return rsi.fillna(50.0)
 
 # ---------- Core backtest ----------
 
@@ -437,6 +463,67 @@ def backtest_atr_breakout(
         params_core = {k: params_dict[k] for k in list(params_dict.keys()) if k in known}
         extra_params = {k: params_dict[k] for k in params_dict if k not in known}
         params = ATRParams(**params_core)
+
+    entry_mode_extra = str(extra_params.get("entry_mode", "") or "").strip().lower()
+    dip_overlay_raw: Dict[str, Any] = {}
+    if isinstance(extra_params.get("dip_overlay"), dict):
+        dip_overlay_raw = dict(extra_params.get("dip_overlay", {}))
+    else:
+        direct_overlay: Dict[str, Any] = {}
+        for key in DIP_OVERLAY_DEFAULTS:
+            if key in extra_params:
+                direct_overlay[key] = extra_params[key]
+        if direct_overlay:
+            dip_overlay_raw = direct_overlay
+    dip_overlay_enabled = entry_mode_extra == "dip" or bool(dip_overlay_raw)
+    dip_overlay_config = dict(DIP_OVERLAY_DEFAULTS)
+    if dip_overlay_enabled:
+        for key in DIP_OVERLAY_DEFAULTS:
+            if key in dip_overlay_raw and dip_overlay_raw[key] is not None:
+                dip_overlay_config[key] = dip_overlay_raw[key]
+        dip_overlay_config["trend_ma"] = max(
+            1, int(_coerce_float(dip_overlay_config.get("trend_ma"), DIP_OVERLAY_DEFAULTS["trend_ma"]))
+        )
+        dip_overlay_config["dip_atr_from_high"] = max(
+            0.0,
+            _coerce_float(
+                dip_overlay_config.get("dip_atr_from_high"), DIP_OVERLAY_DEFAULTS["dip_atr_from_high"]
+            ),
+        )
+        dip_overlay_config["dip_lookback_high"] = max(
+            1,
+            int(
+                _coerce_float(
+                    dip_overlay_config.get("dip_lookback_high"), DIP_OVERLAY_DEFAULTS["dip_lookback_high"]
+                )
+            ),
+        )
+        dip_overlay_config["dip_rsi_max"] = float(
+            max(
+                0.0,
+                min(
+                    100.0,
+                    _coerce_float(
+                        dip_overlay_config.get("dip_rsi_max"), DIP_OVERLAY_DEFAULTS["dip_rsi_max"]
+                    ),
+                ),
+            )
+        )
+        dip_overlay_config["dip_confirm"] = bool(
+            dip_overlay_config.get("dip_confirm", DIP_OVERLAY_DEFAULTS["dip_confirm"])
+        )
+        dip_overlay_config["dip_cooldown_days"] = max(
+            0,
+            int(
+                _coerce_float(
+                    dip_overlay_config.get("dip_cooldown_days"),
+                    DIP_OVERLAY_DEFAULTS["dip_cooldown_days"],
+                )
+            ),
+        )
+        extra_params["dip_overlay"] = dict(dip_overlay_config)
+    else:
+        dip_overlay_config = dict(DIP_OVERLAY_DEFAULTS)
 
     delay_candidate = _coerce_float(getattr(params, "delay_bars", 0), 0.0)
     if delay_bars is not None:
@@ -605,6 +692,52 @@ def backtest_atr_breakout(
         long_signal = long_base.astype(bool)
 
     raw_long_breakout = long_base.astype(bool)
+
+    dip_overlay_active = bool(dip_overlay_enabled)
+    dip_trend_ok = pd.Series(True, index=df.index, dtype=bool)
+    dip_depth_ok = pd.Series(True, index=df.index, dtype=bool)
+    dip_rsi_ok = pd.Series(True, index=df.index, dtype=bool)
+    dip_confirm_ok = pd.Series(True, index=df.index, dtype=bool)
+    dip_conditions_ok = pd.Series(True, index=df.index, dtype=bool)
+    dip_cooldown_days = 0
+    dip_cooldown_until_idx = -1
+    dip_block_conditions = 0
+    dip_block_trend = 0
+    dip_block_depth = 0
+    dip_block_rsi = 0
+    dip_block_confirm = 0
+    dip_block_cooldown = 0
+    dip_entries_allowed = 0
+    dip_atr_from_high = 0.0
+    dip_rsi_cap = DIP_OVERLAY_DEFAULTS["dip_rsi_max"]
+    dip_require_confirm = bool(dip_overlay_config.get("dip_confirm", DIP_OVERLAY_DEFAULTS["dip_confirm"]))
+    if dip_overlay_active and not df.empty:
+        trend_ma = int(dip_overlay_config.get("trend_ma", DIP_OVERLAY_DEFAULTS["trend_ma"]))
+        if trend_ma > 1:
+            trend_ma_series = df["close"].rolling(window=trend_ma).mean()
+            dip_trend_ok = (df["close"] >= trend_ma_series).fillna(False)
+        dip_atr_from_high = float(dip_overlay_config.get("dip_atr_from_high", 0.0) or 0.0)
+        lookback_high = int(
+            dip_overlay_config.get("dip_lookback_high", DIP_OVERLAY_DEFAULTS["dip_lookback_high"])
+        )
+        if dip_atr_from_high > 0.0 and lookback_high > 0:
+            rolling_high = df["close"].rolling(window=lookback_high).max()
+            dip_depth_ok = ((rolling_high - df["close"]) >= (dip_atr_from_high * atr)).fillna(False)
+        dip_rsi_cap = float(
+            dip_overlay_config.get("dip_rsi_max", DIP_OVERLAY_DEFAULTS["dip_rsi_max"])
+        )
+        if dip_rsi_cap < 100.0:
+            rsi_series = _relative_strength_index(df["close"], DIP_RSI_PERIOD)
+            dip_rsi_ok = (rsi_series <= dip_rsi_cap).fillna(False)
+        dip_require_confirm = bool(
+            dip_overlay_config.get("dip_confirm", DIP_OVERLAY_DEFAULTS["dip_confirm"])
+        )
+        if dip_require_confirm:
+            dip_confirm_ok = (df["close"] >= df["close"].shift(1)).fillna(False)
+        dip_conditions_ok = dip_trend_ok & dip_depth_ok & dip_rsi_ok & dip_confirm_ok
+        dip_cooldown_days = int(
+            dip_overlay_config.get("dip_cooldown_days", DIP_OVERLAY_DEFAULTS["dip_cooldown_days"])
+        )
 
     in_pos = False
     entry_idx: Optional[int] = None
@@ -788,6 +921,28 @@ def backtest_atr_breakout(
                 gate_probability = float(val)
 
         if not in_pos and entry_trigger is None and bool(long_signal.iloc[i]):
+            if dip_overlay_active:
+                cond_pass = True
+                if i < len(dip_conditions_ok):
+                    cond_pass = bool(dip_conditions_ok.iloc[i])
+                if not cond_pass:
+                    if raw_break_today:
+                        dip_block_conditions += 1
+                        if i < len(dip_trend_ok) and not bool(dip_trend_ok.iloc[i]):
+                            dip_block_trend += 1
+                        if dip_atr_from_high > 0.0 and i < len(dip_depth_ok) and not bool(dip_depth_ok.iloc[i]):
+                            dip_block_depth += 1
+                        if dip_rsi_cap < 100.0 and i < len(dip_rsi_ok) and not bool(dip_rsi_ok.iloc[i]):
+                            dip_block_rsi += 1
+                        if dip_require_confirm and i < len(dip_confirm_ok) and not bool(dip_confirm_ok.iloc[i]):
+                            dip_block_confirm += 1
+                    continue
+                if dip_cooldown_days > 0 and i <= dip_cooldown_until_idx:
+                    blocked_by_cooldown += 1
+                    dip_block_cooldown += 1
+                    state_tracking["blocked_by_cooldown"] = blocked_by_cooldown
+                    continue
+                dip_entries_allowed += 1
             if prob_gate_enabled and gate_probability is not None and gate_probability < prob_gate_threshold:
                 blocked_by_prob_gate += 1
                 state_tracking["blocked_by_prob_gate"] = blocked_by_prob_gate
@@ -978,6 +1133,8 @@ def backtest_atr_breakout(
             entry_signal_time = None
             entry_signal_price = None
             entry_gate_probability = None
+            if dip_overlay_active and dip_cooldown_days > 0:
+                dip_cooldown_until_idx = max(dip_cooldown_until_idx, i + dip_cooldown_days)
             entry_breakdown = {"total_cost": 0.0, "slippage_cost": 0.0, "commission_cost": 0.0, "fee_cost": 0.0,
                                "slippage_bps": 0.0, "commission_bps": 0.0, "fill_price": 0.0}
 
@@ -1270,6 +1427,18 @@ def backtest_atr_breakout(
             "blocked_by_cooldown": int(blocked_by_cooldown),
         }
     )
+    if dip_overlay_active:
+        meta["runtime_counters"].update(
+            {
+                "dip_entries_allowed": int(dip_entries_allowed),
+                "dip_blocked_conditions": int(dip_block_conditions),
+                "dip_blocked_trend": int(dip_block_trend),
+                "dip_blocked_depth": int(dip_block_depth),
+                "dip_blocked_rsi": int(dip_block_rsi),
+                "dip_blocked_confirm": int(dip_block_confirm),
+                "dip_blocked_cooldown": int(dip_block_cooldown),
+            }
+        )
 
     if prob_gate_enabled or gate_probabilities is not None:
         meta["prob_gate"] = {
@@ -1292,6 +1461,24 @@ def backtest_atr_breakout(
             int(delay_bars),
             bool(enable_costs),
         )
+
+    if dip_overlay_active:
+        dip_meta_runtime = {
+            "entries_allowed": int(dip_entries_allowed),
+            "blocked_conditions": int(dip_block_conditions),
+            "blocked_trend": int(dip_block_trend),
+            "blocked_depth": int(dip_block_depth),
+            "blocked_rsi": int(dip_block_rsi),
+            "blocked_confirm": int(dip_block_confirm),
+            "cooldown_hits": int(dip_block_cooldown),
+            "cooldown_days": int(dip_cooldown_days),
+        }
+        if dip_cooldown_until_idx >= 0:
+            dip_meta_runtime["cooldown_active_until_index"] = int(dip_cooldown_until_idx)
+        meta["dip_overlay"] = {
+            "config": dict(dip_overlay_config),
+            "runtime": dip_meta_runtime,
+        }
 
     return {
         "equity": eq_net,

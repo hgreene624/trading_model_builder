@@ -12,6 +12,8 @@ from typing import Any, Dict, Tuple
 from src.backtest.engine import ATRParams, backtest_atr_breakout, CostModel
 from src.backtest.metrics import compute_core_metrics
 
+MODEL_KEY = "atr_breakout"
+
 def _split_execution(p: Dict[str, Any] | Any) -> Tuple[Dict[str, Any] | Any, str]:
     if isinstance(p, dict):
         q = dict(p)
@@ -27,8 +29,13 @@ def run_strategy(
     params: Dict[str, Any] | ATRParams,
 ) -> Dict:
     p, exec_mode = _split_execution(params)
+    model_key = MODEL_KEY
     if isinstance(p, dict):
-        p = ATRParams(**p)
+        payload = dict(p)
+        model_key = str(payload.pop("model_key", MODEL_KEY) or MODEL_KEY)
+        p = ATRParams(**payload)
+    else:
+        model_key = getattr(p, "model_key", MODEL_KEY) if hasattr(p, "model_key") else MODEL_KEY
     enable_costs = bool(getattr(p, "enable_costs", False))
     delay_bars = int(getattr(p, "delay_bars", 0) or 0)
     commission_override = getattr(p, "commission_bps", None)
@@ -45,12 +52,15 @@ def run_strategy(
         per_trade_fee=per_trade_fee,
         enabled=enable_costs,
     )
+    params_payload = dict(p.__dict__)
+    params_payload["model_key"] = model_key
+
     return backtest_atr_breakout(
         symbol=symbol,
         start=start,
         end=end,
         starting_equity=starting_equity,
-        params=p,
+        params=params_payload,
         execution=exec_mode,
         commission_bps=float(commission_override or 0.0),
         slippage_bps=float(slippage_override or 0.0),

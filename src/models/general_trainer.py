@@ -115,6 +115,7 @@ def train_general_model(
     end_dt = _coerce_datetime(end, "end")
 
     params_for_eval = dict(base_params)
+    params_for_eval.setdefault("model_key", strategy_dotted)
     gate_enabled = bool(params_for_eval.get("prob_gate_enabled", False))
     gate_threshold = float(params_for_eval.get("prob_gate_threshold", 0.0) or 0.0)
     gate_model_id = str(params_for_eval.get("prob_model_id", "") or "")

@@ -121,7 +121,7 @@ def walk_forward(
     if progress_cb is None:
         progress_cb = _noop_progress
 
-    logger = TrainingLogger(log_file)
+    logger = TrainingLogger(log_file, tags={"model_key": strategy_dotted})
 
     if step_days is None:
         step_days = test_days

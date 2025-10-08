@@ -687,7 +687,7 @@ def evolutionary_search(
     if test_start is not None and test_end is not None:
         test_range = (test_start, test_end)
 
-    logger = TrainingLogger(log_file)
+    logger = TrainingLogger(log_file, tags={"model_key": strategy_dotted})
     population = [random_param(param_space) for _ in range(pop_size_effective)]
     scored: List[Tuple[Dict[str, Any], float]] = []
     t0 = time.time()
@@ -760,6 +760,7 @@ def evolutionary_search(
     # One-time session metadata for inspector tooling
     session_meta_payload = {
         "strategy": strategy_dotted,
+        "model_key": strategy_dotted,
         "tickers": list(tickers) if isinstance(tickers, (list, tuple)) else [str(tickers)],
         "starting_equity": float(starting_equity),
         "train_start": str(start),
