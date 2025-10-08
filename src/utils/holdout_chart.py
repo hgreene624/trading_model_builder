@@ -288,6 +288,7 @@ def holdout_equity(
     if start_dt is None or end_dt is None:
         return pd.DataFrame(columns=["date", "equity"])
 
+    base_equity = float(starting_equity or 100_000.0)
     curves: Dict[str, pd.Series] = {}
     for sym in tickers:
         try:
@@ -329,21 +330,21 @@ def holdout_equity(
         except Exception:
             continue
 
-        first_valid = None
-        for val in eq.values:
-            if pd.isna(val):
-                continue
-            try:
-                fv = float(val)
-            except (TypeError, ValueError):
-                continue
-            if abs(fv) > 1e-12:
-                first_valid = fv
-                break
-        if first_valid is None:
+        first_val = float(eq.iloc[0]) if len(eq) else 0.0
+        if abs(first_val) < 1e-12:
+            anchored = eq + base_equity
+        else:
+            anchored = eq
+
+        anchored = anchored.astype(float)
+        if anchored.empty:
             continue
 
-        curves[sym] = (eq / first_valid).astype(float)
+        start_value = float(anchored.iloc[0]) if len(anchored) else 0.0
+        if abs(start_value) < 1e-12:
+            continue
+
+        curves[sym] = (anchored / start_value).astype(float)
 
     if not curves:
         return pd.DataFrame(columns=["date", "equity"])
