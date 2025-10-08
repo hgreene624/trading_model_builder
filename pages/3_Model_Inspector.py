@@ -528,9 +528,9 @@ def _summarize_trades(trades: pd.DataFrame) -> List[Dict[str, str]]:
         return []
 
     total = len(trades)
-    returns = trades.get("return_pct", pd.Series(dtype=float)).astype(float)
-    pnl = trades.get("net_pnl", pd.Series(dtype=float)).astype(float)
-    holding_days = trades.get("holding_days", pd.Series(dtype=float)).astype(float)
+    returns = pd.to_numeric(trades.get("return_pct", pd.Series(dtype=float)), errors="coerce")
+    pnl = pd.to_numeric(trades.get("net_pnl", pd.Series(dtype=float)), errors="coerce")
+    holding_days = pd.to_numeric(trades.get("holding_days", pd.Series(dtype=float)), errors="coerce")
 
     wins = returns[returns > 0]
     losses = returns[returns < 0]
@@ -538,6 +538,9 @@ def _summarize_trades(trades: pd.DataFrame) -> List[Dict[str, str]]:
     win_count = int((returns > 0).sum())
     loss_count = int((returns < 0).sum())
     breakeven_count = total - win_count - loss_count
+
+    gross_profit = pnl[pnl > 0].sum()
+    gross_loss = pnl[pnl < 0].sum()
 
     def _fmt_pct(value: Optional[float], digits: int = 1) -> Optional[str]:
         if value is None or not math.isfinite(value):
@@ -558,12 +561,41 @@ def _summarize_trades(trades: pd.DataFrame) -> List[Dict[str, str]]:
 
     avg_hold = holding_days.mean() if not holding_days.empty else None
     total_pnl = pnl.sum() if not pnl.empty else None
+    avg_trade_pnl = pnl.mean() if not pnl.empty else None
+    profit_factor = None
+    if gross_loss is not None and gross_loss != 0:
+        profit_factor = abs(gross_profit / gross_loss)
 
     rows = [
         {
             "label": "Trades",
             "value": f"{total:,}",
             "tooltip": "Total executed trades in the selected window.",
+        },
+        {
+            "label": "Net P&L",
+            "value": _fmt_float(total_pnl, 2) or "–",
+            "tooltip": "Sum of trade-level net P&L (strategy units).",
+        },
+        {
+            "label": "Avg Trade P&L",
+            "value": _fmt_float(avg_trade_pnl, 2) or "–",
+            "tooltip": "Mean net P&L per trade (strategy units).",
+        },
+        {
+            "label": "Win Rate",
+            "value": _fmt_pct((win_count / total) if total else None, 1) or "–",
+            "tooltip": "Winning trades divided by total trades.",
+        },
+        {
+            "label": "Expectancy",
+            "value": _fmt_pct(expectancy, 2) or "–",
+            "tooltip": "Average return per trade (%%).",
+        },
+        {
+            "label": "Avg Hold (days)",
+            "value": _fmt_float(avg_hold, 2) or "–",
+            "tooltip": "Mean holding period in days.",
         },
         {
             "label": "Wins",
@@ -575,63 +607,27 @@ def _summarize_trades(trades: pd.DataFrame) -> List[Dict[str, str]]:
             "value": f"{loss_count:,}",
             "tooltip": "Count of trades with negative net return.",
         },
-    ]
-
-    win_rate = (win_count / total) if total else None
-    rows.append(
-        {
-            "label": "Win Rate",
-            "value": _fmt_pct(win_rate, 1) or "–",
-            "tooltip": "Winning trades divided by total trades.",
-        }
-    )
-
-    rows.append(
         {
             "label": "Avg Win",
             "value": _fmt_pct(avg_win, 2) or "–",
             "tooltip": "Average return (%%) on winning trades.",
-        }
-    )
-    rows.append(
+        },
         {
             "label": "Avg Loss",
             "value": _fmt_pct(avg_loss, 2) or "–",
             "tooltip": "Average return (%%) on losing trades.",
-        }
-    )
-
-    rows.append(
-        {
-            "label": "Expectancy",
-            "value": _fmt_pct(expectancy, 2) or "–",
-            "tooltip": "Average return per trade (%%).",
-        }
-    )
-
-    rows.append(
+        },
         {
             "label": "Payoff Ratio",
             "value": _fmt_float(payoff, 2) or "–",
             "tooltip": "Absolute avg win divided by absolute avg loss.",
-        }
-    )
-
-    rows.append(
+        },
         {
-            "label": "Avg Hold (days)",
-            "value": _fmt_float(avg_hold, 2) or "–",
-            "tooltip": "Mean holding period in days.",
-        }
-    )
-
-    rows.append(
-        {
-            "label": "Net P&L",
-            "value": _fmt_float(total_pnl, 2) or "–",
-            "tooltip": "Sum of trade-level net P&L (strategy units).",
-        }
-    )
+            "label": "Profit Factor",
+            "value": _fmt_float(profit_factor, 2) or "–",
+            "tooltip": "Gross profit divided by absolute gross loss.",
+        },
+    ]
 
     if breakeven_count:
         rows.append(
@@ -639,6 +635,24 @@ def _summarize_trades(trades: pd.DataFrame) -> List[Dict[str, str]]:
                 "label": "Breakeven",
                 "value": f"{breakeven_count:,}",
                 "tooltip": "Trades with near-zero return.",
+            }
+        )
+
+    if pd.notna(gross_profit) and gross_profit:
+        rows.append(
+            {
+                "label": "Gross Profit",
+                "value": _fmt_float(gross_profit, 2) or "–",
+                "tooltip": "Sum of P&L from profitable trades.",
+            }
+        )
+
+    if pd.notna(gross_loss) and gross_loss:
+        rows.append(
+            {
+                "label": "Gross Loss",
+                "value": _fmt_float(gross_loss, 2) or "–",
+                "tooltip": "Sum of P&L from losing trades.",
             }
         )
 
@@ -654,12 +668,12 @@ def _render_trade_metrics(metrics: List[Dict[str, str]]) -> None:
         value_html = html.escape(item.get("value", ""), quote=True)
         tooltip_html = html.escape(item.get("tooltip", ""), quote=True)
         chips.append(
-            """
-            <div class="ea-trade-metric-chip" title="{tooltip}">
-                <div class="ea-trade-metric-chip-label">{label}</div>
-                <div class="ea-trade-metric-chip-value">{value}</div>
-            </div>
-            """.format(label=label_html, value=value_html, tooltip=tooltip_html)
+            (
+                "<div class=\"ea-trade-metric-chip\" title=\"{tooltip}\">"
+                "<div class=\"ea-trade-metric-chip-label\">{label}</div>"
+                "<div class=\"ea-trade-metric-chip-value\">{value}</div>"
+                "</div>"
+            ).format(label=label_html, value=value_html, tooltip=tooltip_html)
         )
     st.markdown(f"<div class='ea-trade-metric-row'>{''.join(chips)}</div>", unsafe_allow_html=True)
 
