@@ -8,8 +8,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.data.cache import get_ohlcv_cached
-
 logger = logging.getLogger(__name__)
 
 try:
@@ -107,25 +105,33 @@ def _timestamp_to_iso(value: pd.Timestamp) -> str:
 
 @st.cache_data(show_spinner=False)
 def _load_price_series_cached(ticker: str, start: str, end: str) -> Optional[pd.Series]:
+    if load_price_history is None:
+        logger.debug("tri_panel price history helper unavailable", extra={"ticker": ticker})
+        return None
+    kwargs = {"timeframe": "1D"}
+    if start:
+        kwargs["start"] = start
+    if end:
+        kwargs["end"] = end
     try:
-        df = get_ohlcv_cached(ticker, start, end)
+        df = load_price_history(ticker, **kwargs)
     except Exception:
-        logger.exception("tri_panel failed to load price history", extra={"ticker": ticker})
+        logger.exception("tri_panel failed to load price history", extra={"ticker": ticker, "start": start, "end": end})
         return None
     if df is None or len(df) == 0:
         return None
     cols = {str(c).lower(): c for c in df.columns}
-    close_col = None
+    price_col = None
     for candidate in ("adj_close", "adjusted_close", "adjclose", "close"):
         if candidate in cols:
-            close_col = cols[candidate]
+            price_col = cols[candidate]
             break
-    if close_col is None:
-        close_col = "close" if "close" in df.columns else None
-    if close_col is None:
+    if price_col is None and "close" in df.columns:
+        price_col = "close"
+    if price_col is None:
         logger.debug("tri_panel no close column", extra={"columns": list(df.columns), "ticker": ticker})
         return None
-    series = df[close_col].dropna()
+    series = df[price_col].dropna()
     if series.empty:
         return None
     try:
