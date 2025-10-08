@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import html
 import math
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -50,6 +51,34 @@ st.markdown(
         margin-bottom: 0.15rem;
     }
     .ea-cost-kpi-chip-value {
+        font-size: 1.15rem;
+        font-weight: 600;
+        color: rgba(49, 51, 63, 0.95);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <style>
+    .ea-trade-metric-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.5rem; }
+    .ea-trade-metric-chip {
+        background-color: var(--secondary-background-color, #f0f2f6);
+        padding: 0.75rem 1rem;
+        border-radius: 0.75rem;
+        min-width: 160px;
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+    }
+    .ea-trade-metric-chip-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: rgba(49, 51, 63, 0.6);
+        margin-bottom: 0.15rem;
+    }
+    .ea-trade-metric-chip-value {
         font-size: 1.15rem;
         font-weight: 600;
         color: rgba(49, 51, 63, 0.95);
@@ -161,6 +190,96 @@ def _row_params(row: pd.Series) -> Dict[str, Any]:
         return json.loads(pj) if isinstance(pj, str) else {}
     except Exception:
         return {}
+
+
+def _strategy_module_name(strategy_dotted: str) -> str:
+    if not strategy_dotted:
+        return ""
+    if ":" in strategy_dotted:
+        return strategy_dotted.split(":", 1)[0]
+    return strategy_dotted
+
+
+def _import_strategy_runner(strategy_dotted: str):
+    module_name = _strategy_module_name(strategy_dotted)
+    if not module_name:
+        return None
+    try:
+        module = import_module(module_name)
+    except Exception as exc:
+        _dbg(f"trades: failed to import {module_name}: {exc}")
+        return None
+    runner = getattr(module, "run_strategy", None)
+    if runner is None:
+        _dbg(f"trades: module {module_name} missing run_strategy")
+    return runner
+
+
+def _coerce_timestamp(value: Any) -> Optional[pd.Timestamp]:
+    if value is None or value == "":
+        return None
+    try:
+        ts = pd.to_datetime(value, utc=False)
+    except Exception:
+        return None
+    if isinstance(ts, pd.Series):
+        ts = ts.iloc[0] if not ts.empty else None
+    if ts is None or pd.isna(ts):
+        return None
+    return pd.Timestamp(ts)
+
+
+@st.cache_data(show_spinner=True, hash_funcs={dict: lambda d: json.dumps(d, sort_keys=True)})
+def load_trades(
+    strategy_dotted: str,
+    tickers: List[str],
+    start_iso: str,
+    end_iso: str,
+    starting_equity: float,
+    params: Dict[str, Any],
+) -> pd.DataFrame:
+    runner = _import_strategy_runner(strategy_dotted)
+    if runner is None:
+        return pd.DataFrame()
+
+    start_ts = _coerce_timestamp(start_iso)
+    end_ts = _coerce_timestamp(end_iso)
+    if start_ts is None or end_ts is None:
+        return pd.DataFrame()
+
+    params_payload = dict(params or {})
+    params_payload.setdefault("model_key", strategy_dotted)
+
+    if isinstance(tickers, str):
+        tickers = [t.strip() for t in tickers.split(",") if t.strip()]
+    symbols = [str(t).strip().upper() for t in tickers if str(t).strip()]
+    if not symbols:
+        return pd.DataFrame()
+
+    records: List[Dict[str, Any]] = []
+
+    for sym in symbols:
+        try:
+            result = runner(sym, start_ts, end_ts, starting_equity, params_payload)
+        except Exception as exc:  # pragma: no cover - defensive UI helper
+            _dbg(f"trades: {sym} run_strategy error {type(exc).__name__}: {exc}")
+            continue
+        trades = result.get("trades") if isinstance(result, dict) else None
+        if isinstance(trades, list) and trades:
+            for trade in trades:
+                if isinstance(trade, dict):
+                    rec = dict(trade)
+                    rec["symbol"] = sym
+                    records.append(rec)
+
+    if not records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+    for col in ["entry_time", "exit_time", "signal_time", "exit_signal_time"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    return df
 
 
 def _best_row_for_gen(eval_df: pd.DataFrame, gen_idx: Optional[int]) -> Optional[pd.Series]:
@@ -402,6 +521,193 @@ def _render_cost_kpis(kpis: List[Dict[str, str]]) -> None:
             """.format(label=label_html, value=value_html, tooltip=tooltip_html)
         )
     st.markdown(f"<div class='ea-cost-kpi-row'>{''.join(chips)}</div>", unsafe_allow_html=True)
+
+
+def _summarize_trades(trades: pd.DataFrame) -> List[Dict[str, str]]:
+    if trades is None or trades.empty:
+        return []
+
+    total = len(trades)
+    returns = pd.to_numeric(trades.get("return_pct", pd.Series(dtype=float)), errors="coerce")
+    pnl = pd.to_numeric(trades.get("net_pnl", pd.Series(dtype=float)), errors="coerce")
+    holding_days = pd.to_numeric(trades.get("holding_days", pd.Series(dtype=float)), errors="coerce")
+
+    wins = returns[returns > 0]
+    losses = returns[returns < 0]
+
+    win_count = int((returns > 0).sum())
+    loss_count = int((returns < 0).sum())
+    breakeven_count = total - win_count - loss_count
+
+    gross_profit = pnl[pnl > 0].sum()
+    gross_loss = pnl[pnl < 0].sum()
+
+    def _fmt_pct(value: Optional[float], digits: int = 1) -> Optional[str]:
+        if value is None or not math.isfinite(value):
+            return None
+        return f"{value * 100.0:.{digits}f}%"
+
+    def _fmt_float(value: Optional[float], digits: int = 2) -> Optional[str]:
+        if value is None or not math.isfinite(value):
+            return None
+        return f"{value:.{digits}f}"
+
+    expectancy = returns.mean() if not returns.empty else None
+    avg_win = wins.mean() if not wins.empty else None
+    avg_loss = losses.mean() if not losses.empty else None
+    payoff = None
+    if avg_win is not None and avg_loss is not None and avg_loss != 0:
+        payoff = abs(avg_win / avg_loss)
+
+    avg_hold = holding_days.mean() if not holding_days.empty else None
+    total_pnl = pnl.sum() if not pnl.empty else None
+    avg_trade_pnl = pnl.mean() if not pnl.empty else None
+    profit_factor = None
+    if gross_loss is not None and gross_loss != 0:
+        profit_factor = abs(gross_profit / gross_loss)
+
+    rows = [
+        {
+            "label": "Trades",
+            "value": f"{total:,}",
+            "tooltip": "Total executed trades in the selected window.",
+        },
+        {
+            "label": "Net P&L",
+            "value": _fmt_float(total_pnl, 2) or "–",
+            "tooltip": "Sum of trade-level net P&L (strategy units).",
+        },
+        {
+            "label": "Avg Trade P&L",
+            "value": _fmt_float(avg_trade_pnl, 2) or "–",
+            "tooltip": "Mean net P&L per trade (strategy units).",
+        },
+        {
+            "label": "Win Rate",
+            "value": _fmt_pct((win_count / total) if total else None, 1) or "–",
+            "tooltip": "Winning trades divided by total trades.",
+        },
+        {
+            "label": "Expectancy",
+            "value": _fmt_pct(expectancy, 2) or "–",
+            "tooltip": "Average return per trade (%%).",
+        },
+        {
+            "label": "Avg Hold (days)",
+            "value": _fmt_float(avg_hold, 2) or "–",
+            "tooltip": "Mean holding period in days.",
+        },
+        {
+            "label": "Wins",
+            "value": f"{win_count:,}",
+            "tooltip": "Count of trades with positive net return.",
+        },
+        {
+            "label": "Losses",
+            "value": f"{loss_count:,}",
+            "tooltip": "Count of trades with negative net return.",
+        },
+        {
+            "label": "Avg Win",
+            "value": _fmt_pct(avg_win, 2) or "–",
+            "tooltip": "Average return (%%) on winning trades.",
+        },
+        {
+            "label": "Avg Loss",
+            "value": _fmt_pct(avg_loss, 2) or "–",
+            "tooltip": "Average return (%%) on losing trades.",
+        },
+        {
+            "label": "Payoff Ratio",
+            "value": _fmt_float(payoff, 2) or "–",
+            "tooltip": "Absolute avg win divided by absolute avg loss.",
+        },
+        {
+            "label": "Profit Factor",
+            "value": _fmt_float(profit_factor, 2) or "–",
+            "tooltip": "Gross profit divided by absolute gross loss.",
+        },
+    ]
+
+    if breakeven_count:
+        rows.append(
+            {
+                "label": "Breakeven",
+                "value": f"{breakeven_count:,}",
+                "tooltip": "Trades with near-zero return.",
+            }
+        )
+
+    if pd.notna(gross_profit) and gross_profit:
+        rows.append(
+            {
+                "label": "Gross Profit",
+                "value": _fmt_float(gross_profit, 2) or "–",
+                "tooltip": "Sum of P&L from profitable trades.",
+            }
+        )
+
+    if pd.notna(gross_loss) and gross_loss:
+        rows.append(
+            {
+                "label": "Gross Loss",
+                "value": _fmt_float(gross_loss, 2) or "–",
+                "tooltip": "Sum of P&L from losing trades.",
+            }
+        )
+
+    return rows
+
+
+def _render_trade_metrics(metrics: List[Dict[str, str]]) -> None:
+    if not metrics:
+        return
+    chips: List[str] = []
+    for item in metrics:
+        label_html = html.escape(item.get("label", ""), quote=True)
+        value_html = html.escape(item.get("value", ""), quote=True)
+        tooltip_html = html.escape(item.get("tooltip", ""), quote=True)
+        chips.append(
+            (
+                "<div class=\"ea-trade-metric-chip\" title=\"{tooltip}\">"
+                "<div class=\"ea-trade-metric-chip-label\">{label}</div>"
+                "<div class=\"ea-trade-metric-chip-value\">{value}</div>"
+                "</div>"
+            ).format(label=label_html, value=value_html, tooltip=tooltip_html)
+        )
+    st.markdown(f"<div class='ea-trade-metric-row'>{''.join(chips)}</div>", unsafe_allow_html=True)
+
+
+def _prepare_trade_table(trades: pd.DataFrame) -> pd.DataFrame:
+    if trades is None or trades.empty:
+        return pd.DataFrame()
+
+    df = trades.copy()
+    df = df.sort_values(by=[col for col in ["entry_time", "exit_time"] if col in df.columns])
+
+    def _col(name: str, default=None):
+        return df[name] if name in df.columns else pd.Series([default] * len(df))
+
+    table = pd.DataFrame(
+        {
+            "Window": _col("window"),
+            "Symbol": _col("symbol"),
+            "Side": _col("side"),
+            "Entry": _col("entry_time"),
+            "Exit": _col("exit_time"),
+            "Holding Days": _col("holding_days").astype(float),
+            "Entry Price": _col("entry_price").astype(float),
+            "Exit Price": _col("exit_price").astype(float),
+            "Net P&L": _col("net_pnl").astype(float),
+            "Return %": _col("return_pct").astype(float) * 100.0,
+        }
+    )
+
+    for col in ["Entry", "Exit"]:
+        if col in table.columns:
+            table[col] = pd.to_datetime(table[col], errors="coerce")
+
+    return table
 
 
 def _render_metric_dashboard(best_row: Optional[pd.Series]) -> None:
@@ -797,6 +1103,151 @@ def main():
         st.stop()
     if not test_start or not test_end:
         st.info("Tip: set a test window to visualize out-of-sample performance (e.g., next 60–90 days).")
+
+    st.markdown("### Individual Trade Review")
+    gen_slice = eval_df[eval_df["gen"] == current_gen].copy() if current_gen is not None else pd.DataFrame()
+    if gen_slice.empty:
+        st.info("No individuals recorded for this generation in the EA log.")
+    else:
+        gen_slice = gen_slice.sort_values(by=["score", "total_return"], ascending=[False, False])
+        option_records: List[Dict[str, Any]] = []
+        for df_idx, row in gen_slice.iterrows():
+            trades_cnt = int(row.get("trades", 0) or 0)
+            score_val = float(row.get("score", 0.0) or 0.0)
+            if not math.isfinite(score_val):
+                score_val = 0.0
+            ret_val = float(row.get("total_return", 0.0) or 0.0)
+            if not math.isfinite(ret_val):
+                ret_val = 0.0
+            individual_id = int(row.get("idx", df_idx) or 0)
+            label = (
+                f"Idx {individual_id} • score {score_val:.3f} • ret {ret_val:.3f} • trades {trades_cnt}"
+            )
+            option_records.append(
+                {
+                    "label": label,
+                    "df_index": df_idx,
+                    "individual_id": individual_id,
+                }
+            )
+
+        search_query = st.text_input(
+            "Search individual by ID",
+            value="",
+            key="ea_trade_individual_search",
+            placeholder="e.g., 12 for Idx 12",
+        ).strip()
+
+        filtered_records = option_records
+        if search_query:
+            lowered = search_query.lower()
+            filtered_records = [rec for rec in option_records if lowered in rec["label"].lower()]
+            if lowered.isdigit():
+                target_id = int(lowered)
+                id_matches = [rec for rec in option_records if rec["individual_id"] == target_id]
+                if id_matches:
+                    filtered_records = id_matches
+
+        if not filtered_records:
+            st.info("No individuals matched that search. Showing all entries.")
+            filtered_records = option_records
+
+        option_labels = [rec["label"] for rec in filtered_records]
+        default_index = 0
+        selected_label = st.selectbox(
+            "Individual (current generation)",
+            options=option_labels,
+            index=min(default_index, max(len(option_labels) - 1, 0)),
+            key="ea_trade_individual",
+        )
+        selected_idx = next(
+            (rec["df_index"] for rec in filtered_records if rec["label"] == selected_label),
+            None,
+        )
+        selected_row = gen_slice.loc[selected_idx] if selected_idx is not None else None
+
+        if selected_row is None:
+            st.warning("Select an individual to review their trades.")
+        else:
+            params = _row_params(selected_row)
+            if not params:
+                st.warning("Parameters missing for this individual; cannot regenerate trades.")
+            else:
+                train_trades = load_trades(
+                    strategy,
+                    tickers,
+                    train_start,
+                    train_end,
+                    starting_equity,
+                    params,
+                )
+
+                train_curve = run_equity_curve(
+                    strategy,
+                    tickers,
+                    train_start,
+                    train_end,
+                    starting_equity,
+                    params,
+                )
+                if not train_curve.empty and "equity" in train_curve:
+                    end_equity = float(train_curve["equity"].iloc[-1])
+                else:
+                    end_equity = float(starting_equity)
+
+                test_trades = pd.DataFrame()
+                if test_start and test_end:
+                    test_trades = load_trades(
+                        strategy,
+                        tickers,
+                        test_start,
+                        test_end,
+                        end_equity,
+                        params,
+                    )
+
+                window_frames: Dict[str, pd.DataFrame] = {}
+                if not train_trades.empty:
+                    window_frames["Train"] = train_trades.assign(window="Train")
+                if not test_trades.empty:
+                    window_frames["Test"] = test_trades.assign(window="Test")
+                if len(window_frames) > 1:
+                    combined = pd.concat(window_frames.values(), ignore_index=True)
+                    sort_cols = [col for col in ["entry_time", "exit_time"] if col in combined.columns]
+                    if sort_cols:
+                        combined = combined.sort_values(by=sort_cols)
+                    window_frames["Combined"] = combined
+
+                if not window_frames:
+                    st.info("No trades were generated for the selected individual and windows.")
+                else:
+                    view_label = st.radio(
+                        "Data window",
+                        list(window_frames.keys()),
+                        index=0,
+                        horizontal=True,
+                        key="ea_trade_window",
+                    )
+                    trades_df = window_frames.get(view_label, pd.DataFrame())
+                    metrics = _summarize_trades(trades_df)
+                    _render_trade_metrics(metrics)
+
+                    table = _prepare_trade_table(trades_df)
+                    if table.empty:
+                        st.info("Trades could not be formatted for display.")
+                    else:
+                        st.dataframe(
+                            table,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Holding Days": st.column_config.NumberColumn("Holding Days", format="%.2f"),
+                                "Entry Price": st.column_config.NumberColumn("Entry Price", format="%.2f"),
+                                "Exit Price": st.column_config.NumberColumn("Exit Price", format="%.2f"),
+                                "Net P&L": st.column_config.NumberColumn("Net P&L", format="%.2f"),
+                                "Return %": st.column_config.NumberColumn("Return %", format="%.2f%%"),
+                            },
+                        )
 
     # ---- Chart 1: top-K of current generation (by return) ----
     st.subheader("Chart 1 — Top-K of current generation (by final return)")
