@@ -20,6 +20,7 @@ New in this revision:
 from __future__ import annotations
 import random
 import time
+import math
 import importlib
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Tuple, Optional, Literal
@@ -587,6 +588,25 @@ def _eval_one(
     res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
     metrics = res.get("aggregate", {}).get("metrics", {}) or {}
 
+    # Use the train result to determine the capital that flows into the holdout
+    # window. Without this adjustment the holdout simulator restarts from the
+    # original starting equity, overstating returns for strategies that lost
+    # money during training.
+    try:
+        starting_equity_value = float(starting_equity)
+    except Exception:
+        starting_equity_value = 0.0
+
+    holdout_starting_equity = starting_equity_value
+    try:
+        train_total_return = float(metrics.get("total_return", 0.0) or 0.0)
+        holdout_starting_equity = starting_equity_value * (1.0 + train_total_return)
+    except Exception:
+        holdout_starting_equity = starting_equity_value
+
+    if not math.isfinite(holdout_starting_equity) or holdout_starting_equity <= 0.0:
+        holdout_starting_equity = starting_equity_value if starting_equity_value > 0.0 else 1.0
+
     test_metrics: Optional[Dict[str, Any]] = None
     test_error: Optional[str] = None
     if test_range and test_range[0] is not None and test_range[1] is not None:
@@ -597,7 +617,7 @@ def _eval_one(
                 tickers,
                 test_start,
                 test_end,
-                starting_equity,
+                holdout_starting_equity,
                 params,
             )
             test_metrics = test_res.get("aggregate", {}).get("metrics", {}) or {}
