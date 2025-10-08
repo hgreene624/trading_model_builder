@@ -122,6 +122,9 @@ def _env_float(name: str, default: float = 0.0) -> float:
 
 # ---------- Logging ----------
 
+from src.utils.logging_setup import SafeRotatingFileHandler
+
+
 logger = logging.getLogger("backtest.engine")
 _ENGINE_LOGGER_CONFIGURED = False
 
@@ -143,7 +146,7 @@ def _ensure_engine_logger() -> None:
             root_logger = logging.getLogger()
             has_rotating = any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers)
         if not has_rotating:
-            handler = RotatingFileHandler(
+            handler = SafeRotatingFileHandler(
                 os.path.join(log_dir, "engine.log"), maxBytes=5 * 1024 * 1024, backupCount=3
             )
             handler.setLevel(log_level)
@@ -391,6 +394,15 @@ class ATRParams:
     prob_gate_enabled: bool = False   # probability gate toggle (calibrated LR)
     prob_gate_threshold: float = 0.0  # minimum probability to allow entry
     prob_model_id: str = ""           # identifier for stored calibrated model
+    vol_target_enabled: bool = False  # enable ATR-based volatility targeting for position sizing
+    vol_target_target_pct: float = 0.02  # desired ATR % of price to target (e.g., 2% daily move)
+    vol_target_atr_window: int = 14   # ATR window to use for volatility targeting (0 -> use atr_n)
+    vol_target_min_leverage: float = 0.0  # floor on capital allocation multiple when targeting vol
+    vol_target_max_leverage: float = 1.0  # cap on capital allocation multiple when targeting vol
+    trend_filter_ma: int = 0          # optional MA window; price must be above MA to allow longs
+    trend_filter_slope_lookback: int = 0  # lookback for MA slope constraint (bars)
+    trend_filter_slope_threshold: float = 0.0  # minimum slope per bar (in pct terms) to stay long
+    trend_filter_exit: bool = False   # if True, exit positions when filter fails
 
 # Defaults for optional dip overlay when strategies request it via extra_params.
 DIP_OVERLAY_DEFAULTS: Dict[str, Any] = {
@@ -655,6 +667,66 @@ def backtest_atr_breakout(
     elif prob_gate_enabled:
         prob_gate_enabled = False
     atr = wilder_atr(df["high"], df["low"], df["close"], n=params.atr_n)
+    vol_target_enabled = bool(getattr(params, "vol_target_enabled", False))
+    vol_target_target_pct = max(0.0, _coerce_float(getattr(params, "vol_target_target_pct", 0.0), 0.0))
+    vol_target_min_leverage = max(
+        0.0, _coerce_float(getattr(params, "vol_target_min_leverage", 0.0), 0.0)
+    )
+    vol_target_max_leverage = max(
+        vol_target_min_leverage,
+        _coerce_float(getattr(params, "vol_target_max_leverage", 1.0), 1.0),
+    )
+    vol_target_atr_window = int(
+        max(1, _coerce_float(getattr(params, "vol_target_atr_window", params.atr_n), params.atr_n))
+    )
+    vol_target_active = vol_target_enabled and vol_target_target_pct > 0.0
+    if vol_target_active:
+        if vol_target_atr_window != params.atr_n:
+            vol_target_atr = wilder_atr(
+                df["high"], df["low"], df["close"], n=vol_target_atr_window
+            )
+        else:
+            vol_target_atr = atr.copy()
+        atr_pct = (vol_target_atr / df["close"]).replace([np.inf, -np.inf], np.nan)
+        ratio = vol_target_target_pct / atr_pct
+        ratio = ratio.replace([np.inf, -np.inf], np.nan)
+        ratio = ratio.clip(lower=vol_target_min_leverage, upper=vol_target_max_leverage)
+        default_scale = vol_target_max_leverage if vol_target_max_leverage > 0 else 0.0
+        vol_target_scale_series = ratio.fillna(default_scale)
+        vol_target_scale_series = vol_target_scale_series.reindex(df.index).fillna(default_scale)
+        vol_target_scale_series = vol_target_scale_series.astype(float)
+        vol_target_atr_pct = atr_pct.reindex(df.index).fillna(0.0).astype(float)
+    else:
+        vol_target_scale_series = pd.Series(1.0, index=df.index, dtype=float)
+        vol_target_atr_pct = pd.Series(0.0, index=df.index, dtype=float)
+    trend_filter_ma = int(max(0, _coerce_float(getattr(params, "trend_filter_ma", 0), 0.0)))
+    trend_filter_slope_lookback = int(
+        max(0, _coerce_float(getattr(params, "trend_filter_slope_lookback", 0), 0.0))
+    )
+    trend_filter_slope_threshold = _coerce_float(
+        getattr(params, "trend_filter_slope_threshold", 0.0), 0.0
+    )
+    trend_filter_exit = bool(getattr(params, "trend_filter_exit", False))
+    trend_filter_enabled = (trend_filter_ma > 1) or (trend_filter_slope_lookback > 0)
+    trend_filter_price_ok = pd.Series(True, index=df.index, dtype=bool)
+    trend_filter_slope_ok = pd.Series(True, index=df.index, dtype=bool)
+    trend_filter_ok = pd.Series(True, index=df.index, dtype=bool)
+    slope_basis = df["close"].copy()
+    if trend_filter_ma > 1:
+        trend_ma_series = df["close"].rolling(window=trend_filter_ma, min_periods=trend_filter_ma).mean()
+        trend_filter_price_ok = (df["close"] >= trend_ma_series).fillna(False)
+        slope_basis = trend_ma_series
+    if trend_filter_enabled and trend_filter_slope_lookback > 0:
+        shifted = slope_basis.shift(trend_filter_slope_lookback)
+        slope_pct = (slope_basis / shifted) - 1.0
+        if trend_filter_slope_lookback > 0:
+            slope_pct = slope_pct / trend_filter_slope_lookback
+        slope_pct = slope_pct.replace([np.inf, -np.inf], np.nan)
+        trend_filter_slope_ok = (slope_pct >= trend_filter_slope_threshold).fillna(False)
+    if trend_filter_enabled:
+        trend_filter_ok = (trend_filter_price_ok & trend_filter_slope_ok).fillna(False)
+    else:
+        trend_filter_ok = pd.Series(True, index=df.index, dtype=bool)
     roll_high = df["close"].rolling(params.breakout_n).max()
     roll_low = df["close"].rolling(params.exit_n).min()
     prior_high = roll_high.shift(1)
@@ -748,6 +820,7 @@ def backtest_atr_breakout(
     entry_breakdown: Dict[str, float] = {"total_cost": 0.0, "slippage_cost": 0.0, "commission_cost": 0.0, "fee_cost": 0.0,
                                          "slippage_bps": 0.0, "commission_bps": 0.0, "fill_price": 0.0}
     entry_notional = 0.0
+    entry_volatility_scale = 1.0
 
     cash_gross = float(starting_equity)
     cash_net = float(starting_equity)
@@ -778,6 +851,8 @@ def backtest_atr_breakout(
         "blocked_by_prob_gate": 0,
         "blocked_by_min_hold": 0,
         "blocked_by_cooldown": 0,
+        "blocked_by_trend_filter": 0,
+        "blocked_by_volatility": 0,
     }
     entry_count = 0
     exit_count = 0
@@ -786,6 +861,8 @@ def backtest_atr_breakout(
     blocked_by_prob_gate = 0
     blocked_by_min_hold = 0
     blocked_by_cooldown = 0
+    blocked_by_trend_filter = 0
+    blocked_by_volatility = 0
 
     log_per_trade = logger.isEnabledFor(logging.DEBUG) and _env_flag("LOG_TRADES", False)
     try:
@@ -876,7 +953,13 @@ def backtest_atr_breakout(
         if in_pos and exit_trigger is None:
             exit_reason = None
             exit_px = None
-            if price_close < roll_low.iloc[i]:
+            if trend_filter_enabled and trend_filter_exit:
+                trend_pass_today = True
+                if i < len(trend_filter_ok):
+                    trend_pass_today = bool(trend_filter_ok.iloc[i])
+                if not trend_pass_today:
+                    exit_reason = "trend_filter"
+            if exit_reason is None and price_close < roll_low.iloc[i]:
                 exit_reason = "roll_low"
             if exit_reason is None and params.tp_multiple > 0 and entry_idx is not None:
                 atr_at_entry = atr.iloc[entry_idx]
@@ -949,6 +1032,22 @@ def backtest_atr_breakout(
                 entry_allowed = False
                 blocked_by_prob_gate += 1
                 state_tracking["blocked_by_prob_gate"] = blocked_by_prob_gate
+            if entry_allowed and trend_filter_enabled:
+                trend_pass = True
+                if i < len(trend_filter_ok):
+                    trend_pass = bool(trend_filter_ok.iloc[i])
+                if not trend_pass:
+                    entry_allowed = False
+                    blocked_by_trend_filter += 1
+                    state_tracking["blocked_by_trend_filter"] = blocked_by_trend_filter
+            if entry_allowed and vol_target_active:
+                vol_scale_today = 0.0
+                if i < len(vol_target_scale_series):
+                    vol_scale_today = float(vol_target_scale_series.iloc[i])
+                if vol_scale_today <= 0.0:
+                    entry_allowed = False
+                    blocked_by_volatility += 1
+                    state_tracking["blocked_by_volatility"] = blocked_by_volatility
             if entry_allowed:
                 trigger = {
                     "signal_idx": i,
@@ -1039,6 +1138,19 @@ def backtest_atr_breakout(
                     + abs(exit_breakdown.get("commission_bps", 0.0)) * abs(notional_exit)
                 ) / combined_notional
 
+            entry_atr_pct = 0.0
+            if vol_target_active and entry_idx is not None and entry_idx < len(vol_target_atr_pct):
+                try:
+                    entry_atr_pct = float(vol_target_atr_pct.iloc[entry_idx])
+                except Exception:
+                    entry_atr_pct = 0.0
+            trend_filter_entry_pass = True
+            if trend_filter_enabled and entry_idx is not None and entry_idx < len(trend_filter_ok):
+                try:
+                    trend_filter_entry_pass = bool(trend_filter_ok.iloc[entry_idx])
+                except Exception:
+                    trend_filter_entry_pass = True
+
             trade_record = {
                 "entry_time": entry_time,
                 "exit_time": ts,
@@ -1093,6 +1205,10 @@ def backtest_atr_breakout(
                 "price_after": entry_price_after,
                 "slip_bps": float(slip_bps_weighted),
                 "fees_bps": float(fee_bps_weighted),
+                "volatility_scale": float(entry_volatility_scale),
+                "entry_atr_pct": float(entry_atr_pct),
+                "trend_filter_active": bool(trend_filter_enabled),
+                "trend_filter_pass": bool(trend_filter_entry_pass),
                 "prob_gate_probability": float(entry_gate_probability)
                 if entry_gate_probability is not None
                 else None,
@@ -1124,6 +1240,8 @@ def backtest_atr_breakout(
                         "persistence": blocked_by_persistence,
                         "min_hold": blocked_by_min_hold,
                         "cooldown": blocked_by_cooldown,
+                        "trend": blocked_by_trend_filter,
+                        "volatility": blocked_by_volatility,
                     },
                 )
 
@@ -1140,6 +1258,7 @@ def backtest_atr_breakout(
                 dip_cooldown_until_idx = max(dip_cooldown_until_idx, i + dip_cooldown_days)
             entry_breakdown = {"total_cost": 0.0, "slippage_cost": 0.0, "commission_cost": 0.0, "fee_cost": 0.0,
                                "slippage_bps": 0.0, "commission_bps": 0.0, "fill_price": 0.0}
+            entry_volatility_scale = 1.0
 
         if entry_trigger is not None and not in_pos:
             base_price = entry_trigger.get("override_price")
@@ -1149,15 +1268,28 @@ def backtest_atr_breakout(
                 else:
                     base_price = price_close if exec_fill_where == "close" else price_open
             entry_price = _safe_price(base_price, price_close)
-            if entry_price > 0 and cash_gross > 0:
-                qty = cash_gross / entry_price
-                position_qty = float(qty)
-                entry_idx = i
-                entry_time = ts
-                entry_decision_price = float(entry_price)
-                entry_notional = entry_decision_price * position_qty
-                cash_gross -= entry_notional
-                cash_net -= entry_notional
+            executed_entry = False
+            entry_volatility_candidate = 1.0
+            if entry_price > 0 and cash_gross != 0:
+                target_notional = cash_gross
+                if vol_target_active and i < len(vol_target_scale_series):
+                    entry_volatility_candidate = float(vol_target_scale_series.iloc[i])
+                    if entry_volatility_candidate < 0.0:
+                        entry_volatility_candidate = 0.0
+                    target_notional = cash_gross * entry_volatility_candidate
+                if target_notional > 0.0:
+                    qty = target_notional / entry_price
+                    if qty > 0:
+                        position_qty = float(qty)
+                        entry_idx = i
+                        entry_time = ts
+                        entry_decision_price = float(entry_price)
+                        entry_notional = entry_decision_price * position_qty
+                        cash_gross -= entry_notional
+                        cash_net -= entry_notional
+                        entry_volatility_scale = entry_volatility_candidate
+                        executed_entry = True
+            if executed_entry:
                 entry_breakdown = cost_model.compute_fill("long", "entry", entry_decision_price, position_qty)
                 if phase0_cost_model.enabled:
                     entry_fill_price, entry_slip_bps, entry_fee_bps = _apply_costs(
@@ -1218,6 +1350,8 @@ def backtest_atr_breakout(
                             "persistence": blocked_by_persistence,
                             "min_hold": blocked_by_min_hold,
                             "cooldown": blocked_by_cooldown,
+                            "trend": blocked_by_trend_filter,
+                            "volatility": blocked_by_volatility,
                         },
                     )
 
@@ -1247,6 +1381,8 @@ def backtest_atr_breakout(
         "notional_exit",
         "entry_per_trade_fee_bps",
         "exit_per_trade_fee_bps",
+        "volatility_scale",
+        "entry_atr_pct",
     ]
     for col in required_float_cols:
         if col not in trades_df.columns:
