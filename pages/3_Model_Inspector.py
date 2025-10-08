@@ -1412,6 +1412,7 @@ def main():
         test_start=test_start,
         test_end=test_end,
         strategy_label=_best_individual_label(best_row),
+        portfolio_tickers=tickers,
     )
 
     # Debug trace from the equity provider
