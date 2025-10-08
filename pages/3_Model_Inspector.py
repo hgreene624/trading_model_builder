@@ -301,6 +301,81 @@ def _best_row_for_gen(eval_df: pd.DataFrame, gen_idx: Optional[int]) -> Optional
         return None
 
 
+def _coerce_individual_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate or None
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        rounded = round(value)
+        if abs(value - rounded) < 1e-9:
+            return str(int(rounded))
+        return str(value)
+    text = str(value).strip()
+    return text or None
+
+
+def _best_individual_label(best_row: Optional[pd.Series]) -> Optional[str]:
+    if best_row is None:
+        return None
+
+    gen_label: Optional[str] = None
+    if "gen" in best_row:
+        try:
+            gen_label = f"Gen {int(best_row.get('gen'))}"
+        except Exception:
+            gen_label = None
+
+    individual_fragment: Optional[str] = None
+    for key in ("idx", "individual_id", "id"):
+        if key in best_row:
+            label_value = _coerce_individual_id(best_row.get(key))
+            if not label_value:
+                continue
+            if key == "idx":
+                individual_fragment = f"idx{label_value}"
+            elif key == "individual_id":
+                individual_fragment = f"id{label_value}"
+            else:
+                individual_fragment = f"#{label_value}"
+            break
+
+    return_value: Optional[float] = None
+    for key in ("total_return", "final_return", "return", "net_return"):
+        if key in best_row:
+            try:
+                cand = float(best_row.get(key))
+            except Exception:
+                continue
+            if math.isfinite(cand):
+                return_value = cand
+                break
+
+    parts: List[str] = []
+    if gen_label:
+        parts.append(gen_label)
+    if individual_fragment:
+        parts.append(individual_fragment)
+
+    if not parts:
+        return None
+
+    label = " - ".join(parts)
+    if return_value is not None:
+        label = f"{label} (ret {return_value:.3f})"
+    return label
+
+
 def _first_float(row: pd.Series, keys: List[str]) -> Optional[float]:
     for key in keys:
         if key in row:
@@ -943,8 +1018,29 @@ def _plot_leaders_through_gen(
         end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
         ec_test = run_equity_curve(strategy, tickers, test_start, test_end, end_equity, params)
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
-        name = f"Gen {g} (ret {row['total_return']:.3f})"
-        fig.add_trace(go.Scatter(x=ec["date"], y=ec["equity"], mode="lines", name=name, line=dict(width=1)))
+        legend_label = _best_individual_label(row)
+        if not legend_label:
+            base = f"Gen {g}"
+            idx_label = _coerce_individual_id(row.get("idx")) if "idx" in row else None
+            if idx_label:
+                base = f"{base} - idx{idx_label}"
+            try:
+                ret_value = float(row.get("total_return"))
+            except Exception:
+                ret_value = math.nan
+            if math.isfinite(ret_value):
+                legend_label = f"{base} (ret {ret_value:.3f})"
+            else:
+                legend_label = base
+        fig.add_trace(
+            go.Scatter(
+                x=ec["date"],
+                y=ec["equity"],
+                mode="lines",
+                name=legend_label,
+                line=dict(width=1),
+            )
+        )
 
     # all-flat annotation
     if len(fig.data) > 0:
@@ -1315,6 +1411,7 @@ def main():
         tri_curve,
         test_start=test_start,
         test_end=test_end,
+        strategy_label=_best_individual_label(best_row),
         portfolio_tickers=tickers,
     )
 
