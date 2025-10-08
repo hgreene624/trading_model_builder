@@ -328,12 +328,52 @@ def _coerce_individual_id(value: Any) -> Optional[str]:
 def _best_individual_label(best_row: Optional[pd.Series]) -> Optional[str]:
     if best_row is None:
         return None
-    for key in ("individual_id", "idx", "id"):
+
+    gen_label: Optional[str] = None
+    if "gen" in best_row:
+        try:
+            gen_label = f"Gen {int(best_row.get('gen'))}"
+        except Exception:
+            gen_label = None
+
+    individual_fragment: Optional[str] = None
+    for key in ("idx", "individual_id", "id"):
         if key in best_row:
             label_value = _coerce_individual_id(best_row.get(key))
-            if label_value:
-                return f"Best Individual #{label_value}"
-    return None
+            if not label_value:
+                continue
+            if key == "idx":
+                individual_fragment = f"idx{label_value}"
+            elif key == "individual_id":
+                individual_fragment = f"id{label_value}"
+            else:
+                individual_fragment = f"#{label_value}"
+            break
+
+    return_value: Optional[float] = None
+    for key in ("total_return", "final_return", "return", "net_return"):
+        if key in best_row:
+            try:
+                cand = float(best_row.get(key))
+            except Exception:
+                continue
+            if math.isfinite(cand):
+                return_value = cand
+                break
+
+    parts: List[str] = []
+    if gen_label:
+        parts.append(gen_label)
+    if individual_fragment:
+        parts.append(individual_fragment)
+
+    if not parts:
+        return None
+
+    label = " - ".join(parts)
+    if return_value is not None:
+        label = f"{label} (ret {return_value:.3f})"
+    return label
 
 
 def _first_float(row: pd.Series, keys: List[str]) -> Optional[float]:
