@@ -301,6 +301,41 @@ def _best_row_for_gen(eval_df: pd.DataFrame, gen_idx: Optional[int]) -> Optional
         return None
 
 
+def _coerce_individual_id(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate or None
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        rounded = round(value)
+        if abs(value - rounded) < 1e-9:
+            return str(int(rounded))
+        return str(value)
+    text = str(value).strip()
+    return text or None
+
+
+def _best_individual_label(best_row: Optional[pd.Series]) -> Optional[str]:
+    if best_row is None:
+        return None
+    for key in ("individual_id", "idx", "id"):
+        if key in best_row:
+            label_value = _coerce_individual_id(best_row.get(key))
+            if label_value:
+                return f"Best Individual #{label_value}"
+    return None
+
+
 def _first_float(row: pd.Series, keys: List[str]) -> Optional[float]:
     for key in keys:
         if key in row:
@@ -1315,6 +1350,7 @@ def main():
         tri_curve,
         test_start=test_start,
         test_end=test_end,
+        strategy_label=_best_individual_label(best_row),
     )
 
     # Debug trace from the equity provider

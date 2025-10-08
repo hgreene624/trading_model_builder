@@ -294,6 +294,7 @@ def render_tri_panel(
     test_start: "pd.Timestamp | str | None" = None,
     test_end: "pd.Timestamp | str | None" = None,
     show_test_toggle: bool = True,
+    strategy_label: Optional[str] = None,
 ) -> None:
     st.markdown(f"#### {title}")
     strategy_norm = _normalize_curve(strategy_curve)
@@ -309,8 +310,9 @@ def render_tri_panel(
         logger.warning("tri_panel SPY normalization failed")
         st.warning("SPY TRI data unavailable (loader missing or returned no data).")
         return
+    strategy_name = strategy_label or "Strategy"
     combined = pd.concat(
-        [strategy_norm.rename("Strategy"), spy_norm.rename("SPY (TRI)")],
+        [strategy_norm.rename(strategy_name), spy_norm.rename("SPY (TRI)")],
         axis=1,
         join="inner",
     ).dropna()
@@ -368,7 +370,7 @@ def render_tri_panel(
                 st.info("Test window start values must be positive; displaying full history.")
             else:
                 combined_view = test_view.divide(first_row)
-    strategy_aligned = combined_view["Strategy"]
+    strategy_aligned = combined_view[strategy_name]
     spy_aligned = combined_view["SPY (TRI)"]
     excess_index = strategy_aligned / spy_aligned
     if not excess_index.empty:
@@ -381,8 +383,8 @@ def render_tri_panel(
     metrics = pd.DataFrame(
         {
             "Metric": [
-                "Strategy CAGR",
-                "Strategy MaxDD",
+                f"{strategy_name} CAGR",
+                f"{strategy_name} MaxDD",
                 "SPY (TRI) CAGR",
                 "SPY (TRI) MaxDD",
                 "Tracking Error (annualized)",
@@ -401,7 +403,7 @@ def render_tri_panel(
 
     fig = go.Figure()
     for column, color in (
-        ("Strategy", "#1f77b4"),
+        (strategy_name, "#1f77b4"),
         ("SPY (TRI)", "#ff7f0e"),
         ("Excess Index", "#2ca02c"),
     ):
