@@ -64,6 +64,82 @@ BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
     },
 }
 
+BASE_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
+    "breakout_n": (5, 300),
+    "exit_n": (4, 300),
+    "atr_n": (5, 60),
+    "atr_multiple": (0.5, 10.0),
+    "tp_multiple": (0.2, 10.0),
+    "holding_period_limit": (1, 400),
+    "risk_per_trade": (0.0005, 0.05),
+    "sma_fast": (5, 100),
+    "sma_slow": (10, 200),
+    "sma_long": (100, 400),
+    "long_slope_len": (5, 60),
+    "cost_bps": (0.0, 20.0),
+}
+
+DIP_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
+    "dip_atr_from_high": (0.0, 20.0),
+    "dip_lookback_high": (5, 600),
+    "dip_cooldown_days": (0, 240),
+    "dip_rsi_max": (0.0, 100.0),
+    "trend_ma": (20, 600),
+}
+
+EA_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
+    "pop_size": (8, 400),
+    "generations": (1, 300),
+    "tournament_k": (2, 400),
+    "fitness_patience": (0, 100),
+    "min_trades": (0, 500),
+    "breakout_n_min": (1, 400),
+    "breakout_n_max": (1, 400),
+    "exit_n_min": (1, 400),
+    "exit_n_max": (1, 400),
+    "atr_n_min": (1, 200),
+    "atr_n_max": (1, 200),
+    "atr_multiple_min": (0.1, 20.0),
+    "atr_multiple_max": (0.1, 20.0),
+    "tp_multiple_min": (0.1, 20.0),
+    "tp_multiple_max": (0.1, 20.0),
+    "hold_min": (1, 600),
+    "hold_max": (1, 600),
+}
+
+EA_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
+    ("breakout_n_min", "breakout_n_max"),
+    ("exit_n_min", "exit_n_max"),
+    ("atr_n_min", "atr_n_max"),
+    ("atr_multiple_min", "atr_multiple_max"),
+    ("tp_multiple_min", "tp_multiple_max"),
+    ("hold_min", "hold_max"),
+]
+
+EA_DIP_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
+    "trend_ma_min": (20, 600),
+    "trend_ma_max": (20, 600),
+    "dip_lookback_high_min": (5, 600),
+    "dip_lookback_high_max": (5, 600),
+    "dip_atr_from_high_min": (0.0, 20.0),
+    "dip_atr_from_high_max": (0.0, 20.0),
+    "dip_rsi_max_min": (0.0, 100.0),
+    "dip_rsi_max_max": (0.0, 100.0),
+    "dip_confirm_min": (0, 1),
+    "dip_confirm_max": (0, 1),
+    "dip_cooldown_min": (0, 240),
+    "dip_cooldown_max": (0, 240),
+}
+
+EA_DIP_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
+    ("trend_ma_min", "trend_ma_max"),
+    ("dip_lookback_high_min", "dip_lookback_high_max"),
+    ("dip_atr_from_high_min", "dip_atr_from_high_max"),
+    ("dip_rsi_max_min", "dip_rsi_max_max"),
+    ("dip_confirm_min", "dip_confirm_max"),
+    ("dip_cooldown_min", "dip_cooldown_max"),
+]
+
 EA_DEFAULTS_BASE: Dict[str, Any] = {
     "generations": 50,
     "pop_size": 64,
@@ -152,6 +228,60 @@ def _as_utc_timestamp(value) -> pd.Timestamp | None:
         return ts.tz_convert("UTC")
     except Exception:
         return None
+
+
+def _bounded_numeric_default(
+    store: Dict[str, Any],
+    key: str,
+    fallback: Any,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+):
+    """Clamp a numeric default into the UI's valid range and coerce to the fallback type."""
+
+    raw = store.get(key, fallback)
+    # Determine the target type from the fallback; fall back to float for safety.
+    target_type = float
+    if isinstance(fallback, bool):
+        target_type = int
+    elif isinstance(fallback, int) and not isinstance(fallback, bool):
+        target_type = int
+    elif isinstance(fallback, float):
+        target_type = float
+
+    def _cast(value: Any) -> Any:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            raise ValueError("missing value")
+        try:
+            return target_type(value)
+        except (TypeError, ValueError):
+            if target_type is int:
+                return int(float(value))
+            raise
+
+    try:
+        value = _cast(raw)
+    except (TypeError, ValueError):
+        value = _cast(fallback)
+
+    if min_value is not None and value < min_value:
+        value = target_type(min_value)
+    if max_value is not None and value > max_value:
+        value = target_type(max_value)
+
+    store[key] = value
+    return value
+
+
+def _ensure_min_leq_max(store: Dict[str, Any], min_key: str, max_key: str) -> None:
+    """Ensure paired min/max entries remain ordered for Streamlit inputs."""
+
+    if min_key not in store or max_key not in store:
+        return
+    if store[max_key] < store[min_key]:
+        target_type = int if isinstance(store[max_key], bool) else type(store[max_key])
+        store[max_key] = target_type(store[min_key])
 
 
 def _extract_daily_shards(meta_entry: Any) -> Dict[str, List[Dict[str, Any]]]:
@@ -526,10 +656,32 @@ base_map = _ss_get_dict("adapter_base_params_map", base_defaults_map)
 if strategy_dotted not in base_map:
     base_map[strategy_dotted] = dict(BASE_DEFAULTS_BY_STRATEGY[strategy_dotted])
 base = base_map[strategy_dotted]
+strategy_defaults = BASE_DEFAULTS_BY_STRATEGY[strategy_dotted]
 base["entry_mode"] = "dip" if dip_strategy else "breakout"
 if dip_strategy:
     for field, value in BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE].items():
         base.setdefault(field, value)
+
+for field, bounds in BASE_PARAM_RANGES.items():
+    if field in strategy_defaults:
+        _bounded_numeric_default(
+            base,
+            field,
+            strategy_defaults[field],
+            min_value=bounds[0],
+            max_value=bounds[1],
+        )
+
+if dip_strategy:
+    dip_defaults = BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]
+    for field, bounds in DIP_PARAM_RANGES.items():
+        _bounded_numeric_default(
+            base,
+            field,
+            dip_defaults[field],
+            min_value=bounds[0],
+            max_value=bounds[1],
+        )
 
 ea_defaults_map = {key: dict(value) for key, value in EA_DEFAULTS_BY_STRATEGY.items()}
 ea_cfg_map = _ss_get_dict("ea_cfg_map", ea_defaults_map)
@@ -573,6 +725,47 @@ for _k, _v in {
     "genewise_clip": True,
 }.items():
     ea_cfg.setdefault(_k, _v)
+
+ea_defaults = EA_DEFAULTS_BY_STRATEGY[strategy_dotted]
+for field, bounds in EA_PARAM_RANGES.items():
+    if field in ea_defaults:
+        _bounded_numeric_default(
+            ea_cfg,
+            field,
+            ea_defaults[field],
+            min_value=bounds[0],
+            max_value=bounds[1],
+        )
+
+ea_jobs_max = max(1, (os.cpu_count() or 2))
+if "n_jobs" in ea_defaults:
+    _bounded_numeric_default(
+        ea_cfg,
+        "n_jobs",
+        ea_defaults["n_jobs"],
+        min_value=1,
+        max_value=ea_jobs_max,
+    )
+
+ea_cfg["tournament_k"] = int(
+    max(2, min(int(ea_cfg.get("tournament_k", 3)), int(ea_cfg.get("pop_size", 8)))))
+
+for min_key, max_key in EA_PARAM_MIN_MAX_PAIRS:
+    if min_key in ea_defaults and max_key in ea_defaults:
+        _ensure_min_leq_max(ea_cfg, min_key, max_key)
+
+if dip_strategy:
+    dip_ea_defaults = EA_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]
+    for field, bounds in EA_DIP_PARAM_RANGES.items():
+        _bounded_numeric_default(
+            ea_cfg,
+            field,
+            dip_ea_defaults[field],
+            min_value=bounds[0],
+            max_value=bounds[1],
+        )
+    for min_key, max_key in EA_DIP_PARAM_MIN_MAX_PAIRS:
+        _ensure_min_leq_max(ea_cfg, min_key, max_key)
 
 with st.expander("EA Parameters", expanded=False):
     primary_cols = st.columns(3)
