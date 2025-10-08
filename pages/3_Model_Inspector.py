@@ -1018,8 +1018,29 @@ def _plot_leaders_through_gen(
         end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
         ec_test = run_equity_curve(strategy, tickers, test_start, test_end, end_equity, params)
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
-        name = f"Gen {g} (ret {row['total_return']:.3f})"
-        fig.add_trace(go.Scatter(x=ec["date"], y=ec["equity"], mode="lines", name=name, line=dict(width=1)))
+        legend_label = _best_individual_label(row)
+        if not legend_label:
+            base = f"Gen {g}"
+            idx_label = _coerce_individual_id(row.get("idx")) if "idx" in row else None
+            if idx_label:
+                base = f"{base} - idx{idx_label}"
+            try:
+                ret_value = float(row.get("total_return"))
+            except Exception:
+                ret_value = math.nan
+            if math.isfinite(ret_value):
+                legend_label = f"{base} (ret {ret_value:.3f})"
+            else:
+                legend_label = base
+        fig.add_trace(
+            go.Scatter(
+                x=ec["date"],
+                y=ec["equity"],
+                mode="lines",
+                name=legend_label,
+                line=dict(width=1),
+            )
+        )
 
     # all-flat annotation
     if len(fig.data) > 0:
