@@ -9,7 +9,8 @@
       "elite_frac": 0.05,
       "tournament_k": 3,
       "early_stopping_gens": 20,
-      "seed": null
+      "seed": null,
+      "_description": "Explore-Heavy. Big population and long runs with high mutation favor broad discovery over fast convergence. Expect slower wall-clock times, many diverse \"good enough\" pockets, and higher variance between runs\u2014use when you\u2019re unsure of the right search space or suspect multiple local optima."
     },
     "Balanced Default": {
       "population_size": 60,
@@ -20,7 +21,8 @@
       "elite_frac": 0.1,
       "tournament_k": 3,
       "early_stopping_gens": 15,
-      "seed": null
+      "seed": null,
+      "_description": "Balanced Default. Middle-of-the-road population, crossover, and annealed mutation give steady progress without overfitting pressure. Good first pass for most assets; typically finds solid performers while keeping compute and result variance reasonable."
     },
     "Exploit-Anneal": {
       "population_size": 50,
@@ -31,7 +33,8 @@
       "elite_frac": 0.15,
       "tournament_k": 4,
       "early_stopping_gens": 18,
-      "seed": null
+      "seed": null,
+      "_description": "Exploit-Anneal. Strong selection and gradually shrinking mutations push the population to refine what\u2019s working. Converges faster and tends to polish a single basin of attraction\u2014great after Explore-Heavy, but can miss far-off alternatives."
     },
     "Quick Smoke Test": {
       "population_size": 20,
@@ -42,7 +45,8 @@
       "elite_frac": 0.05,
       "tournament_k": 2,
       "early_stopping_gens": 5,
-      "seed": 123
+      "seed": 123,
+      "_description": "Quick Smoke Test. Tiny population, few generations, and high mutation are meant for wiring checks and rough sensitivity passes. Results are noisy and not production-worthy, but you\u2019ll quickly surface broken constraints, bad bounds, or brittle metrics."
     },
     "Deterministic Repro": {
       "population_size": 50,
@@ -53,7 +57,8 @@
       "elite_frac": 0.1,
       "tournament_k": 3,
       "early_stopping_gens": 12,
-      "seed": 42
+      "seed": 42,
+      "_description": "Deterministic Repro. Fixed seed, stable shuffling, and conservative mutation emphasize repeatability. Ideal for audits, regression tests, and side-by-side comparisons; trades off some breadth and ultimate peak performance for consistency."
     }
   },
   "optimization_bounds": {
@@ -71,7 +76,24 @@
       "trailing_atr_mult_min": 1.0,
       "trailing_atr_mult_max": 3.0,
       "max_hold_days_min": 20,
-      "max_hold_days_max": 80
+      "max_hold_days_max": 80,
+      "_description": "Narrow Donchian. Tight ranges around classic breakout/exit lookbacks and ATR multiples concentrate search where ATR trend systems historically work. Faster convergence and cleaner attribution, but may miss regime-specific edge outside the classics.",
+      "vol_target_pct_min": 0.0,
+      "vol_target_pct_max": 0.02,
+      "vol_target_window_min": 10,
+      "vol_target_window_max": 25,
+      "vol_target_min_leverage_min": 0.5,
+      "vol_target_min_leverage_max": 1.0,
+      "vol_target_max_leverage_min": 1.0,
+      "vol_target_max_leverage_max": 1.6,
+      "trend_filter_ma_min": 80,
+      "trend_filter_ma_max": 200,
+      "trend_filter_slope_lookback_min": 10,
+      "trend_filter_slope_lookback_max": 40,
+      "trend_filter_slope_threshold_min": 0.0002,
+      "trend_filter_slope_threshold_max": 0.001,
+      "trend_filter_exit_min": 0,
+      "trend_filter_exit_max": 1
     },
     "Wide Swing-Trend": {
       "entry_lookback_n_min": 10,
@@ -87,7 +109,24 @@
       "trailing_atr_mult_min": 0.0,
       "trailing_atr_mult_max": 5.0,
       "max_hold_days_min": 10,
-      "max_hold_days_max": 250
+      "max_hold_days_max": 250,
+      "_description": "Wide Swing-Trend. Very broad windows for lookbacks, stops, and targets let the EA discover both fast swing and slow trend behaviors. Best when instruments differ wildly; requires more generations and stronger regularization/penalties to avoid overfitting.",
+      "vol_target_pct_min": 0.0,
+      "vol_target_pct_max": 0.04,
+      "vol_target_window_min": 5,
+      "vol_target_window_max": 60,
+      "vol_target_min_leverage_min": 0.2,
+      "vol_target_min_leverage_max": 1.0,
+      "vol_target_max_leverage_min": 1.0,
+      "vol_target_max_leverage_max": 3.0,
+      "trend_filter_ma_min": 0,
+      "trend_filter_ma_max": 300,
+      "trend_filter_slope_lookback_min": 0,
+      "trend_filter_slope_lookback_max": 60,
+      "trend_filter_slope_threshold_min": 0.0,
+      "trend_filter_slope_threshold_max": 0.0025,
+      "trend_filter_exit_min": 0,
+      "trend_filter_exit_max": 1
     },
     "Active-Tight Risk": {
       "entry_lookback_n_min": 10,
@@ -103,7 +142,24 @@
       "trailing_atr_mult_min": 0.5,
       "trailing_atr_mult_max": 2.0,
       "max_hold_days_min": 5,
-      "max_hold_days_max": 30
+      "max_hold_days_max": 30,
+      "_description": "Active-Tight Risk. Shorter lookbacks, lower ATR stops/TPs, and limited holding periods bias toward more trades and tighter control of losses. Suits mean-reverting or high-liquidity names; vulnerable to chop if slippage/costs aren\u2019t modeled well.",
+      "vol_target_pct_min": 0.006,
+      "vol_target_pct_max": 0.02,
+      "vol_target_window_min": 7,
+      "vol_target_window_max": 25,
+      "vol_target_min_leverage_min": 0.7,
+      "vol_target_min_leverage_max": 1.1,
+      "vol_target_max_leverage_min": 1.0,
+      "vol_target_max_leverage_max": 1.6,
+      "trend_filter_ma_min": 40,
+      "trend_filter_ma_max": 140,
+      "trend_filter_slope_lookback_min": 5,
+      "trend_filter_slope_lookback_max": 25,
+      "trend_filter_slope_threshold_min": 0.0003,
+      "trend_filter_slope_threshold_max": 0.0012,
+      "trend_filter_exit_min": 1,
+      "trend_filter_exit_max": 1
     },
     "Ride-The-Trend": {
       "entry_lookback_n_min": 40,
@@ -119,7 +175,24 @@
       "trailing_atr_mult_min": 2.0,
       "trailing_atr_mult_max": 5.0,
       "max_hold_days_min": 60,
-      "max_hold_days_max": 300
+      "max_hold_days_max": 300,
+      "_description": "Ride-The-Trend. Longer lookbacks and higher ATR multiples aim to capture extended runs with fewer trades. Works in persistent trends and during strong regimes; drawdowns can be larger and entries sparser.",
+      "vol_target_pct_min": 0.0,
+      "vol_target_pct_max": 0.015,
+      "vol_target_window_min": 14,
+      "vol_target_window_max": 60,
+      "vol_target_min_leverage_min": 0.2,
+      "vol_target_min_leverage_max": 0.8,
+      "vol_target_max_leverage_min": 1.2,
+      "vol_target_max_leverage_max": 2.5,
+      "trend_filter_ma_min": 120,
+      "trend_filter_ma_max": 300,
+      "trend_filter_slope_lookback_min": 20,
+      "trend_filter_slope_lookback_max": 60,
+      "trend_filter_slope_threshold_min": 0.0001,
+      "trend_filter_slope_threshold_max": 0.0006,
+      "trend_filter_exit_min": 0,
+      "trend_filter_exit_max": 1
     },
     "TP-Light, Exit-Led": {
       "entry_lookback_n_min": 20,
@@ -135,7 +208,24 @@
       "trailing_atr_mult_min": 1.0,
       "trailing_atr_mult_max": 4.0,
       "max_hold_days_min": 20,
-      "max_hold_days_max": 120
+      "max_hold_days_max": 120,
+      "_description": "TP-Light, Exit-Led. De-emphasizes fixed take-profit and leans on exits/holding logic (or trailing) to ride moves. Useful when momentum legs vary in length; requires robust exit logic to avoid giving back gains.",
+      "vol_target_pct_min": 0.004,
+      "vol_target_pct_max": 0.018,
+      "vol_target_window_min": 10,
+      "vol_target_window_max": 40,
+      "vol_target_min_leverage_min": 0.5,
+      "vol_target_min_leverage_max": 1.0,
+      "vol_target_max_leverage_min": 1.0,
+      "vol_target_max_leverage_max": 2.0,
+      "trend_filter_ma_min": 60,
+      "trend_filter_ma_max": 220,
+      "trend_filter_slope_lookback_min": 10,
+      "trend_filter_slope_lookback_max": 40,
+      "trend_filter_slope_threshold_min": 0.0002,
+      "trend_filter_slope_threshold_max": 0.001,
+      "trend_filter_exit_min": 0,
+      "trend_filter_exit_max": 1
     }
   },
   "buy_the_dip": {
@@ -145,7 +235,8 @@
       "dip_lookback_high": 40,
       "dip_rsi_max": 45.0,
       "dip_confirm": 0,
-      "dip_cooldown_days": 2
+      "dip_cooldown_days": 2,
+      "_description": "Shallow Pullbacks. Looks for mild, frequent dips in established uptrends with permissive RSI and short cooldowns. Increases trade count and capture of quick mean-reversions, but can over-trade in choppy markets."
     },
     "Deep Corrections Only": {
       "trend_ma": 200,
@@ -153,7 +244,8 @@
       "dip_lookback_high": 126,
       "dip_rsi_max": 30.0,
       "dip_confirm": 1,
-      "dip_cooldown_days": 7
+      "dip_cooldown_days": 7,
+      "_description": "Deep Corrections Only. Demands large ATR drawdowns, strict RSI, confirmation, and longer cooldowns. Entries are rare and higher quality; better during panicy selloffs and early recoveries, but may miss V-shaped bounces."
     },
     "RSI-Gated Weakness": {
       "trend_ma": 150,
@@ -161,7 +253,8 @@
       "dip_lookback_high": 60,
       "dip_rsi_max": 35.0,
       "dip_confirm": 1,
-      "dip_cooldown_days": 4
+      "dip_cooldown_days": 4,
+      "_description": "RSI-Gated Weakness. Uses RSI as the primary gate with moderate ATR distance and confirmation. Balances selectivity and frequency; good when \u201coversold within uptrend\u201d is a reliable signal for your universe."
     },
     "V-Reversal Hunter": {
       "trend_ma": 100,
@@ -169,7 +262,8 @@
       "dip_lookback_high": 20,
       "dip_rsi_max": 40.0,
       "dip_confirm": 0,
-      "dip_cooldown_days": 2
+      "dip_cooldown_days": 2,
+      "_description": "V-Reversal Hunter. Allows larger dips but skips confirmation and keeps cooldown short to catch sharp snaps. Maximizes responsiveness at the cost of more false starts\u2014works best on highly liquid, news-driven names."
     },
     "Trend-First": {
       "trend_ma": 200,
@@ -177,7 +271,8 @@
       "dip_lookback_high": 60,
       "dip_rsi_max": 45.0,
       "dip_confirm": 1,
-      "dip_cooldown_days": 3
+      "dip_cooldown_days": 3,
+      "_description": "Trend-First. Requires a strong long-term trend before any dip logic can fire, with moderate dip severity and confirmation. Reduces whipsaws markedly and pairs well with a breakout core; fewer total trades."
     }
   },
   "strategy_defaults": {
@@ -197,7 +292,19 @@
         "ma_fast": 0,
         "ma_slow": 0,
         "ma_long": 0,
-        "slope_window": 0
+        "slope_window": 0,
+        "ma": 0,
+        "slope_lookback": 0,
+        "slope_threshold": 0.0,
+        "exit_on_fail": false
+      },
+      "_description": "Classic ATR Breakout. Canonical breakout/exit lengths with ~2\u20133\u00d7ATR risk/targets produce a clean momentum baseline. Easy to interpret, broadly applicable, and a solid yardstick for improvements.",
+      "vol_target": {
+        "enable": false,
+        "target_pct": 0.0,
+        "atr_window": 14,
+        "min_leverage": 0.0,
+        "max_leverage": 1.0
       }
     },
     "Trend-Filtered ATR": {
@@ -216,7 +323,19 @@
         "ma_fast": 50,
         "ma_slow": 150,
         "ma_long": 200,
-        "slope_window": 20
+        "slope_window": 20,
+        "ma": 180,
+        "slope_lookback": 30,
+        "slope_threshold": 0.0004,
+        "exit_on_fail": true
+      },
+      "_description": "Trend-Filtered ATR. Adds long-horizon MAs and slope checks to trade only with the prevailing trend. Typically lowers turnover and drawdowns while sacrificing some upside in range-bound markets.",
+      "vol_target": {
+        "enable": false,
+        "target_pct": 0.0,
+        "atr_window": 20,
+        "min_leverage": 0.0,
+        "max_leverage": 1.2
       }
     },
     "Tight-Stop Scalper": {
@@ -235,7 +354,19 @@
         "ma_fast": 0,
         "ma_slow": 0,
         "ma_long": 0,
-        "slope_window": 0
+        "slope_window": 0,
+        "ma": 0,
+        "slope_lookback": 0,
+        "slope_threshold": 0.0,
+        "exit_on_fail": false
+      },
+      "_description": "Tight-Stop Scalper. Shorter lookbacks and smaller ATR multiples aim for many quick, low-variance wins. Sensitive to costs and slippage; shines on highly liquid tickers with frequent small swings.",
+      "vol_target": {
+        "enable": true,
+        "target_pct": 0.008,
+        "atr_window": 10,
+        "min_leverage": 0.6,
+        "max_leverage": 1.4
       }
     },
     "Loose-Stop Trend Rider": {
@@ -254,7 +385,19 @@
         "ma_fast": 50,
         "ma_slow": 150,
         "ma_long": 200,
-        "slope_window": 20
+        "slope_window": 20,
+        "ma": 180,
+        "slope_lookback": 40,
+        "slope_threshold": 0.00025,
+        "exit_on_fail": true
+      },
+      "_description": "Loose-Stop Trend Rider. Longer horizons and bigger ATR bands give trades room to breathe and compound. Fewer signals, longer holding periods, and higher single-trade variance\u2014best in strong directional regimes.",
+      "vol_target": {
+        "enable": true,
+        "target_pct": 0.015,
+        "atr_window": 20,
+        "min_leverage": 0.4,
+        "max_leverage": 1.8
       }
     },
     "Capital-Conservative": {
@@ -273,7 +416,19 @@
         "ma_fast": 100,
         "ma_slow": 200,
         "ma_long": 250,
-        "slope_window": 30
+        "slope_window": 30,
+        "ma": 200,
+        "slope_lookback": 45,
+        "slope_threshold": 0.0003,
+        "exit_on_fail": true
+      },
+      "_description": "Capital-Conservative. Uses moderate ATR settings, trend filters, and smaller risk per trade with cost assumptions turned up. Prioritizes durability and smoother equity curves over headline returns; ideal for portfolio cores or high-risk universes.",
+      "vol_target": {
+        "enable": true,
+        "target_pct": 0.01,
+        "atr_window": 18,
+        "min_leverage": 0.3,
+        "max_leverage": 1.1
       }
     }
   }

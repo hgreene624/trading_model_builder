@@ -46,6 +46,15 @@ BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
         "cost_bps": 1.0,
         "execution": "close",
         "entry_mode": "breakout",
+        "vol_target_enabled": False,
+        "vol_target_target_pct": 0.0,
+        "vol_target_atr_window": 14,
+        "vol_target_min_leverage": 0.0,
+        "vol_target_max_leverage": 1.0,
+        "trend_filter_ma": 0,
+        "trend_filter_slope_lookback": 0,
+        "trend_filter_slope_threshold": 0.0,
+        "trend_filter_exit": False,
     },
     DIP_STRATEGY_MODULE: {
         "breakout_n": 70,
@@ -69,6 +78,15 @@ BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
         "dip_rsi_max": 55.0,
         "dip_confirm": False,
         "dip_cooldown_days": 5,
+        "vol_target_enabled": False,
+        "vol_target_target_pct": 0.0,
+        "vol_target_atr_window": 14,
+        "vol_target_min_leverage": 0.0,
+        "vol_target_max_leverage": 1.0,
+        "trend_filter_ma": 0,
+        "trend_filter_slope_lookback": 0,
+        "trend_filter_slope_threshold": 0.0,
+        "trend_filter_exit": False,
     },
 }
 
@@ -85,6 +103,13 @@ BASE_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
     "sma_long": (100, 400),
     "long_slope_len": (5, 60),
     "cost_bps": (0.0, 20.0),
+    "vol_target_target_pct": (0.0, 0.1),
+    "vol_target_atr_window": (1, 200),
+    "vol_target_min_leverage": (0.0, 5.0),
+    "vol_target_max_leverage": (0.0, 5.0),
+    "trend_filter_ma": (0, 400),
+    "trend_filter_slope_lookback": (0, 200),
+    "trend_filter_slope_threshold": (0.0, 0.02),
 }
 
 DIP_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
@@ -113,6 +138,22 @@ EA_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
     "tp_multiple_max": (0.1, 20.0),
     "hold_min": (1, 600),
     "hold_max": (1, 600),
+    "vol_target_target_pct_min": (0.0, 0.1),
+    "vol_target_target_pct_max": (0.0, 0.1),
+    "vol_target_atr_window_min": (1, 200),
+    "vol_target_atr_window_max": (1, 200),
+    "vol_target_min_leverage_min": (0.0, 2.0),
+    "vol_target_min_leverage_max": (0.0, 2.0),
+    "vol_target_max_leverage_min": (0.5, 5.0),
+    "vol_target_max_leverage_max": (0.5, 5.0),
+    "trend_filter_ma_min": (0, 400),
+    "trend_filter_ma_max": (0, 400),
+    "trend_filter_slope_lookback_min": (0, 120),
+    "trend_filter_slope_lookback_max": (0, 120),
+    "trend_filter_slope_threshold_min": (0.0, 0.02),
+    "trend_filter_slope_threshold_max": (0.0, 0.02),
+    "trend_filter_exit_min": (0, 1),
+    "trend_filter_exit_max": (0, 1),
 }
 
 EA_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
@@ -122,6 +163,14 @@ EA_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
     ("atr_multiple_min", "atr_multiple_max"),
     ("tp_multiple_min", "tp_multiple_max"),
     ("hold_min", "hold_max"),
+    ("vol_target_target_pct_min", "vol_target_target_pct_max"),
+    ("vol_target_atr_window_min", "vol_target_atr_window_max"),
+    ("vol_target_min_leverage_min", "vol_target_min_leverage_max"),
+    ("vol_target_max_leverage_min", "vol_target_max_leverage_max"),
+    ("trend_filter_ma_min", "trend_filter_ma_max"),
+    ("trend_filter_slope_lookback_min", "trend_filter_slope_lookback_max"),
+    ("trend_filter_slope_threshold_min", "trend_filter_slope_threshold_max"),
+    ("trend_filter_exit_min", "trend_filter_exit_max"),
 ]
 
 EA_DIP_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
@@ -168,7 +217,7 @@ EA_DEFAULTS_BASE: Dict[str, Any] = {
     "shuffle_eval": True,
     "genewise_clip": True,
     "min_trades": 12,
-    "n_jobs": max(1, min(8, (os.cpu_count() or 2) - 1)),
+    "n_jobs": max(1, (os.cpu_count() or 2)),
     "breakout_n_min": 8,
     "breakout_n_max": 80,
     "exit_n_min": 4,
@@ -181,6 +230,22 @@ EA_DEFAULTS_BASE: Dict[str, Any] = {
     "tp_multiple_max": 4.0,
     "hold_min": 5,
     "hold_max": 60,
+    "vol_target_target_pct_min": 0.0,
+    "vol_target_target_pct_max": 0.02,
+    "vol_target_atr_window_min": 10,
+    "vol_target_atr_window_max": 35,
+    "vol_target_min_leverage_min": 0.4,
+    "vol_target_min_leverage_max": 0.9,
+    "vol_target_max_leverage_min": 1.0,
+    "vol_target_max_leverage_max": 1.8,
+    "trend_filter_ma_min": 50,
+    "trend_filter_ma_max": 200,
+    "trend_filter_slope_lookback_min": 8,
+    "trend_filter_slope_lookback_max": 35,
+    "trend_filter_slope_threshold_min": 0.0001,
+    "trend_filter_slope_threshold_max": 0.001,
+    "trend_filter_exit_min": 0,
+    "trend_filter_exit_max": 1,
 }
 
 EA_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
@@ -226,6 +291,14 @@ def _profiles_for(category: str) -> Dict[str, Dict[str, Any]]:
     return {}
 
 
+def _split_profile_payload(profile: Dict[str, Any]) -> tuple[Dict[str, Any], str | None]:
+    if not isinstance(profile, dict):
+        return {}, None
+    data = {k: v for k, v in profile.items() if not str(k).startswith("_")}
+    description = profile.get("_description")
+    return data, description
+
+
 def _profile_state_key(category: str, strategy_key: str | None) -> str:
     return f"{category}::{strategy_key or '__global__'}"
 
@@ -240,13 +313,15 @@ def _profile_selectbox(
     strategy_key: str | None,
     profiles: Dict[str, Dict[str, Any]],
     label: str,
+    *,
+    default_selection: str | None = None,
 ):
     options: List[str] = ["Custom"] + list(profiles.keys())
     widget_key = _profile_widget_key(category, strategy_key)
-    previous = st.session_state.get(widget_key, options[0])
-    if previous not in options:
-        previous = options[0]
-    st.session_state.setdefault(widget_key, previous)
+    default_option = default_selection if default_selection in options else options[0]
+    if widget_key not in st.session_state or st.session_state[widget_key] not in options:
+        st.session_state[widget_key] = default_option
+    previous = st.session_state[widget_key]
     selected = st.selectbox(label, options=options, key=widget_key)
     changed = selected != previous
     return selected, changed
@@ -309,6 +384,22 @@ def _apply_bounds_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> No
         "trailing_atr_mult_max": ("trailing_atr_mult_max", float),
         "max_hold_days_min": ("hold_min", int),
         "max_hold_days_max": ("hold_max", int),
+        "vol_target_pct_min": ("vol_target_target_pct_min", float),
+        "vol_target_pct_max": ("vol_target_target_pct_max", float),
+        "vol_target_window_min": ("vol_target_atr_window_min", int),
+        "vol_target_window_max": ("vol_target_atr_window_max", int),
+        "vol_target_min_leverage_min": ("vol_target_min_leverage_min", float),
+        "vol_target_min_leverage_max": ("vol_target_min_leverage_max", float),
+        "vol_target_max_leverage_min": ("vol_target_max_leverage_min", float),
+        "vol_target_max_leverage_max": ("vol_target_max_leverage_max", float),
+        "trend_filter_ma_min": ("trend_filter_ma_min", int),
+        "trend_filter_ma_max": ("trend_filter_ma_max", int),
+        "trend_filter_slope_lookback_min": ("trend_filter_slope_lookback_min", int),
+        "trend_filter_slope_lookback_max": ("trend_filter_slope_lookback_max", int),
+        "trend_filter_slope_threshold_min": ("trend_filter_slope_threshold_min", float),
+        "trend_filter_slope_threshold_max": ("trend_filter_slope_threshold_max", float),
+        "trend_filter_exit_min": ("trend_filter_exit_min", int),
+        "trend_filter_exit_max": ("trend_filter_exit_max", int),
     }
     for src, (dest, caster) in mapping.items():
         if src in profile and profile[src] is not None:
@@ -363,6 +454,25 @@ def _apply_strategy_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> 
             target["sma_long"] = int(tf["ma_long"])
         if tf.get("slope_window") is not None:
             target["long_slope_len"] = int(tf["slope_window"])
+        if tf.get("ma") is not None:
+            target["trend_filter_ma"] = int(tf["ma"])
+        if tf.get("slope_lookback") is not None:
+            target["trend_filter_slope_lookback"] = int(tf["slope_lookback"])
+        if tf.get("slope_threshold") is not None:
+            target["trend_filter_slope_threshold"] = float(tf["slope_threshold"])
+        if tf.get("exit_on_fail") is not None:
+            target["trend_filter_exit"] = bool(tf["exit_on_fail"])
+    if "vol_target" in profile and isinstance(profile["vol_target"], dict):
+        vt = profile["vol_target"]
+        target["vol_target_enabled"] = bool(vt.get("enable", False))
+        if vt.get("target_pct") is not None:
+            target["vol_target_target_pct"] = float(vt["target_pct"])
+        if vt.get("atr_window") is not None:
+            target["vol_target_atr_window"] = int(vt["atr_window"])
+        if vt.get("min_leverage") is not None:
+            target["vol_target_min_leverage"] = float(vt["min_leverage"])
+        if vt.get("max_leverage") is not None:
+            target["vol_target_max_leverage"] = float(vt["max_leverage"])
 
 
 # --- Page chrome ---
@@ -946,8 +1056,10 @@ with st.expander("EA Parameters", expanded=False):
             strategy_dotted,
             ea_profiles,
             "EA parameter profile",
+            default_selection="Balanced Default",
         )
-        profile_data = ea_profiles.get(selection, {})
+        profile_raw = ea_profiles.get(selection, {})
+        profile_data, profile_description = _split_profile_payload(profile_raw)
         _maybe_apply_profile(
             "ea_parameters",
             strategy_dotted,
@@ -956,6 +1068,8 @@ with st.expander("EA Parameters", expanded=False):
             lambda data=profile_data: _apply_ea_profile(data, ea_cfg),
         )
         if selection != "Custom":
+            if profile_description:
+                st.caption(profile_description)
             st.caption(f"Profile '{selection}' loaded for EA parameters.")
 
     primary_cols = st.columns(3)
@@ -1131,8 +1245,10 @@ with st.expander("Optimization parameter bounds", expanded=True):
             strategy_dotted,
             bounds_profiles,
             "Bounds profile",
+            default_selection="Active-Tight Risk",
         )
-        profile_data = bounds_profiles.get(selection, {})
+        profile_raw = bounds_profiles.get(selection, {})
+        profile_data, profile_description = _split_profile_payload(profile_raw)
         _maybe_apply_profile(
             "optimization_bounds",
             strategy_dotted,
@@ -1141,6 +1257,8 @@ with st.expander("Optimization parameter bounds", expanded=True):
             lambda data=profile_data: _apply_bounds_profile(data, ea_cfg),
         )
         if selection != "Custom":
+            if profile_description:
+                st.caption(profile_description)
             st.caption(f"Profile '{selection}' loaded for optimization bounds.")
 
     bounds_cols = st.columns(3)
@@ -1260,8 +1378,10 @@ if dip_strategy:
                 strategy_dotted,
                 dip_profiles,
                 "Dip overlay profile",
+                default_selection="Deep Corrections Only",
             )
-            profile_data = dip_profiles.get(selection, {})
+            profile_raw = dip_profiles.get(selection, {})
+            profile_data, profile_description = _split_profile_payload(profile_raw)
             _maybe_apply_profile(
                 "buy_the_dip",
                 strategy_dotted,
@@ -1270,6 +1390,8 @@ if dip_strategy:
                 lambda data=profile_data: _apply_dip_profile(data, base),
             )
             if selection != "Custom":
+                if profile_description:
+                    st.caption(profile_description)
                 st.caption(f"Profile '{selection}' loaded for dip overlay parameters.")
 
         st.markdown("**Optimization bounds**")
@@ -1441,8 +1563,10 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
             strategy_dotted,
             strategy_profiles,
             "Strategy defaults profile",
+            default_selection="Classic ATR Breakout",
         )
-        profile_data = strategy_profiles.get(selection, {})
+        profile_raw = strategy_profiles.get(selection, {})
+        profile_data, profile_description = _split_profile_payload(profile_raw)
         _maybe_apply_profile(
             "strategy_defaults",
             strategy_dotted,
@@ -1451,6 +1575,8 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
             lambda data=profile_data: _apply_strategy_profile(data, base),
         )
         if selection != "Custom":
+            if profile_description:
+                st.caption(profile_description)
             st.caption(f"Profile '{selection}' loaded for base strategy parameters.")
 
     base_cols = st.columns(2)
@@ -1746,6 +1872,35 @@ if run_btn:
         "tp_multiple": _clamp_float(cfg["tp_multiple_min"], cfg["tp_multiple_max"]),
         "holding_period_limit": _clamp_int(cfg["hold_min"], cfg["hold_max"]),
     }
+
+    param_space.update(
+        {
+            "vol_target_target_pct": _clamp_float(
+                cfg["vol_target_target_pct_min"], cfg["vol_target_target_pct_max"]
+            ),
+            "vol_target_atr_window": _clamp_int(
+                cfg["vol_target_atr_window_min"], cfg["vol_target_atr_window_max"]
+            ),
+            "vol_target_min_leverage": _clamp_float(
+                cfg["vol_target_min_leverage_min"], cfg["vol_target_min_leverage_max"]
+            ),
+            "vol_target_max_leverage": _clamp_float(
+                cfg["vol_target_max_leverage_min"], cfg["vol_target_max_leverage_max"]
+            ),
+            "trend_filter_ma": _clamp_int(
+                cfg["trend_filter_ma_min"], cfg["trend_filter_ma_max"]
+            ),
+            "trend_filter_slope_lookback": _clamp_int(
+                cfg["trend_filter_slope_lookback_min"], cfg["trend_filter_slope_lookback_max"]
+            ),
+            "trend_filter_slope_threshold": _clamp_float(
+                cfg["trend_filter_slope_threshold_min"], cfg["trend_filter_slope_threshold_max"]
+            ),
+            "trend_filter_exit": _clamp_int(
+                cfg["trend_filter_exit_min"], cfg["trend_filter_exit_max"]
+            ),
+        }
+    )
 
     if dip_strategy:
         param_space.update(
