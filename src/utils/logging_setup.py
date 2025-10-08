@@ -10,6 +10,38 @@ from typing import Optional
 _LOG_INITIALIZED = False
 
 
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """Rotating handler that tolerates missing rollover files."""
+
+    def doRollover(self) -> None:  # type: ignore[override]
+        if self.stream:
+            try:
+                self.stream.close()
+            finally:
+                self.stream = None
+
+        for i in range(self.backupCount - 1, 0, -1):
+            sfn = f"{self.baseFilename}.{i}"
+            dfn = f"{self.baseFilename}.{i + 1}"
+            try:
+                os.replace(sfn, dfn)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+
+        dfn = f"{self.baseFilename}.1"
+        try:
+            os.replace(self.baseFilename, dfn)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+        if not self.delay:
+            self.stream = self._open()
+
+
 def setup_logging(level: Optional[str] = None) -> logging.Logger:
     """Configure console + rotating file logging for backtests."""
 
@@ -39,7 +71,7 @@ def setup_logging(level: Optional[str] = None) -> logging.Logger:
     file_path = os.path.join(log_dir, "engine.log")
     if not any(isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", "") == file_path for h in root_logger.handlers):
         try:
-            file_handler = RotatingFileHandler(file_path, maxBytes=5 * 1024 * 1024, backupCount=3)
+            file_handler = SafeRotatingFileHandler(file_path, maxBytes=5 * 1024 * 1024, backupCount=3)
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
@@ -51,4 +83,4 @@ def setup_logging(level: Optional[str] = None) -> logging.Logger:
     return root_logger
 
 
-__all__ = ["setup_logging"]
+__all__ = ["setup_logging", "SafeRotatingFileHandler"]

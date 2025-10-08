@@ -122,6 +122,9 @@ def _env_float(name: str, default: float = 0.0) -> float:
 
 # ---------- Logging ----------
 
+from src.utils.logging_setup import SafeRotatingFileHandler
+
+
 logger = logging.getLogger("backtest.engine")
 _ENGINE_LOGGER_CONFIGURED = False
 
@@ -143,7 +146,7 @@ def _ensure_engine_logger() -> None:
             root_logger = logging.getLogger()
             has_rotating = any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers)
         if not has_rotating:
-            handler = RotatingFileHandler(
+            handler = SafeRotatingFileHandler(
                 os.path.join(log_dir, "engine.log"), maxBytes=5 * 1024 * 1024, backupCount=3
             )
             handler.setLevel(log_level)
