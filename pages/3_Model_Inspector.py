@@ -1315,6 +1315,7 @@ def main():
         tri_curve,
         test_start=test_start,
         test_end=test_end,
+        portfolio_tickers=tickers,
     )
 
     # Debug trace from the equity provider
