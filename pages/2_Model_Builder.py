@@ -669,36 +669,81 @@ def _render_holdout_equity_chart(
     placeholder: st.delta_generator.DeltaGenerator,
     equity: pd.Series | None,
     benchmark: pd.Series | None,
+    x_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> None:
     if equity is None or equity.empty:
         placeholder.info("Holdout equity will appear when a best candidate is available.")
         return
 
     equity = _ensure_dt_index(equity.copy())
+    strategy_values = np.asarray([float(v) for v in equity.values])
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=list(equity.index),
-            y=[float(v) for v in equity.values],
-            mode="lines",
-            name="Strategy",
-            line=dict(width=2.2, color="#1f78b4"),
-        )
-    )
 
     if benchmark is not None and not benchmark.empty:
         benchmark = _ensure_dt_index(benchmark.copy())
-        bench_aligned = benchmark.reindex(equity.index).ffill().dropna()
-        if not bench_aligned.empty:
+        bench_aligned = benchmark.reindex(equity.index).ffill().bfill()
+        bench_values = np.asarray([float(v) if pd.notna(v) else np.nan for v in bench_aligned.values])
+
+        if np.isfinite(bench_values).any():
+            diff = strategy_values - bench_values
+            outperform_mask = diff >= 0
+            underperform_mask = diff < 0
+
+            def _add_fill(mask: np.ndarray, name: str, color: str) -> None:
+                if not mask.any():
+                    return
+                upper = np.where(mask, np.maximum(strategy_values, bench_values), None)
+                lower = np.where(mask, np.minimum(strategy_values, bench_values), None)
+                custom_diff = np.where(mask, diff, None)
+                fig.add_trace(
+                    go.Scatter(
+                        x=list(equity.index),
+                        y=upper,
+                        mode="lines",
+                        line=dict(width=0),
+                        hoverinfo="skip",
+                        showlegend=False,
+                        connectgaps=False,
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=list(equity.index),
+                        y=lower,
+                        mode="lines",
+                        fill="tonexty",
+                        fillcolor=color,
+                        line=dict(width=0),
+                        name=name,
+                        showlegend=True,
+                        connectgaps=False,
+                        customdata=custom_diff,
+                        hovertemplate="Date=%{x|%Y-%m-%d}<br>Diff=$%{customdata:.2f}<extra></extra>",
+                    )
+                )
+
+            _add_fill(outperform_mask, "Outperformance", "rgba(40, 167, 69, 0.25)")
+            _add_fill(underperform_mask, "Underperformance", "rgba(220, 53, 69, 0.25)")
+
             fig.add_trace(
                 go.Scatter(
                     x=list(bench_aligned.index),
-                    y=[float(v) for v in bench_aligned.values],
+                    y=bench_values,
                     mode="lines",
                     name="Benchmark",
                     line=dict(width=1.8, color="#6c757d", dash="dash"),
                 )
             )
+
+    fig.add_trace(
+        go.Scatter(
+            x=list(equity.index),
+            y=strategy_values,
+            mode="lines",
+            name="Strategy",
+            line=dict(width=2.2, color="#1f78b4"),
+        )
+    )
 
     fig.update_layout(
         title="Holdout equity (anchored at starting capital)",
@@ -707,12 +752,15 @@ def _render_holdout_equity_chart(
         xaxis_title="Date",
         yaxis_title="Equity ($)",
     )
+    if x_range is not None:
+        fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
     placeholder.plotly_chart(fig, use_container_width=True)
 
 
 def _render_holdout_heatmap(
     placeholder: st.delta_generator.DeltaGenerator,
     returns: pd.Series | None,
+    x_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> None:
     if returns is None or returns.dropna().empty:
         placeholder.info("Rolling performance heatmap will populate after a completed holdout run.")
@@ -758,6 +806,8 @@ def _render_holdout_heatmap(
         margin=dict(l=10, r=10, t=40, b=30),
         xaxis_title="Date",
     )
+    if x_range is not None:
+        fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
     placeholder.plotly_chart(fig, use_container_width=True)
 
 
@@ -765,6 +815,7 @@ def _render_trade_timeline(
     placeholder: st.delta_generator.DeltaGenerator,
     trades_df: pd.DataFrame | None,
     max_trades: int = 200,
+    x_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> None:
     if trades_df is None or trades_df.empty:
         placeholder.info("Trade timeline will display once closed holds appear in the holdout window.")
@@ -801,9 +852,46 @@ def _render_trade_timeline(
         margin=dict(l=10, r=10, t=40, b=30),
         coloraxis_colorbar=dict(title="Return (%)"),
     )
+    if x_range is not None:
+        fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
     fig.update_yaxes(autorange="reversed")
     fig.update_coloraxes(cmid=0)
     placeholder.plotly_chart(fig, use_container_width=True)
+
+
+def _resolve_holdout_x_range(
+    equity: pd.Series | None,
+    returns: pd.Series | None,
+    trades_df: pd.DataFrame | None,
+) -> Tuple[pd.Timestamp, pd.Timestamp] | None:
+    spans: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+
+    if equity is not None and not equity.empty:
+        idx = _ensure_dt_index(equity.copy()).index
+        if len(idx):
+            spans.append((idx.min().to_pydatetime(), idx.max().to_pydatetime()))
+
+    if returns is not None and not returns.dropna().empty:
+        idx = _ensure_dt_index(returns.copy()).index
+        if len(idx):
+            spans.append((idx.min().to_pydatetime(), idx.max().to_pydatetime()))
+
+    if trades_df is not None and not trades_df.empty:
+        df = trades_df.dropna(subset=["entry_time", "exit_time"])
+        if not df.empty:
+            entry_min = pd.to_datetime(df["entry_time"], errors="coerce").dropna()
+            exit_max = pd.to_datetime(df["exit_time"], errors="coerce").dropna()
+            if not entry_min.empty and not exit_max.empty:
+                spans.append((entry_min.min().to_pydatetime(), exit_max.max().to_pydatetime()))
+
+    if not spans:
+        return None
+
+    start = min(span[0] for span in spans)
+    end = max(span[1] for span in spans)
+    if start == end:
+        end = end + timedelta(days=1)
+    return (start, end)
 
 
 def _portfolio_equity_curve(
@@ -1981,11 +2069,8 @@ with best_params_col:
     best_params_placeholder = st.empty()
 
 st.markdown("### Holdout diagnostics")
-diag_cols = st.columns([1.8, 1.2], gap="large")
-with diag_cols[0]:
-    holdout_equity_placeholder = st.empty()
-with diag_cols[1]:
-    holdout_heatmap_placeholder = st.empty()
+holdout_equity_placeholder = st.empty()
+holdout_heatmap_placeholder = st.empty()
 holdout_status_placeholder = st.empty()
 
 st.markdown("### Trade lifecycle timeline")
@@ -2028,9 +2113,24 @@ benchmark_series_state = st.session_state.get(HOLDOUT_BENCHMARK_KEY)
 returns_series_state = st.session_state.get(HOLDOUT_RETURNS_KEY)
 trades_df_state = st.session_state.get(HOLDOUT_TRADES_KEY)
 
-_render_holdout_equity_chart(holdout_equity_placeholder, equity_series_state, benchmark_series_state)
-_render_holdout_heatmap(holdout_heatmap_placeholder, returns_series_state)
-_render_trade_timeline(holdout_timeline_placeholder, trades_df_state)
+x_axis_range = _resolve_holdout_x_range(equity_series_state, returns_series_state, trades_df_state)
+
+_render_holdout_equity_chart(
+    holdout_equity_placeholder,
+    equity_series_state,
+    benchmark_series_state,
+    x_axis_range,
+)
+_render_holdout_heatmap(
+    holdout_heatmap_placeholder,
+    returns_series_state,
+    x_axis_range,
+)
+_render_trade_timeline(
+    holdout_timeline_placeholder,
+    trades_df_state,
+    x_range=x_axis_range,
+)
 
 holdout_status_state = st.session_state.get("adapter_holdout_status") or (
     "info",
