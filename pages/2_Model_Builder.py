@@ -1,4 +1,4 @@
-# pages/2_Strategy_Adapter.py
+# pages/2_Model_Builder.py
 from __future__ import annotations
 
 import os

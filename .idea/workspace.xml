@@ -4,10 +4,24 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="ea train inspector started. EA logger updated with session timeframe data. framework there but not working.">
-      <change beforePath="$PROJECT_DIR$/.idea/alpaca_trader.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/alpaca_trader.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="removed dead file">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Initial Files/alpaca2fa" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Initial Files/project_scaffold_min_clean.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Initial Files/starter_impl_v1.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Pages_UNUSED/1_Live_KPIs.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Pages_UNUSED/2_Base_Model_Lab.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/data/indexes.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Model_Builder.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/3_EA_Train_Inspector.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/3_Model_Inspector.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/3_Walkforward.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/4_Ticker_Selector_and_Tuning.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/pages/5_Simulate_Portfolio.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/optimization/walkforward.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.1" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log.1" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.2" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log.2" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.3" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log.3" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -24,7 +38,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="codex/complete-tier-1-cost-tasks" />
+        <entry key="$PROJECT_DIR$" value="codex/integrate-buy-the-dip-into-atr-strategy" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -59,7 +73,7 @@
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "git-widget-placeholder": "#44 on codex/implement-ea-params-and-ui-cleanup",
+    "git-widget-placeholder": "Buy-the-dip",
     "last_opened_file_path": "/Users/holden/PycharmProjects/alpaca_trader/storage/Good Sims",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -116,22 +130,6 @@
       <workItem from="1758996558016" duration="2016000" />
       <workItem from="1758999746262" duration="14204000" />
       <workItem from="1759077063615" duration="2294000" />
-    </task>
-    <task id="LOCAL-00010" summary="&#10;- Checkbox to toggle risk-parity vs equal weights.&#10;- Compute weights from daily stddev of returns over sim range.&#10;- Keep per-ticker strategy selection + portfolio params fallback.">
-      <option name="closed" value="true" />
-      <created>1757533497798</created>
-      <option name="number" value="00010" />
-      <option name="presentableId" value="LOCAL-00010" />
-      <option name="project" value="LOCAL" />
-      <updated>1757533497798</updated>
-    </task>
-    <task id="LOCAL-00011" summary="individual ticker graphs in simulation results with buy and sell markers">
-      <option name="closed" value="true" />
-      <created>1757555341776</created>
-      <option name="number" value="00011" />
-      <option name="presentableId" value="LOCAL-00011" />
-      <option name="project" value="LOCAL" />
-      <updated>1757555341776</updated>
     </task>
     <task id="LOCAL-00012" summary="Auto bounds for initial model params BETA">
       <option name="closed" value="true" />
@@ -509,7 +507,23 @@
       <option name="project" value="LOCAL" />
       <updated>1759078579041</updated>
     </task>
-    <option name="localTasksCounter" value="59" />
+    <task id="LOCAL-00059" summary="removed dead file">
+      <option name="closed" value="true" />
+      <created>1759848907110</created>
+      <option name="number" value="00059" />
+      <option name="presentableId" value="LOCAL-00059" />
+      <option name="project" value="LOCAL" />
+      <updated>1759848907110</updated>
+    </task>
+    <task id="LOCAL-00060" summary="removed dead file">
+      <option name="closed" value="true" />
+      <created>1759850003942</created>
+      <option name="number" value="00060" />
+      <option name="presentableId" value="LOCAL-00060" />
+      <option name="project" value="LOCAL" />
+      <updated>1759850003942</updated>
+    </task>
+    <option name="localTasksCounter" value="61" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -527,7 +541,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="implementing walkforward in strategy adapter page. still gettign error on run &#10;&#10;python -c &quot;import importlib; m=importlib.import_module('src.optimization.walkforward'); print('OK:', hasattr(m,'walk_forward'))&quot;" />
     <MESSAGE value="refactor storage and fix portfolio page error" />
     <MESSAGE value="fixed portfolio storage and loading in portfolios page" />
     <MESSAGE value="fixed portfolio loading in strategy adapter. problem loading historical when training" />
@@ -552,6 +565,7 @@
     <MESSAGE value="pre big change to evolutionary.py" />
     <MESSAGE value="changed scoring to verify engine use of penalty caps. zero penalty test" />
     <MESSAGE value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
-    <option name="LAST_COMMIT_MESSAGE" value="ea train inspector started. EA logger updated with session timeframe data. framework there but not working." />
+    <MESSAGE value="removed dead file" />
+    <option name="LAST_COMMIT_MESSAGE" value="removed dead file" />
   </component>
 </project>
