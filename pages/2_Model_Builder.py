@@ -18,7 +18,12 @@ from src.data.portfolio_prefetch import intersection_range
 from src.storage import append_to_portfolio, list_portfolios, load_portfolio, save_strategy_params
 
 DIP_STRATEGY_MODULE = "src.models.atr_dip_breakout"
-PARAM_PROFILE_PATH = Path(__file__).with_name("model_builder_profiles.json")
+PARAM_PROFILE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "storage"
+    / "params"
+    / "model_builder_profiles.json"
+)
 STRATEGY_OPTIONS: List[Tuple[str, str]] = [
     ("ATR Breakout", "src.models.atr_breakout"),
     ("ATR + Buy-the-Dip Overlay", DIP_STRATEGY_MODULE),
@@ -1322,7 +1327,7 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
         )
         base["sma_fast"] = st.number_input(
             "sma_fast",
-            5,
+            0,
             100,
             base["sma_fast"],
             1,
@@ -1330,7 +1335,7 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
         )
         base["sma_slow"] = st.number_input(
             "sma_slow",
-            10,
+            0,
             200,
             base["sma_slow"],
             1,
@@ -1338,7 +1343,7 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
         )
         base["sma_long"] = st.number_input(
             "sma_long",
-            100,
+            0,
             400,
             base["sma_long"],
             1,
@@ -1346,7 +1351,7 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
         )
         base["long_slope_len"] = st.number_input(
             "long_slope_len",
-            5,
+            0,
             60,
             base["long_slope_len"],
             1,
