@@ -1,10 +1,12 @@
 # pages/2_Model_Builder.py
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
@@ -16,6 +18,7 @@ from src.data.portfolio_prefetch import intersection_range
 from src.storage import append_to_portfolio, list_portfolios, load_portfolio, save_strategy_params
 
 DIP_STRATEGY_MODULE = "src.models.atr_dip_breakout"
+PARAM_PROFILE_PATH = Path(__file__).with_name("model_builder_profiles.json")
 STRATEGY_OPTIONS: List[Tuple[str, str]] = [
     ("ATR Breakout", "src.models.atr_breakout"),
     ("ATR + Buy-the-Dip Overlay", DIP_STRATEGY_MODULE),
@@ -117,6 +120,169 @@ EA_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
         "dip_cooldown_max": BASE_DEFAULTS_BY_STRATEGY[DIP_STRATEGY_MODULE]["dip_cooldown_days"],
     },
 }
+
+
+def _load_param_profiles() -> Dict[str, Dict[str, Dict[str, Any]]]:
+    if not PARAM_PROFILE_PATH.exists():
+        return {}
+    try:
+        with PARAM_PROFILE_PATH.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+PARAM_PROFILES = _load_param_profiles()
+
+
+def _profiles_for(category: str) -> Dict[str, Dict[str, Any]]:
+    data = PARAM_PROFILES.get(category, {})
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+def _profile_state_key(category: str, strategy_key: str | None) -> str:
+    return f"{category}::{strategy_key or '__global__'}"
+
+
+def _profile_widget_key(category: str, strategy_key: str | None) -> str:
+    safe_strategy = re.sub(r"[^0-9a-zA-Z_]+", "_", (strategy_key or "global"))
+    return f"{category}_profile_{safe_strategy}"
+
+
+def _profile_selectbox(
+    category: str,
+    strategy_key: str | None,
+    profiles: Dict[str, Dict[str, Any]],
+    label: str,
+):
+    options: List[str] = ["Custom"] + list(profiles.keys())
+    widget_key = _profile_widget_key(category, strategy_key)
+    previous = st.session_state.get(widget_key, options[0])
+    if previous not in options:
+        previous = options[0]
+    st.session_state.setdefault(widget_key, previous)
+    selected = st.selectbox(label, options=options, key=widget_key)
+    changed = selected != previous
+    return selected, changed
+
+
+def _maybe_apply_profile(
+    category: str,
+    strategy_key: str | None,
+    selection: str,
+    changed: bool,
+    apply_cb,
+) -> bool:
+    profile_state = _ss_get_dict("adapter_profile_state", {})
+    last_applied_map = profile_state.setdefault("last_applied", {})
+    state_key = _profile_state_key(category, strategy_key)
+    last_applied = last_applied_map.get(state_key)
+    if selection == "Custom":
+        if last_applied != "Custom":
+            last_applied_map[state_key] = "Custom"
+        return False
+    if changed or last_applied != selection:
+        apply_cb()
+        last_applied_map[state_key] = selection
+        return True
+    return False
+
+
+def _apply_ea_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> None:
+    mapping = {
+        "population_size": ("pop_size", int),
+        "generations": ("generations", int),
+        "crossover_prob": ("crossover_rate", float),
+        "mutation_prob": ("mutation_rate", float),
+        "mutation_sigma": ("mutation_scale", float),
+        "elite_frac": ("elitism_fraction", float),
+        "tournament_k": ("tournament_k", int),
+        "early_stopping_gens": ("fitness_patience", int),
+    }
+    for src, (dest, caster) in mapping.items():
+        if src in profile and profile[src] is not None:
+            target[dest] = caster(profile[src])
+    if "seed" in profile:
+        seed_value = profile.get("seed")
+        target["seed"] = None if seed_value in (None, "") else int(seed_value)
+
+
+def _apply_bounds_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> None:
+    mapping = {
+        "entry_lookback_n_min": ("breakout_n_min", int),
+        "entry_lookback_n_max": ("breakout_n_max", int),
+        "exit_lookback_n_min": ("exit_n_min", int),
+        "exit_lookback_n_max": ("exit_n_max", int),
+        "atr_period_min": ("atr_n_min", int),
+        "atr_period_max": ("atr_n_max", int),
+        "stop_atr_mult_min": ("atr_multiple_min", float),
+        "stop_atr_mult_max": ("atr_multiple_max", float),
+        "take_profit_atr_mult_min": ("tp_multiple_min", float),
+        "take_profit_atr_mult_max": ("tp_multiple_max", float),
+        "trailing_atr_mult_min": ("trailing_atr_mult_min", float),
+        "trailing_atr_mult_max": ("trailing_atr_mult_max", float),
+        "max_hold_days_min": ("hold_min", int),
+        "max_hold_days_max": ("hold_max", int),
+    }
+    for src, (dest, caster) in mapping.items():
+        if src in profile and profile[src] is not None:
+            target[dest] = caster(profile[src])
+
+
+def _apply_dip_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> None:
+    mapping = {
+        "trend_ma": ("trend_ma", int),
+        "dip_atr_from_high": ("dip_atr_from_high", float),
+        "dip_lookback_high": ("dip_lookback_high", int),
+        "dip_rsi_max": ("dip_rsi_max", float),
+        "dip_cooldown_days": ("dip_cooldown_days", int),
+    }
+    for src, (dest, caster) in mapping.items():
+        if src in profile and profile[src] is not None:
+            target[dest] = caster(profile[src])
+    if "dip_confirm" in profile:
+        target["dip_confirm"] = bool(profile.get("dip_confirm"))
+
+
+def _apply_strategy_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> None:
+    mapping = {
+        "entry_lookback_n": ("breakout_n", int),
+        "exit_lookback_n": ("exit_n", int),
+        "atr_period": ("atr_n", int),
+        "stop_atr_mult": ("atr_multiple", float),
+        "take_profit_atr_mult": ("tp_multiple", float),
+        "trailing_atr_mult": ("trailing_atr_mult", float),
+    }
+    for src, (dest, caster) in mapping.items():
+        if src in profile and profile[src] is not None:
+            target[dest] = caster(profile[src])
+    if "risk_per_trade_pct" in profile and profile["risk_per_trade_pct"] is not None:
+        target["risk_per_trade"] = float(profile["risk_per_trade_pct"]) / 100.0
+    if "allow_short" in profile:
+        target["allow_short"] = bool(profile["allow_short"])
+    if "slippage_bps" in profile and profile["slippage_bps"] is not None:
+        slip = float(profile["slippage_bps"])
+        target["cost_bps"] = slip
+        target["slippage_bps"] = slip
+    if "fee_per_trade" in profile and profile["fee_per_trade"] is not None:
+        target["per_trade_fee"] = float(profile["fee_per_trade"])
+    if "trend_filter" in profile and isinstance(profile["trend_filter"], dict):
+        tf = profile["trend_filter"]
+        target["use_trend_filter"] = bool(tf.get("enable", False))
+        if tf.get("ma_fast") is not None:
+            target["sma_fast"] = int(tf["ma_fast"])
+        if tf.get("ma_slow") is not None:
+            target["sma_slow"] = int(tf["ma_slow"])
+        if tf.get("ma_long") is not None:
+            target["sma_long"] = int(tf["ma_long"])
+        if tf.get("slope_window") is not None:
+            target["long_slope_len"] = int(tf["slope_window"])
+
 
 # --- Page chrome ---
 st.set_page_config(page_title="Strategy Adapter", layout="wide")
@@ -575,6 +741,25 @@ for _k, _v in {
     ea_cfg.setdefault(_k, _v)
 
 with st.expander("EA Parameters", expanded=False):
+    ea_profiles = _profiles_for("ea_parameters")
+    if ea_profiles:
+        selection, changed = _profile_selectbox(
+            "ea_parameters",
+            strategy_dotted,
+            ea_profiles,
+            "EA parameter profile",
+        )
+        profile_data = ea_profiles.get(selection, {})
+        _maybe_apply_profile(
+            "ea_parameters",
+            strategy_dotted,
+            selection,
+            changed,
+            lambda data=profile_data: _apply_ea_profile(data, ea_cfg),
+        )
+        if selection != "Custom":
+            st.caption(f"Profile '{selection}' loaded for EA parameters.")
+
     primary_cols = st.columns(3)
     with primary_cols[0]:
         ea_cfg["pop_size"] = st.number_input(
@@ -741,6 +926,25 @@ with st.expander("EA Parameters", expanded=False):
     ea_cfg["genewise_clip"] = True
 
 with st.expander("Optimization parameter bounds", expanded=True):
+    bounds_profiles = _profiles_for("optimization_bounds")
+    if bounds_profiles:
+        selection, changed = _profile_selectbox(
+            "optimization_bounds",
+            strategy_dotted,
+            bounds_profiles,
+            "Bounds profile",
+        )
+        profile_data = bounds_profiles.get(selection, {})
+        _maybe_apply_profile(
+            "optimization_bounds",
+            strategy_dotted,
+            selection,
+            changed,
+            lambda data=profile_data: _apply_bounds_profile(data, ea_cfg),
+        )
+        if selection != "Custom":
+            st.caption(f"Profile '{selection}' loaded for optimization bounds.")
+
     bounds_cols = st.columns(3)
     with bounds_cols[0]:
         bnm_lo = st.number_input(
@@ -851,6 +1055,25 @@ with st.expander("Optimization parameter bounds", expanded=True):
 
 if dip_strategy:
     with st.expander("Buy-the-Dip Parameters", expanded=True):
+        dip_profiles = _profiles_for("buy_the_dip")
+        if dip_profiles:
+            selection, changed = _profile_selectbox(
+                "buy_the_dip",
+                strategy_dotted,
+                dip_profiles,
+                "Dip overlay profile",
+            )
+            profile_data = dip_profiles.get(selection, {})
+            _maybe_apply_profile(
+                "buy_the_dip",
+                strategy_dotted,
+                selection,
+                changed,
+                lambda data=profile_data: _apply_dip_profile(data, base),
+            )
+            if selection != "Custom":
+                st.caption(f"Profile '{selection}' loaded for dip overlay parameters.")
+
         st.markdown("**Optimization bounds**")
         dip_bounds = st.columns(3)
         with dip_bounds[0]:
@@ -1013,6 +1236,25 @@ else:
     st.info("Select the ATR + Buy-the-Dip Overlay strategy to configure dip parameters.")
 
 with st.expander("Strategy parameter defaults (optional)", expanded=False):
+    strategy_profiles = _profiles_for("strategy_defaults")
+    if strategy_profiles:
+        selection, changed = _profile_selectbox(
+            "strategy_defaults",
+            strategy_dotted,
+            strategy_profiles,
+            "Strategy defaults profile",
+        )
+        profile_data = strategy_profiles.get(selection, {})
+        _maybe_apply_profile(
+            "strategy_defaults",
+            strategy_dotted,
+            selection,
+            changed,
+            lambda data=profile_data: _apply_strategy_profile(data, base),
+        )
+        if selection != "Custom":
+            st.caption(f"Profile '{selection}' loaded for base strategy parameters.")
+
     base_cols = st.columns(2)
     with base_cols[0]:
         base["breakout_n"] = st.number_input(
