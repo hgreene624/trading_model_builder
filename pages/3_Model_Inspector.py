@@ -6,7 +6,7 @@ import html
 import math
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -695,11 +695,11 @@ def _prepare_trade_table(trades: pd.DataFrame) -> pd.DataFrame:
             "Side": _col("side"),
             "Entry": _col("entry_time"),
             "Exit": _col("exit_time"),
-            "Return %": _col("return_pct").astype(float) * 100.0,
-            "Net P&L": _col("net_pnl").astype(float),
             "Holding Days": _col("holding_days").astype(float),
             "Entry Price": _col("entry_price").astype(float),
             "Exit Price": _col("exit_price").astype(float),
+            "Net P&L": _col("net_pnl").astype(float),
+            "Return %": _col("return_pct").astype(float) * 100.0,
         }
     )
 
@@ -1109,9 +1109,9 @@ def main():
     if gen_slice.empty:
         st.info("No individuals recorded for this generation in the EA log.")
     else:
-        gen_slice = gen_slice.sort_values(by=["total_return", "score"], ascending=[False, False])
-        options: List[Tuple[str, int]] = []
-        for idx, row in gen_slice.iterrows():
+        gen_slice = gen_slice.sort_values(by=["score", "total_return"], ascending=[False, False])
+        option_records: List[Dict[str, Any]] = []
+        for df_idx, row in gen_slice.iterrows():
             trades_cnt = int(row.get("trades", 0) or 0)
             score_val = float(row.get("score", 0.0) or 0.0)
             if not math.isfinite(score_val):
@@ -1119,10 +1119,40 @@ def main():
             ret_val = float(row.get("total_return", 0.0) or 0.0)
             if not math.isfinite(ret_val):
                 ret_val = 0.0
-            label = f"Idx {int(row.get('idx', 0))} • score {score_val:.3f} • ret {ret_val:.3f} • trades {trades_cnt}"
-            options.append((label, idx))
+            individual_id = int(row.get("idx", df_idx) or 0)
+            label = (
+                f"Idx {individual_id} • score {score_val:.3f} • ret {ret_val:.3f} • trades {trades_cnt}"
+            )
+            option_records.append(
+                {
+                    "label": label,
+                    "df_index": df_idx,
+                    "individual_id": individual_id,
+                }
+            )
 
-        option_labels = [label for label, _ in options]
+        search_query = st.text_input(
+            "Search individual by ID",
+            value="",
+            key="ea_trade_individual_search",
+            placeholder="e.g., 12 for Idx 12",
+        ).strip()
+
+        filtered_records = option_records
+        if search_query:
+            lowered = search_query.lower()
+            filtered_records = [rec for rec in option_records if lowered in rec["label"].lower()]
+            if lowered.isdigit():
+                target_id = int(lowered)
+                id_matches = [rec for rec in option_records if rec["individual_id"] == target_id]
+                if id_matches:
+                    filtered_records = id_matches
+
+        if not filtered_records:
+            st.info("No individuals matched that search. Showing all entries.")
+            filtered_records = option_records
+
+        option_labels = [rec["label"] for rec in filtered_records]
         default_index = 0
         selected_label = st.selectbox(
             "Individual (current generation)",
@@ -1130,7 +1160,10 @@ def main():
             index=min(default_index, max(len(option_labels) - 1, 0)),
             key="ea_trade_individual",
         )
-        selected_idx = dict(options).get(selected_label)
+        selected_idx = next(
+            (rec["df_index"] for rec in filtered_records if rec["label"] == selected_label),
+            None,
+        )
         selected_row = gen_slice.loc[selected_idx] if selected_idx is not None else None
 
         if selected_row is None:
@@ -1208,11 +1241,11 @@ def main():
                             use_container_width=True,
                             hide_index=True,
                             column_config={
-                                "Return %": st.column_config.NumberColumn("Return %", format="%.2f%%"),
-                                "Net P&L": st.column_config.NumberColumn("Net P&L", format="%.2f"),
                                 "Holding Days": st.column_config.NumberColumn("Holding Days", format="%.2f"),
                                 "Entry Price": st.column_config.NumberColumn("Entry Price", format="%.2f"),
                                 "Exit Price": st.column_config.NumberColumn("Exit Price", format="%.2f"),
+                                "Net P&L": st.column_config.NumberColumn("Net P&L", format="%.2f"),
+                                "Return %": st.column_config.NumberColumn("Return %", format="%.2f%%"),
                             },
                         )
 
