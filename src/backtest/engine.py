@@ -921,11 +921,13 @@ def backtest_atr_breakout(
                 gate_probability = float(val)
 
         if not in_pos and entry_trigger is None and bool(long_signal.iloc[i]):
+            entry_allowed = True
             if dip_overlay_active:
                 cond_pass = True
                 if i < len(dip_conditions_ok):
                     cond_pass = bool(dip_conditions_ok.iloc[i])
                 if not cond_pass:
+                    entry_allowed = False
                     if raw_break_today:
                         dip_block_conditions += 1
                         if i < len(dip_trend_ok) and not bool(dip_trend_ok.iloc[i]):
@@ -936,17 +938,18 @@ def backtest_atr_breakout(
                             dip_block_rsi += 1
                         if dip_require_confirm and i < len(dip_confirm_ok) and not bool(dip_confirm_ok.iloc[i]):
                             dip_block_confirm += 1
-                    continue
-                if dip_cooldown_days > 0 and i <= dip_cooldown_until_idx:
+                if entry_allowed and dip_cooldown_days > 0 and i <= dip_cooldown_until_idx:
+                    entry_allowed = False
                     blocked_by_cooldown += 1
                     dip_block_cooldown += 1
                     state_tracking["blocked_by_cooldown"] = blocked_by_cooldown
-                    continue
-                dip_entries_allowed += 1
-            if prob_gate_enabled and gate_probability is not None and gate_probability < prob_gate_threshold:
+                if entry_allowed:
+                    dip_entries_allowed += 1
+            if entry_allowed and prob_gate_enabled and gate_probability is not None and gate_probability < prob_gate_threshold:
+                entry_allowed = False
                 blocked_by_prob_gate += 1
                 state_tracking["blocked_by_prob_gate"] = blocked_by_prob_gate
-            else:
+            if entry_allowed:
                 trigger = {
                     "signal_idx": i,
                     "signal_time": ts,
