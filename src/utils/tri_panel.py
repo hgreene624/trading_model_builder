@@ -103,6 +103,32 @@ def _timestamp_to_iso(value: pd.Timestamp) -> str:
     return ts.isoformat()
 
 
+def _apply_split_adjustments(series: pd.Series, ticker: str) -> pd.Series:
+    """Return a series adjusted for stock splits using heuristic detection."""
+    if series is None:
+        return series
+    if series.empty:
+        return series
+    adjusted = series.sort_index().astype(float).copy()
+    prev_value: Optional[float] = None
+    cumulative_factor = 1.0
+    tolerance = 0.05  # allow 5% deviation when matching to integer split ratios
+    max_split = 50
+    for idx, value in adjusted.items():
+        if prev_value is not None and value > 0 and prev_value > 0:
+            ratio = prev_value / value
+            if ratio >= 1.8:  # heuristic: ignore normal price moves
+                candidate = round(ratio)
+                if 2 <= candidate <= max_split:
+                    if abs(ratio - candidate) / candidate <= tolerance:
+                        cumulative_factor *= candidate
+                        logger.debug(
+                            "tri_panel detected split",
+                            extra={"ticker": ticker, "date": idx, "factor": candidate},
+                        )
+        adjusted.loc[idx] = value * cumulative_factor
+        prev_value = value
+    return adjusted
 @st.cache_data(show_spinner=False)
 def _load_price_series_cached(ticker: str, start: str, end: str) -> Optional[pd.Series]:
     if load_price_history is None:
@@ -155,7 +181,8 @@ def _load_price_series_cached(ticker: str, start: str, end: str) -> Optional[pd.
             except Exception:
                 logger.debug("tri_panel failed to drop timezone from price series", extra={"ticker": ticker})
                 return None
-    return series
+    adjusted = _apply_split_adjustments(series, ticker)
+    return adjusted
 
 
 def _load_portfolio_price_curves(
