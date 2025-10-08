@@ -345,17 +345,22 @@ def _mutate_configured(
     mutation_scale: float,
 ) -> Dict[str, Any]:
     new = dict(params)
+    max_resample_attempts = 8
     for key, bounds in param_space.items():
         if random.random() >= float(cfg.mutation_rate):
             continue
         low, high = bounds
         is_float = isinstance(low, float) or isinstance(high, float) or isinstance(new.get(key), float)
         span = float(high) - float(low)
+        base_val = new.get(key, low)
+        candidate: Any
+        succeeded = False
         if cfg.mutation_scheme == "uniform_reset":
             if is_float:
-                new_val = random.uniform(float(low), float(high))
+                candidate = random.uniform(float(low), float(high))
             else:
-                new_val = random.randint(int(low), int(high))
+                candidate = random.randint(int(low), int(high))
+            succeeded = True
         elif cfg.mutation_scheme == "polynomial":
             if is_float:
                 eta = 20.0
@@ -364,26 +369,60 @@ def _mutate_configured(
                     delta = (2 * u) ** (1 / (eta + 1)) - 1
                 else:
                     delta = 1 - (2 * (1 - u)) ** (1 / (eta + 1))
-                new_val = float(new.get(key, low)) + delta * span * mutation_scale
+                for _ in range(max_resample_attempts):
+                    candidate = float(base_val) + delta * span * mutation_scale
+                    if float(low) <= float(candidate) <= float(high):
+                        succeeded = True
+                        break
+                    # Re-sample when the proposed step walks outside bounds.
+                    u = random.random()
+                    if u < 0.5:
+                        delta = (2 * u) ** (1 / (eta + 1)) - 1
+                    else:
+                        delta = 1 - (2 * (1 - u)) ** (1 / (eta + 1))
+                if not succeeded:
+                    candidate = random.uniform(float(low), float(high))
             else:
-                delta = random.randint(-max(1, int(span * mutation_scale)), max(1, int(span * mutation_scale)))
-                new_val = int(new.get(key, low)) + delta
+                step = max(1, int(span * mutation_scale))
+                current = int(base_val)
+                for _ in range(max_resample_attempts):
+                    delta = random.randint(-step, step)
+                    candidate = current + delta
+                    if int(low) <= int(candidate) <= int(high):
+                        succeeded = True
+                        break
+                if not succeeded:
+                    candidate = random.randint(int(low), int(high))
         else:  # gaussian default
             if is_float:
                 sigma = max(1e-9, span * mutation_scale)
-                new_val = float(new.get(key, low)) + random.gauss(0.0, sigma)
+                current = float(base_val)
+                for _ in range(max_resample_attempts):
+                    candidate = current + random.gauss(0.0, sigma)
+                    if float(low) <= float(candidate) <= float(high):
+                        succeeded = True
+                        break
+                if not succeeded:
+                    candidate = random.uniform(float(low), float(high))
             else:
                 step = max(1, int(round(span * mutation_scale)))
                 if step <= 0:
                     step = 1
-                new_val = int(new.get(key, low)) + random.randint(-step, step)
+                current = int(base_val)
+                for _ in range(max_resample_attempts):
+                    candidate = current + random.randint(-step, step)
+                    if int(low) <= int(candidate) <= int(high):
+                        succeeded = True
+                        break
+                if not succeeded:
+                    candidate = random.randint(int(low), int(high))
 
         if cfg.genewise_clip:
             if is_float:
-                new_val = float(min(float(high), max(float(low), float(new_val))))
+                candidate = float(min(float(high), max(float(low), float(candidate))))
             else:
-                new_val = int(min(int(high), max(int(low), int(new_val))))
-        new[key] = new_val
+                candidate = int(min(int(high), max(int(low), int(candidate))))
+        new[key] = candidate
     return new
 
 # ------------------------------ Penalties --------------------------------

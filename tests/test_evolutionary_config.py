@@ -177,6 +177,32 @@ def test_mu_plus_lambda_keeps_children(monkeypatch):
     assert later_diversity - first_gen, "Later generations should include new parameter combinations"
 
 
+def test_gaussian_mutation_resamples_out_of_bounds(monkeypatch):
+    """Gaussian mutation should not collapse to bounds when scale is large."""
+
+    cfg = evolutionary.EAConfig(
+        mutation_rate=1.0,
+        mutation_scale=1.0,
+        mutation_scheme="gaussian",
+        anneal_mutation=False,
+        genewise_clip=True,
+    )
+
+    param_space = {"x": (0.0, 10.0)}
+    parent = {"x": 9.5}
+
+    # Force the Gaussian draw to overshoot the bounds so we exercise the resample path.
+    monkeypatch.setattr(evolutionary.random, "gauss", lambda _mu, sigma: sigma * 10.0)
+    # Ensure mutation coin flip always fires.
+    monkeypatch.setattr(evolutionary.random, "random", lambda: 0.0)
+    # Deterministic fallback so the assertion is stable.
+    monkeypatch.setattr(evolutionary.random, "uniform", lambda a, b: (a + b) / 2.0)
+
+    child = evolutionary._mutate_configured(parent, param_space, cfg, cfg.mutation_scale)
+
+    assert child["x"] == pytest.approx(5.0)
+
+
 def test_scoring_prefers_test_metrics(monkeypatch, tmp_path):
     """Scoring should favor holdout metrics when a test range is provided."""
 
