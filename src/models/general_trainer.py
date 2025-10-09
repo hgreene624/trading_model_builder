@@ -94,6 +94,8 @@ def train_general_model(
     end,
     starting_equity: float,
     base_params: Dict[str, Any],
+    *,
+    disable_warmup: bool = True,
 ) -> Dict:
     """
     Returns:
@@ -129,7 +131,10 @@ def train_general_model(
             params_no_gate["prob_model_id"] = ""
             try:
                 run_inputs = dict(params_no_gate)
-                run_inputs[DISABLE_WARMUP_FLAG] = True
+                if disable_warmup:
+                    run_inputs[DISABLE_WARMUP_FLAG] = True
+                else:
+                    run_inputs.pop(DISABLE_WARMUP_FLAG, None)
                 training_res = run(sym, start_dt, end_dt, starting_equity, run_inputs)
             except Exception:
                 continue
@@ -173,7 +178,10 @@ def train_general_model(
     # --- per-symbol loop ---
     for sym in tickers:
         run_params = dict(params_for_eval)
-        run_params[DISABLE_WARMUP_FLAG] = True
+        if disable_warmup:
+            run_params[DISABLE_WARMUP_FLAG] = True
+        else:
+            run_params.pop(DISABLE_WARMUP_FLAG, None)
         result = run(sym, start_dt, end_dt, starting_equity, run_params)
 
         # Compute symbol-level metrics
