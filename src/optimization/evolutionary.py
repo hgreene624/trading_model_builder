@@ -53,7 +53,7 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
       - holding_penalty_weight, trade_rate_penalty_weight, penalty_cap (floats)
       - holding_days_penalty_min, holding_days_penalty_max,
         trade_rate_penalty_min, trade_rate_penalty_max (floats)
-      - rate_penalize_upper (bool), elite_by_return_frac (float)
+      - rate_penalize_upper (bool)
     """
     try:
         p = Path(path or "storage/config/ea_fitness.json")
@@ -94,7 +94,8 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
             if val is not None:
                 out[new_key] = val
         # new optional keys
-        if "elite_by_return_frac" in data: out["elite_by_return_frac"] = _getf("elite_by_return_frac")
+        if "elite_by_return_frac" in data:
+            out["elite_by_return_frac"] = _getf("elite_by_return_frac")
         if "holdout_score_weight" in data: out["holdout_score_weight"] = _getf("holdout_score_weight")
         if "holdout_gap_tolerance" in data: out["holdout_gap_tolerance"] = _getf("holdout_gap_tolerance")
         if "holdout_gap_penalty" in data: out["holdout_gap_penalty"] = _getf("holdout_gap_penalty")
@@ -145,6 +146,7 @@ class EAConfig:
     tournament_k: int = 3
     replacement: Literal["generational", "mu+lambda"] = "mu+lambda"
     elitism_fraction: float = 0.05
+    elite_by_return_frac: float = 0.10
     crossover_rate: float = 0.85
     crossover_op: Literal["blend", "sbx", "one_point"] = "blend"
     mutation_rate: float = 0.10
@@ -178,6 +180,17 @@ class EAConfig:
         if self.no_improve_tol is None:
             return 0.0
         return max(0.0, float(self.no_improve_tol))
+
+    def resolved_elite_by_return_frac(self) -> float:
+        try:
+            value = float(self.elite_by_return_frac)
+        except Exception:
+            return 0.0
+        if value < 0.0:
+            return 0.0
+        if value > 1.0:
+            return 1.0
+        return value
 
     def to_log_payload(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -782,6 +795,20 @@ def evolutionary_search(
         cfg.pop_size = pop_size_effective
         cfg.generations = generations_total
 
+    if cfg:
+        elite_by_return_frac = cfg.resolved_elite_by_return_frac()
+        cfg.elite_by_return_frac = elite_by_return_frac
+
+    try:
+        elite_by_return_frac = float(elite_by_return_frac)
+    except Exception:
+        elite_by_return_frac = 0.0
+    else:
+        if elite_by_return_frac < 0.0:
+            elite_by_return_frac = 0.0
+        elif elite_by_return_frac > 1.0:
+            elite_by_return_frac = 1.0
+
     test_range: Optional[Tuple[Any, Any]] = None
     if test_start is not None and test_end is not None:
         test_range = (test_start, test_end)
@@ -794,6 +821,7 @@ def evolutionary_search(
 
     # Load fitness weights from JSON config (single source of truth)
     _cfg = _load_fitness_config_json(None)
+    elite_frac_override = None
     if _cfg:
         alpha_cagr = _cfg.get("alpha_cagr", alpha_cagr)
         beta_calmar = _cfg.get("beta_calmar", beta_calmar)
@@ -817,7 +845,8 @@ def evolutionary_search(
             "trade_rate_penalty_max", trade_rate_penalty_max
         )
         rate_penalize_upper = _cfg.get("rate_penalize_upper", rate_penalize_upper)
-        elite_by_return_frac = _cfg.get("elite_by_return_frac", elite_by_return_frac)
+        if "elite_by_return_frac" in _cfg:
+            elite_frac_override = _cfg.get("elite_by_return_frac")
         holdout_weight = _cfg.get("holdout_score_weight", holdout_weight)
         holdout_gap_tolerance = _cfg.get("holdout_gap_tolerance", holdout_gap_tolerance)
         holdout_gap_penalty = _cfg.get("holdout_gap_penalty", holdout_gap_penalty)
@@ -825,7 +854,7 @@ def evolutionary_search(
             "holdout_shortfall_penalty", holdout_shortfall_penalty
         )
         # Emit a one-time breadcrumb so logs show which source set the weights
-        logger.log("fitness_config", {
+        fitness_payload = {
             "source": "storage/config/ea_fitness.json",
             "fitness_weights": {
                 "alpha_cagr": alpha_cagr,
@@ -842,10 +871,20 @@ def evolutionary_search(
                 "trade_rate_penalty_min": trade_rate_penalty_min,
                 "trade_rate_penalty_max": trade_rate_penalty_max,
                 "rate_penalize_upper": rate_penalize_upper,
-                "elite_by_return_frac": elite_by_return_frac,
                 "holdout_shortfall_penalty": holdout_shortfall_penalty,
             },
-        })
+        }
+        if elite_frac_override is not None:
+            fitness_payload["ignored"] = {"elite_by_return_frac": elite_frac_override}
+        logger.log("fitness_config", fitness_payload)
+
+        if elite_frac_override is not None:
+            warnings.warn(
+                "`elite_by_return_frac` is no longer loaded from ea_fitness.json; "
+                "configure it via EA parameters instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     try:
         holdout_weight = max(0.0, min(1.0, float(holdout_weight)))
@@ -1426,6 +1465,7 @@ def evolutionary_search(
             "elite_n": elite_n,
             "breed_n": breed_n,
             "inject_n": inject_n,
+            "elite_by_return_frac": elite_by_return_frac,
             "fitness_weights": {
                 "alpha_cagr": alpha_cagr,
                 "beta_calmar": beta_calmar,
@@ -1441,7 +1481,6 @@ def evolutionary_search(
                 "trade_rate_penalty_min": trade_rate_penalty_min,
                 "trade_rate_penalty_max": trade_rate_penalty_max,
                 "rate_penalize_upper": rate_penalize_upper,
-                "elite_by_return_frac": elite_by_return_frac,
             },
             "penalty_stats": {
                 "cap_hit_rate": cap_hit_rate,
@@ -1467,6 +1506,7 @@ def evolutionary_search(
         "best_by_return": (best_run_return_rec[0] if best_run_return_rec else {}),
         "best_by_return_value": (best_run_return_rec[1] if best_run_return_rec else 0.0),
         "best_by_return_score": (best_run_return_rec[2] if best_run_return_rec else 0.0),
+        "elite_by_return_frac": elite_by_return_frac,
         "fitness_weights": {
             "alpha_cagr": alpha_cagr,
             "beta_calmar": beta_calmar,
@@ -1482,7 +1522,6 @@ def evolutionary_search(
             "trade_rate_penalty_min": trade_rate_penalty_min,
             "trade_rate_penalty_max": trade_rate_penalty_max,
             "rate_penalize_upper": rate_penalize_upper,
-            "elite_by_return_frac": elite_by_return_frac,
         },
         "generations_ran": max(0, last_gen + 1),
         "stopped_early": stopped_early,

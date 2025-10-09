@@ -21,14 +21,13 @@
 | `trade_rate_penalty_min` | 5.0 | Lower bound before trade-rate penalty triggers. |
 | `trade_rate_penalty_max` | 50.0 | Upper bound threshold (currently inactive). |
 | `rate_penalize_upper` | false | Disables penalties for exceeding `trade_rate_max`. |
-| `elite_by_return_frac` | 0.10 | Fraction of top performers kept by raw return during selection. |
 
 ## Impact of Manual Adjustments
 - **Return emphasis (`alpha_cagr`, `delta_total_return`)**: Increasing either raises preference for high-growth candidates; lowering them unlocks space for risk metrics.
 - **Risk weighting (`beta_calmar`, `gamma_sharpe`)**: Raising these values amplifies drawdown and volatility discipline; current near-zero Calmar weight makes drawdown control effectively irrelevant.
 - **Penalty weights and caps**: Higher `holding_penalty_weight` or `trade_rate_penalty_weight` quickly suppress rule-breaking strategies until the `penalty_cap` is reached; reducing the cap allows penalties to dominate faster.
 - **Band definitions**: Tightening `holding_days_penalty_min`/`holding_days_penalty_max` or `trade_rate_penalty_min`/`trade_rate_penalty_max` narrows acceptable behavior; enabling `rate_penalize_upper` enforces the upper trade-rate ceiling symmetrically.
-- **Elite fraction**: Larger `elite_by_return_frac` preserves more top-return solutions; shrinking it accelerates turnover and exploration.
+- **Elite fraction**: Selection mix is now controlled via the EA parameter `elite_by_return_frac`; adjust it in model profiles or the Strategy Adapter UI instead of editing the weight file.
 
 ## Observations & Recommendations
 1. **Return-heavy blend**: With nearly 1.0 combined weight on CAGR/total return, the search deprioritizes risk controls. Consider shifting 10–20% of the weight toward Sharpe and/or Calmar to balance risk-adjusted performance.
@@ -36,3 +35,4 @@
 3. **Asymmetric trade penalties**: Because `rate_penalize_upper` is `false`, only under-trading is penalized. Enable the upper bound or increase `trade_rate_penalty_min` if over-trading is a concern.
 4. **Penalty slack**: The 0.15 `penalty_cap` combined with modest weights allows rule violations to persist. Tightening the cap or raising the weights will make holding/trade constraints more influential.
 5. **Monitoring edits**: After manual adjustments, re-run the evolutionary search and review logged metric blends to verify the optimizer behaves as intended.
+6. **Selection mix**: Use EA parameter profiles or the UI slider to tweak `elite_by_return_frac`; values in `ea_fitness.json` are ignored (a deprecation warning is emitted when present).

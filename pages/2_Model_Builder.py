@@ -213,6 +213,7 @@ EA_DEFAULTS_BASE: Dict[str, Any] = {
     "tournament_k": 3,
     "replacement": "mu+lambda",
     "elitism_fraction": 0.05,
+    "elite_by_return_frac": 0.10,
     "crossover_rate": 0.85,
     "crossover_op": "blend",
     "mutation_rate": 0.10,
@@ -366,6 +367,8 @@ def _apply_ea_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> None:
         "mutation_prob": ("mutation_rate", float),
         "mutation_sigma": ("mutation_scale", float),
         "elite_frac": ("elitism_fraction", float),
+        "elite_by_return_frac": ("elite_by_return_frac", float),
+        "elite_by_return_fraction": ("elite_by_return_frac", float),
         "tournament_k": ("tournament_k", int),
         "early_stopping_gens": ("fitness_patience", int),
     }
@@ -1488,6 +1491,14 @@ with st.expander("EA Parameters", expanded=False):
             step=0.01,
             help="Top X% copied unchanged to next generation.",
         )
+        ea_cfg["elite_by_return_frac"] = st.slider(
+            "Return-preserved elite share",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(ea_cfg.get("elite_by_return_frac", 0.10)),
+            step=0.01,
+            help="Within the elite pool, percentage reserved purely by total return.",
+        )
     with primary_cols[2]:
         ea_cfg["crossover_rate"] = st.slider(
             "Crossover rate",
@@ -2356,6 +2367,7 @@ if run_btn:
         "tournament_k": max(2, int(cfg.get("tournament_k", 3) or 3)),
         "replacement": str(cfg.get("replacement", "mu+lambda")),
         "elitism_fraction": float(cfg.get("elitism_fraction", 0.05)),
+        "elite_by_return_frac": float(cfg.get("elite_by_return_frac", 0.10)),
         "crossover_rate": float(cfg.get("crossover_rate", 0.85)),
         "crossover_op": str(cfg.get("crossover_op", "blend")),
         "mutation_rate": float(cfg.get("mutation_rate", 0.10)),

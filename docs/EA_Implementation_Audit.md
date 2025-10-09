@@ -95,6 +95,7 @@ Storage/Inspection
 ## 7. UI Exposure & Config Path
 - The Streamlit tuning page exposes sliders for population size, generations, crossover rate, and mutation rate, plus numeric inputs for every bound defined by `Bounds`; button handlers serialize these into a `Bounds` instance before calling `evolve_params` with a fixed random seed of 42.【F:pages/4_Ticker_Selector_and_Tuning.py†L215-L339】
 - Profile loading applies stored EA settings (population, generations, crossover, mutation) and parameter bounds back into Streamlit session state, enabling reproducible reruns.【F:pages/4_Ticker_Selector_and_Tuning.py†L50-L214】
+- The Strategy Adapter exposes a "Return-preserved elite share" slider that writes `elite_by_return_frac` into the EA config payload, replacing the legacy `ea_fitness.json` override for this knob.【F:pages/2_Model_Builder.py†L1450-L1520】【F:src/optimization/evolutionary.py†L784-L910】
 - EA JSONL logs are surfaced in the EA inspector page, which looks under `storage/logs/ea` and parses the `TrainingLogger` events for visualization.【F:pages/3_EA_Train_Inspector.py†L17-L125】
 - Walk-forward parameters (including EA toggles) are available via keyword arguments or UI controls in the associated page (not shown here) and forwarded to `walk_forward`/`evolutionary_search`.【F:src/optimization/walkforward.py†L87-L197】
 

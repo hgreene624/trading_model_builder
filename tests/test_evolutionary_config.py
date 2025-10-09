@@ -1,4 +1,5 @@
 import json
+import warnings
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,7 @@ def test_ea_config_smoke(monkeypatch, tmp_path, fitness_value):
         "tournament_k": 3,
         "replacement": "mu+lambda",
         "elitism_fraction": 0.05,
+        "elite_by_return_frac": 0.12,
         "crossover_rate": 0.9,
         "crossover_op": "blend",
         "mutation_rate": 0.15,
@@ -80,12 +82,74 @@ def test_ea_config_smoke(monkeypatch, tmp_path, fitness_value):
     assert cfg_payloads, "ea_config event should be logged at gen 0"
     elite_count = cfg_payloads[0].get("elite_count")
     assert isinstance(elite_count, int) and elite_count >= 1
+    assert cfg_payloads[0].get("elite_by_return_frac") == pytest.approx(0.12)
 
     done_payloads = [rec["payload"] for rec in log_lines if rec.get("event") == "session_end"]
     assert done_payloads, "session_end event should be logged"
     done = done_payloads[0]
     assert done.get("stopped_early"), "Early stopping should trigger with patience=1"
     assert done.get("generations_ran") <= cfg["generations"]
+    assert done.get("elite_by_return_frac") == pytest.approx(0.12)
+
+
+def test_fitness_config_elite_override_warns(monkeypatch, tmp_path):
+    """Legacy elite override in ea_fitness.json should warn and be ignored."""
+
+    def _fake_train_general_model(*_args, **_kwargs):
+        return {
+            "aggregate": {
+                "metrics": {
+                    "trades": 10,
+                    "avg_holding_days": 6.0,
+                    "cagr": 0.2,
+                    "calmar": 0.2,
+                    "sharpe": 0.2,
+                    "total_return": 0.2,
+                }
+            }
+        }
+
+    monkeypatch.setattr(evolutionary, "train_general_model", _fake_train_general_model)
+
+    log_file = tmp_path / "ea_warn.jsonl"
+
+    monkeypatch.setattr(
+        evolutionary,
+        "_load_fitness_config_json",
+        lambda _path: {"elite_by_return_frac": 0.8},
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        evolutionary.evolutionary_search(
+            strategy_dotted="tests.fake",
+            tickers=["AAPL"],
+            start="2021-01-01",
+            end="2021-06-30",
+            starting_equity=10000.0,
+            param_space={"atr_n": (5, 10)},
+            generations=1,
+            pop_size=4,
+            min_trades=0,
+            n_jobs=1,
+            log_file=str(log_file),
+        )
+
+    assert any(
+        issubclass(rec.category, DeprecationWarning)
+        and "elite_by_return_frac" in str(rec.message)
+        for rec in caught
+    )
+
+    log_lines = [json.loads(line) for line in Path(log_file).read_text().splitlines() if line.strip()]
+    fitness_events = [rec for rec in log_lines if rec.get("event") == "fitness_config"]
+    assert fitness_events, "fitness_config event should be recorded"
+    ignored = fitness_events[0]["payload"].get("ignored")
+    assert ignored == {"elite_by_return_frac": 0.8}
+
+    session_end = next(rec for rec in log_lines if rec.get("event") == "session_end")
+    payload = session_end["payload"]
+    assert payload.get("elite_by_return_frac") == pytest.approx(0.10)
 
 
 def test_sbx_handles_negative_bounds_without_complex(monkeypatch):

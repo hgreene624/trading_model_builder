@@ -16,7 +16,5 @@
 
   "trade_rate_penalty_min": 5.0,
   "trade_rate_penalty_max": 50.0,
-  "rate_penalize_upper": false,
-
-  "elite_by_return_frac": 0.10
+  "rate_penalize_upper": false
 }
