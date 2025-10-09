@@ -4,24 +4,17 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="removed dead file">
+    <list default="true" id="2f29820a-9804-4812-9b6e-6d4c72e92726" name="Changes" comment="removed dead files, renamed pages">
+      <change beforePath="$PROJECT_DIR$/.idea/alpaca_trader.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/alpaca_trader.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Initial Files/alpaca2fa" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Initial Files/project_scaffold_min_clean.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Initial Files/starter_impl_v1.zip" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Pages_UNUSED/1_Live_KPIs.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Pages_UNUSED/2_Base_Model_Lab.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/indexes.json" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/2_Strategy_Adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/2_Model_Builder.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/3_EA_Train_Inspector.py" beforeDir="false" afterPath="$PROJECT_DIR$/pages/3_Model_Inspector.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/3_Walkforward.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/4_Ticker_Selector_and_Tuning.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/pages/5_Simulate_Portfolio.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/optimization/walkforward.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/storage/logs/engine.log" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.1" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log.1" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.2" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log.2" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.3" beforeDir="false" afterPath="$PROJECT_DIR$/storage/logs/engine.log.3" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.1" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.2" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/engine.log.3" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/wf/20250926_134643_wf.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/logs/wf/20250926_135046_wf.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/params/model_builder_profiles.json" beforeDir="false" afterPath="$PROJECT_DIR$/storage/params/model_builder_profiles.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/storage/portfolios/Default.json" beforeDir="false" afterPath="$PROJECT_DIR$/storage/portfolios/Default.json" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -38,7 +31,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="codex/integrate-buy-the-dip-into-atr-strategy" />
+        <entry key="$PROJECT_DIR$" value="codex/fix-api-rate-limit-errors" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -130,6 +123,9 @@
       <workItem from="1758996558016" duration="2016000" />
       <workItem from="1758999746262" duration="14204000" />
       <workItem from="1759077063615" duration="2294000" />
+      <workItem from="1759935682728" duration="9231000" />
+      <workItem from="1760016205226" duration="466000" />
+      <workItem from="1760016772162" duration="2298000" />
     </task>
     <task id="LOCAL-00012" summary="Auto bounds for initial model params BETA">
       <option name="closed" value="true" />

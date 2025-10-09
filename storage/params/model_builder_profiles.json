@@ -1,8 +1,8 @@
 {
   "ea_parameters": {
     "Explore-Heavy": {
-      "population_size": 120,
-      "generations": 120,
+      "population_size": 150,
+      "generations": 40,
       "crossover_prob": 0.6,
       "mutation_prob": 0.3,
       "mutation_sigma": 0.25,
@@ -14,7 +14,7 @@
     },
     "Balanced Default": {
       "population_size": 60,
-      "generations": 60,
+      "generations": 20,
       "crossover_prob": 0.7,
       "mutation_prob": 0.2,
       "mutation_sigma": 0.2,
@@ -25,8 +25,8 @@
       "_description": "Balanced Default. Middle-of-the-road population, crossover, and annealed mutation give steady progress without overfitting pressure. Good first pass for most assets; typically finds solid performers while keeping compute and result variance reasonable."
     },
     "Exploit-Anneal": {
-      "population_size": 50,
-      "generations": 80,
+      "population_size": 100,
+      "generations": 30,
       "crossover_prob": 0.8,
       "mutation_prob": 0.15,
       "mutation_sigma": 0.15,
