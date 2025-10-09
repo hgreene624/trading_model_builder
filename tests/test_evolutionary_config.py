@@ -18,6 +18,81 @@ def test_load_fitness_config_shortfall_penalty(tmp_path):
     assert loaded["holdout_shortfall_penalty"] == pytest.approx(0.9)
 
 
+def test_holdout_weight_blend_respects_config(monkeypatch):
+    """Holdout score weight from the fitness config should drive the blend."""
+
+    weight_value = {"value": 0.0}
+
+    train_start = "2020-01-01"
+    holdout_start = "2021-01-01"
+
+    def _fake_train_general_model(_strategy, _tickers, start, end, _equity, params):
+        # Determine whether this call is for the training or holdout window.
+        score = 0.2 if str(start) == train_start else 0.8
+        metrics = {
+            "trades": 50,
+            "avg_holding_days": 5.0,
+            "total_return": score,
+            "cagr": 0.0,
+            "calmar": 0.0,
+            "sharpe": 0.0,
+            "max_drawdown": 0.2,
+        }
+        payload = {
+            "aggregate": {"metrics": metrics},
+        }
+        if isinstance(params, dict):
+            payload["params"] = dict(params)
+        return payload
+
+    def _config_loader(_path=None):
+        return {
+            "holdout_score_weight": weight_value["value"],
+            "holdout_gap_tolerance": 10.0,
+            "holdout_gap_penalty": 0.0,
+            "holdout_shortfall_penalty": 0.0,
+        }
+
+    monkeypatch.setattr(evolutionary, "train_general_model", _fake_train_general_model)
+    monkeypatch.setattr(evolutionary, "_load_fitness_config_json", _config_loader)
+
+    def _run_once() -> float:
+        results = evolutionary.evolutionary_search(
+            strategy_dotted="tests.fake",
+            tickers=["AAPL"],
+            start=train_start,
+            end="2020-06-30",
+            starting_equity=10000.0,
+            param_space={"atr_n": (5, 5)},
+            test_start=holdout_start,
+            test_end="2021-06-30",
+            generations=1,
+            pop_size=1,
+            min_trades=0,
+            n_jobs=1,
+            alpha_cagr=0.0,
+            beta_calmar=0.0,
+            gamma_sharpe=0.0,
+            delta_total_return=1.0,
+            use_normalized_scoring=False,
+            holding_penalty_weight=0.0,
+            trade_rate_penalty_weight=0.0,
+            trade_rate_min=0.0,
+            trade_rate_max=1_000_000.0,
+            penalty_cap=0.0,
+        )
+        assert results, "expected at least one EA candidate"
+        return results[0][1]
+
+    weight_value["value"] = 0.0
+    score_train = _run_once()
+    assert score_train == pytest.approx(0.2)
+
+    weight_value["value"] = 1.0
+    score_holdout = _run_once()
+    assert score_holdout == pytest.approx(0.8)
+
+
 @pytest.mark.parametrize("fitness_value", [0.25])
 def test_ea_config_smoke(monkeypatch, tmp_path, fitness_value):
     """Smoke-test the new EA config path with early stopping and logging."""

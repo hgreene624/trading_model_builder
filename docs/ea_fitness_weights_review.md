@@ -22,6 +22,10 @@
 | `trade_rate_max` | 50.0 | Upper bound threshold (currently inactive). |
 | `rate_penalize_upper` | false | Disables penalties for exceeding `trade_rate_max`. |
 | `elite_by_return_frac` | 0.10 | Fraction of top performers kept by raw return during selection. |
+| `holdout_score_weight` | 0.65 | Blend weight for holdout/test metrics when both windows are available. |
+| `holdout_gap_tolerance` | 0.15 | Margin allowed before penalising train vs. test score gaps. |
+| `holdout_gap_penalty` | 0.50 | Penalty multiplier when the training score materially exceeds the holdout. |
+| `holdout_shortfall_penalty` | 0.35 | Penalty multiplier when the training score materially lags the holdout. |
 
 ## Impact of Manual Adjustments
 - **Return emphasis (`alpha_cagr`, `delta_total_return`)**: Increasing either raises preference for high-growth candidates; lowering them unlocks space for risk metrics.
@@ -35,4 +39,5 @@
 2. **Calmar underweighting**: The `beta_calmar` weight (0.0011) is effectively negligible. If drawdown matters, raise it closer to Sharpe's weight or enforce a higher `calmar_cap` to reduce tolerance for deep losses.
 3. **Asymmetric trade penalties**: Because `rate_penalize_upper` is `false`, only under-trading is penalized. Enable the upper bound or increase `trade_rate_min` if over-trading is a concern.
 4. **Penalty slack**: The 0.15 `penalty_cap` combined with modest weights allows rule violations to persist. Tightening the cap or raising the weights will make holding/trade constraints more influential.
-5. **Monitoring edits**: After manual adjustments, re-run the evolutionary search and review logged metric blends to verify the optimizer behaves as intended.
+5. **Holdout emphasis**: Raising `holdout_score_weight` pushes the EA toward pure holdout optimisation (weight→1.0) while lowering it reintroduces the in-sample score; tweak alongside the gap and shortfall penalties to keep overfitting in check.
+6. **Monitoring edits**: After manual adjustments, re-run the evolutionary search and review logged metric blends to verify the optimizer behaves as intended.

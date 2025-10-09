@@ -52,6 +52,7 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
       - holding_penalty_weight, trade_rate_penalty_weight, penalty_cap (floats)
       - min_holding_days, max_holding_days, trade_rate_min, trade_rate_max (floats)
       - rate_penalize_upper (bool), elite_by_return_frac (float)
+      - holdout_score_weight, holdout_gap_tolerance, holdout_gap_penalty, holdout_shortfall_penalty (floats)
     """
     try:
         p = Path(path or "storage/config/ea_fitness.json")
@@ -667,6 +668,7 @@ def evolutionary_search(
     rate_penalize_upper: bool = True,
     elite_by_return_frac: float = 0.10,
     use_normalized_scoring: bool = True,
+    holdout_score_weight: float = 0.65,
     # Progress & logging
     progress_cb: Optional[ProgressCb] = None,
     log_file: str = "training.log",
@@ -692,15 +694,10 @@ def evolutionary_search(
         resolved_cb = _noop_progress
     progress_cb = resolved_cb
 
-    holdout_weight = 0.65
+    holdout_weight = holdout_score_weight
     holdout_gap_tolerance = 0.15
     holdout_gap_penalty = 0.50
     holdout_shortfall_penalty = 0.35
-    holdout_train_weight = 0.35
-    holdout_gap_tolerance = 0.15
-    holdout_gap_penalty = 0.50
-    holdout_train_floor = -0.25
-    holdout_train_floor_penalty = 0.35
 
     cfg = _coerce_ea_config(config)
 
@@ -780,6 +777,9 @@ def evolutionary_search(
                 "trade_rate_max": trade_rate_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
+                "holdout_score_weight": holdout_weight,
+                "holdout_gap_tolerance": holdout_gap_tolerance,
+                "holdout_gap_penalty": holdout_gap_penalty,
                 "holdout_shortfall_penalty": holdout_shortfall_penalty,
             },
         })
@@ -787,7 +787,10 @@ def evolutionary_search(
     try:
         holdout_weight = max(0.0, min(1.0, float(holdout_weight)))
     except Exception:
-        holdout_weight = 0.65
+        try:
+            holdout_weight = max(0.0, min(1.0, float(holdout_score_weight)))
+        except Exception:
+            holdout_weight = 0.65
     try:
         holdout_gap_tolerance = max(0.0, float(holdout_gap_tolerance))
     except Exception:
@@ -1418,6 +1421,10 @@ def evolutionary_search(
                 "trade_rate_max": trade_rate_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
+                "holdout_score_weight": holdout_weight,
+                "holdout_gap_tolerance": holdout_gap_tolerance,
+                "holdout_gap_penalty": holdout_gap_penalty,
+                "holdout_shortfall_penalty": holdout_shortfall_penalty,
             },
             "penalty_stats": {
                 "cap_hit_rate": cap_hit_rate,
@@ -1459,6 +1466,10 @@ def evolutionary_search(
             "trade_rate_max": trade_rate_max,
             "rate_penalize_upper": rate_penalize_upper,
             "elite_by_return_frac": elite_by_return_frac,
+            "holdout_score_weight": holdout_weight,
+            "holdout_gap_tolerance": holdout_gap_tolerance,
+            "holdout_gap_penalty": holdout_gap_penalty,
+            "holdout_shortfall_penalty": holdout_shortfall_penalty,
         },
         "generations_ran": max(0, last_gen + 1),
         "stopped_early": stopped_early,
