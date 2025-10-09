@@ -7,6 +7,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src.models._warmup import apply_disable_warmup_flag
+
 
 # ---- Internal state keys ------------------------------------------------------
 
@@ -269,7 +271,8 @@ def holdout_equity(
     if not strategy:
         return pd.DataFrame(columns=["date", "equity"])
 
-    params = params or {}
+    params_payload = apply_disable_warmup_flag(params, disable_warmup=False)
+    params_payload.setdefault("model_key", strategy)
     tickers = tickers or []
     if isinstance(tickers, str):
         tickers = [t.strip() for t in tickers.split(",") if t.strip()]
@@ -292,7 +295,13 @@ def holdout_equity(
     curves: Dict[str, pd.Series] = {}
     for sym in tickers:
         try:
-            result = run_strategy(sym, start_dt, end_dt, starting_equity, params)
+            result = run_strategy(
+                sym,
+                start_dt,
+                end_dt,
+                starting_equity,
+                dict(params_payload),
+            )
         except Exception:
             continue
 

@@ -1,8 +1,9 @@
-import types
 from datetime import datetime
+import types
 
 import pandas as pd
 
+from src.models._warmup import DISABLE_WARMUP_FLAG
 from src.utils import holdout_chart
 
 
@@ -12,6 +13,7 @@ def _make_fake_module(equity_values):
     def _run_strategy(symbol, start, end, starting_equity, params):
         assert isinstance(start, datetime)
         assert isinstance(end, datetime)
+        assert DISABLE_WARMUP_FLAG not in params
         idx = pd.date_range(start=start, periods=len(equity_values), freq="D")
         series = pd.Series(equity_values, index=idx)
         return {
