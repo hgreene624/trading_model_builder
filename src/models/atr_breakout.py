@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 from src.backtest.engine import ATRParams, backtest_atr_breakout, CostModel
+from src.models._warmup import DISABLE_WARMUP_FLAG
 from src.backtest.metrics import compute_core_metrics
 
 MODEL_KEY = "atr_breakout"
@@ -30,12 +31,15 @@ def run_strategy(
 ) -> Dict:
     p, exec_mode = _split_execution(params)
     model_key = MODEL_KEY
+    disable_warmup = False
     if isinstance(p, dict):
         payload = dict(p)
+        disable_warmup = bool(payload.pop(DISABLE_WARMUP_FLAG, False))
         model_key = str(payload.pop("model_key", MODEL_KEY) or MODEL_KEY)
         p = ATRParams(**payload)
     else:
         model_key = getattr(p, "model_key", MODEL_KEY) if hasattr(p, "model_key") else MODEL_KEY
+        disable_warmup = bool(getattr(p, DISABLE_WARMUP_FLAG, False))
     enable_costs = bool(getattr(p, "enable_costs", False))
     delay_bars = int(getattr(p, "delay_bars", 0) or 0)
     commission_override = getattr(p, "commission_bps", None)
@@ -67,6 +71,7 @@ def run_strategy(
         enable_costs=enable_costs,
         delay_bars=delay_bars,
         cost_model=cost_model,
+        use_warmup=not disable_warmup,
     )
 
 

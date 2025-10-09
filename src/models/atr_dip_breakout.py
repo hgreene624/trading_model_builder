@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 from src.backtest.engine import ATRParams, backtest_atr_breakout, CostModel
+from src.models._warmup import DISABLE_WARMUP_FLAG
 
 MODEL_KEY = "atr_dip_overlay"
 
@@ -66,9 +67,11 @@ def run_strategy(
     payload, exec_mode = _split_execution(params)
     model_key = MODEL_KEY
     overlay_cfg: Dict[str, Any] = dict(DEFAULT_DIP_OVERLAY)
+    disable_warmup = False
 
     if isinstance(payload, dict):
         params_dict = dict(payload)
+        disable_warmup = bool(params_dict.pop(DISABLE_WARMUP_FLAG, False))
         model_key = str(params_dict.pop("model_key", MODEL_KEY) or MODEL_KEY)
         params_dict.pop("entry_mode", None)
         overlay_cfg = _prepare_overlay(params_dict)
@@ -77,6 +80,7 @@ def run_strategy(
         p = ATRParams(**params_dict)
     elif isinstance(payload, ATRParams):
         p = payload
+        disable_warmup = bool(getattr(p, DISABLE_WARMUP_FLAG, False))
     else:
         p = ATRParams()
 
@@ -115,4 +119,5 @@ def run_strategy(
         enable_costs=enable_costs,
         delay_bars=delay_bars,
         cost_model=cost_model,
+        use_warmup=not disable_warmup,
     )
