@@ -1,30 +1,30 @@
 {
   "return_emphasis": {
     "use_normalized_scoring": true,
-    "alpha_cagr": 0.535,
-    "beta_calmar": 0.11,
-    "gamma_sharpe": 0.124,
-    "delta_total_return": 0.4029,
-    "calmar_cap": 3.0
+    "alpha_cagr": 0.32,
+    "beta_calmar": 0.18,
+    "gamma_sharpe": 0.30,
+    "delta_total_return": 0.20,
+    "calmar_cap": 4.0
   },
   "execution_penalties": {
-    "holding_penalty_weight": 0.05,
-    "trade_rate_penalty_weight": 0.02,
-    "penalty_cap": 0.45
+    "holding_penalty_weight": 0.06,
+    "trade_rate_penalty_weight": 0.04,
+    "penalty_cap": 0.20
   },
   "holding_windows": {
-    "min_holding_days": 3.0,
+    "min_holding_days": 2.0,
     "max_holding_days": 30.0
   },
   "trade_rate_band": {
-    "trade_rate_min": 5.0,
-    "trade_rate_max": 50.0,
-    "rate_penalize_upper": false
+    "trade_rate_min": 8.0,
+    "trade_rate_max": 40.0,
+    "rate_penalize_upper": true
   },
   "holdout_protection": {
-    "holdout_score_weight": 0.65,
-    "holdout_gap_tolerance": 0.15,
-    "holdout_gap_penalty": 0.50,
-    "holdout_shortfall_penalty": 0.35
+    "holdout_score_weight": 0.15,
+    "holdout_gap_tolerance": 0.05,
+    "holdout_gap_penalty": 0.40,
+    "holdout_shortfall_penalty": 0.30
   }
 }
