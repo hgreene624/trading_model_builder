@@ -867,6 +867,7 @@ def run_equity_curve(
             end_iso,
             starting_equity,
             params_payload,
+            params,
             disable_warmup=disable_warmup,
         )
         if isinstance(res, dict):
