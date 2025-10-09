@@ -530,6 +530,7 @@ def backtest_atr_breakout(
     cost_model: Optional[CostModel] = None,
     delay_bars: Optional[int] = None,
     capture_trades_df: Optional[bool] = None,
+    use_warmup: bool = True,
 ) -> Dict:
     """
     Simple daily ATR breakout, long-only by default.
@@ -663,9 +664,12 @@ def backtest_atr_breakout(
     warmup_bars = max([c for c in warmup_candidates if c is not None], default=0)
     warmup_padding = max(0, int(math.ceil(warmup_bars * 0.1)))
     total_warmup = warmup_bars + (warmup_padding if warmup_bars > 0 else 0)
+    warmup_enabled = bool(use_warmup)
     warmup_start = start_ts
-    if total_warmup > 0:
+    if warmup_enabled and total_warmup > 0:
         warmup_start = start_ts - BDay(total_warmup)
+    else:
+        total_warmup = 0
 
     delay_candidate = _coerce_float(getattr(params, "delay_bars", 0), 0.0)
     if delay_bars is not None:
@@ -733,7 +737,11 @@ def backtest_atr_breakout(
         cost_model.enabled = False
     enable_costs = bool(cost_model.enabled or phase0_cost_model.enabled)
 
-    df, data_fetch_start = _fetch_history_with_warmup(symbol, warmup_start, end_ts)
+    if warmup_enabled:
+        df, data_fetch_start = _fetch_history_with_warmup(symbol, warmup_start, end_ts)
+    else:
+        df = get_ohlcv(symbol, start_ts.to_pydatetime(), end_ts.to_pydatetime())
+        data_fetch_start = start_ts
     aligned_start = start_ts
     aligned_end = end_ts
     if isinstance(df.index, pd.DatetimeIndex):

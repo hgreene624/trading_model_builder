@@ -22,6 +22,7 @@ import pandas as pd
 from src.backtest.metrics import compute_core_metrics
 from src.backtest import prob_gate
 from src.data.loader import get_ohlcv
+from src.models._warmup import DISABLE_WARMUP_FLAG
 
 
 def import_callable(dotted: str):
@@ -127,7 +128,9 @@ def train_general_model(
             params_no_gate["prob_gate_enabled"] = False
             params_no_gate["prob_model_id"] = ""
             try:
-                training_res = run(sym, start_dt, end_dt, starting_equity, params_no_gate)
+                run_inputs = dict(params_no_gate)
+                run_inputs[DISABLE_WARMUP_FLAG] = True
+                training_res = run(sym, start_dt, end_dt, starting_equity, run_inputs)
             except Exception:
                 continue
             trades = training_res.get("trades", []) or []
@@ -169,7 +172,9 @@ def train_general_model(
 
     # --- per-symbol loop ---
     for sym in tickers:
-        result = run(sym, start_dt, end_dt, starting_equity, params_for_eval)
+        run_params = dict(params_for_eval)
+        run_params[DISABLE_WARMUP_FLAG] = True
+        result = run(sym, start_dt, end_dt, starting_equity, run_params)
 
         # Compute symbol-level metrics
         metrics = compute_core_metrics(result["equity"], result["daily_returns"], result["trades"])
@@ -254,9 +259,13 @@ def train_general_model(
 
     portfolio_payload = dict(agg_curve_payload) if agg_curve_payload else None
 
+    result_params = dict(params_for_eval)
+    if result_params.get("model_key") == strategy_dotted:
+        result_params.pop("model_key", None)
+
     result: Dict[str, Any] = {
         "strategy": strategy_dotted,
-        "params": dict(params_for_eval),
+        "params": result_params,
         "period": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
         "results": per_symbol,
         "aggregate": aggregate_payload,
