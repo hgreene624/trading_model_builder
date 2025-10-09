@@ -606,6 +606,8 @@ HOLDOUT_BENCHMARK_KEY = "adapter_holdout_benchmark_series"
 HOLDOUT_RETURNS_KEY = "adapter_holdout_returns_series"
 HOLDOUT_TRADES_KEY = "adapter_holdout_trades"
 
+HOLDOUT_CHART_MARGIN = dict(l=80, r=30, t=40, b=30)
+
 
 @dataclass
 class PortfolioHoldoutResult:
@@ -747,10 +749,11 @@ def _render_holdout_equity_chart(
 
     fig.update_layout(
         title="Holdout equity (anchored at starting capital)",
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=HOLDOUT_CHART_MARGIN,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
         xaxis_title="Date",
         yaxis_title="Equity ($)",
+        yaxis_title_standoff=10,
     )
     if x_range is not None:
         fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
@@ -803,8 +806,10 @@ def _render_holdout_heatmap(
     )
     fig.update_layout(
         title="Rolling performance heatmap",
-        margin=dict(l=10, r=10, t=40, b=30),
+        margin=HOLDOUT_CHART_MARGIN,
         xaxis_title="Date",
+        yaxis_title="Rolling window",
+        yaxis_title_standoff=10,
     )
     if x_range is not None:
         fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
@@ -849,8 +854,11 @@ def _render_trade_timeline(
     )
     fig.update_layout(
         title="Trade lifecycle timeline",
-        margin=dict(l=10, r=10, t=40, b=30),
+        margin=HOLDOUT_CHART_MARGIN,
         coloraxis_colorbar=dict(title="Return (%)"),
+        xaxis_title="Date",
+        yaxis_title="Symbol",
+        yaxis_title_standoff=10,
     )
     if x_range is not None:
         fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
