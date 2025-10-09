@@ -13,6 +13,7 @@ to fetch bars. Adjust that import to your real data source.
 """
 
 from __future__ import annotations
+from collections import OrderedDict
 from dataclasses import dataclass
 import os
 import math
@@ -22,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.offsets import BDay
 
 from src.backtest import prob_gate
 
@@ -127,6 +129,77 @@ from src.utils.logging_setup import SafeRotatingFileHandler
 
 logger = logging.getLogger("backtest.engine")
 _ENGINE_LOGGER_CONFIGURED = False
+
+
+@dataclass
+class _WarmupCacheEntry:
+    start: pd.Timestamp
+    end: pd.Timestamp
+    frame: pd.DataFrame
+
+
+_WARMUP_CACHE: "OrderedDict[Tuple[str, pd.Timestamp], _WarmupCacheEntry]" = OrderedDict()
+
+
+def _warmup_cache_enabled() -> bool:
+    return _env_flag("ATR_WARMUP_CACHE", True)
+
+
+def _warmup_cache_maxsize() -> int:
+    raw = os.getenv("ATR_WARMUP_CACHE_SIZE")
+    size = int(max(1, _coerce_float(raw, 4.0))) if raw is not None else 4
+    return size
+
+
+def _reset_warmup_cache() -> None:
+    """Clear warmup cache (primarily for tests)."""
+
+    _WARMUP_CACHE.clear()
+
+
+def _normalize_utc(ts: Any) -> pd.Timestamp:
+    out = pd.Timestamp(ts)
+    if out.tzinfo is None:
+        return out.tz_localize("UTC")
+    return out.tz_convert("UTC")
+
+
+def _fetch_history_with_warmup(
+    symbol: str, warmup_start: pd.Timestamp, end_ts: pd.Timestamp
+) -> Tuple[pd.DataFrame, pd.Timestamp]:
+    """Fetch history including warmup using a small LRU cache for reuse."""
+
+    warmup_start = _normalize_utc(warmup_start)
+    end_ts = _normalize_utc(end_ts)
+
+    if not _warmup_cache_enabled():
+        frame = get_ohlcv(symbol, warmup_start.to_pydatetime(), end_ts.to_pydatetime())
+        return frame.copy(), warmup_start
+
+    cache_key = (symbol, end_ts)
+    entry = _WARMUP_CACHE.get(cache_key)
+    if entry and entry.start <= warmup_start and entry.end >= end_ts:
+        _WARMUP_CACHE.move_to_end(cache_key)
+        return entry.frame.copy(), entry.start
+
+    request_start = warmup_start
+    request_end = end_ts
+    if entry is not None:
+        request_start = min(request_start, entry.start)
+        request_end = max(request_end, entry.end)
+
+    frame = get_ohlcv(symbol, request_start.to_pydatetime(), request_end.to_pydatetime())
+    frame = frame.sort_index()
+
+    new_entry = _WarmupCacheEntry(start=request_start, end=request_end, frame=frame)
+    _WARMUP_CACHE[cache_key] = new_entry
+    _WARMUP_CACHE.move_to_end(cache_key)
+
+    maxsize = _warmup_cache_maxsize()
+    while len(_WARMUP_CACHE) > maxsize:
+        _WARMUP_CACHE.popitem(last=False)
+
+    return frame.copy(), request_start
 
 
 def _ensure_engine_logger() -> None:
@@ -476,6 +549,17 @@ def backtest_atr_breakout(
         extra_params = {k: params_dict[k] for k in params_dict if k not in known}
         params = ATRParams(**params_core)
 
+    start_ts = pd.Timestamp(start)
+    if start_ts.tzinfo is None:
+        start_ts = start_ts.tz_localize("UTC")
+    else:
+        start_ts = start_ts.tz_convert("UTC")
+    end_ts = pd.Timestamp(end)
+    if end_ts.tzinfo is None:
+        end_ts = end_ts.tz_localize("UTC")
+    else:
+        end_ts = end_ts.tz_convert("UTC")
+
     entry_mode_extra = str(extra_params.get("entry_mode", "") or "").strip().lower()
     dip_overlay_raw: Dict[str, Any] = {}
     if isinstance(extra_params.get("dip_overlay"), dict):
@@ -536,6 +620,52 @@ def backtest_atr_breakout(
         extra_params["dip_overlay"] = dict(dip_overlay_config)
     else:
         dip_overlay_config = dict(DIP_OVERLAY_DEFAULTS)
+
+    trend_filter_ma = int(max(0, _coerce_float(getattr(params, "trend_filter_ma", 0), 0.0)))
+    trend_filter_slope_lookback = int(
+        max(0, _coerce_float(getattr(params, "trend_filter_slope_lookback", 0), 0.0))
+    )
+    trend_filter_slope_threshold = _coerce_float(
+        getattr(params, "trend_filter_slope_threshold", 0.0), 0.0
+    )
+    trend_filter_exit = bool(getattr(params, "trend_filter_exit", False))
+
+    vol_target_enabled = bool(getattr(params, "vol_target_enabled", False))
+    vol_target_target_pct = max(0.0, _coerce_float(getattr(params, "vol_target_target_pct", 0.0), 0.0))
+    vol_target_min_leverage = max(
+        0.0, _coerce_float(getattr(params, "vol_target_min_leverage", 0.0), 0.0)
+    )
+    vol_target_max_leverage = max(
+        vol_target_min_leverage,
+        _coerce_float(getattr(params, "vol_target_max_leverage", 1.0), 1.0),
+    )
+    vol_target_atr_window = int(
+        max(1, _coerce_float(getattr(params, "vol_target_atr_window", params.atr_n), params.atr_n))
+    )
+
+    warmup_candidates = [
+        int(params.breakout_n),
+        int(params.exit_n),
+        int(params.atr_n),
+        trend_filter_ma,
+        trend_filter_ma + trend_filter_slope_lookback,
+    ]
+    if vol_target_enabled:
+        warmup_candidates.append(vol_target_atr_window)
+    if dip_overlay_enabled:
+        warmup_candidates.append(
+            int(dip_overlay_config.get("trend_ma", DIP_OVERLAY_DEFAULTS["trend_ma"]))
+        )
+        warmup_candidates.append(
+            int(dip_overlay_config.get("dip_lookback_high", DIP_OVERLAY_DEFAULTS["dip_lookback_high"]))
+        )
+        warmup_candidates.append(DIP_RSI_PERIOD)
+    warmup_bars = max([c for c in warmup_candidates if c is not None], default=0)
+    warmup_padding = max(0, int(math.ceil(warmup_bars * 0.1)))
+    total_warmup = warmup_bars + (warmup_padding if warmup_bars > 0 else 0)
+    warmup_start = start_ts
+    if total_warmup > 0:
+        warmup_start = start_ts - BDay(total_warmup)
 
     delay_candidate = _coerce_float(getattr(params, "delay_bars", 0), 0.0)
     if delay_bars is not None:
@@ -603,11 +733,21 @@ def backtest_atr_breakout(
         cost_model.enabled = False
     enable_costs = bool(cost_model.enabled or phase0_cost_model.enabled)
 
-    df = get_ohlcv(symbol, start, end).copy()
+    df, data_fetch_start = _fetch_history_with_warmup(symbol, warmup_start, end_ts)
+    aligned_start = start_ts
+    aligned_end = end_ts
+    if isinstance(df.index, pd.DatetimeIndex):
+        if df.index.tz is None:
+            aligned_start = start_ts.tz_convert("UTC").tz_localize(None)
+            aligned_end = end_ts.tz_convert("UTC").tz_localize(None)
+        else:
+            aligned_start = start_ts.tz_convert(df.index.tz)
+            aligned_end = end_ts.tz_convert(df.index.tz)
+    df = df.loc[: aligned_end]
     base_meta = {
         "symbol": symbol,
-        "start": pd.Timestamp(start),
-        "end": pd.Timestamp(end),
+        "start": start_ts,
+        "end": end_ts,
         "params": dict(params.__dict__),
         "extra_params": extra_params,
         "execution": execution,
@@ -617,6 +757,9 @@ def backtest_atr_breakout(
         "phase0_cost_model": phase0_cost_model.as_dict(),
         "notes": "ATR breakout long-only reference engine",
     }
+    if warmup_start < start_ts:
+        base_meta["data_start"] = data_fetch_start
+        base_meta["warmup_bars"] = total_warmup
 
     if df.empty:
         empty_series = pd.Series(dtype=float)
@@ -676,9 +819,6 @@ def backtest_atr_breakout(
         vol_target_min_leverage,
         _coerce_float(getattr(params, "vol_target_max_leverage", 1.0), 1.0),
     )
-    vol_target_atr_window = int(
-        max(1, _coerce_float(getattr(params, "vol_target_atr_window", params.atr_n), params.atr_n))
-    )
     vol_target_active = vol_target_enabled and vol_target_target_pct > 0.0
     if vol_target_active:
         if vol_target_atr_window != params.atr_n:
@@ -699,14 +839,6 @@ def backtest_atr_breakout(
     else:
         vol_target_scale_series = pd.Series(1.0, index=df.index, dtype=float)
         vol_target_atr_pct = pd.Series(0.0, index=df.index, dtype=float)
-    trend_filter_ma = int(max(0, _coerce_float(getattr(params, "trend_filter_ma", 0), 0.0)))
-    trend_filter_slope_lookback = int(
-        max(0, _coerce_float(getattr(params, "trend_filter_slope_lookback", 0), 0.0))
-    )
-    trend_filter_slope_threshold = _coerce_float(
-        getattr(params, "trend_filter_slope_threshold", 0.0), 0.0
-    )
-    trend_filter_exit = bool(getattr(params, "trend_filter_exit", False))
     trend_filter_enabled = (trend_filter_ma > 1) or (trend_filter_slope_lookback > 0)
     trend_filter_price_ok = pd.Series(True, index=df.index, dtype=bool)
     trend_filter_slope_ok = pd.Series(True, index=df.index, dtype=bool)
@@ -810,6 +942,55 @@ def backtest_atr_breakout(
         dip_cooldown_days = int(
             dip_overlay_config.get("dip_cooldown_days", DIP_OVERLAY_DEFAULTS["dip_cooldown_days"])
         )
+
+    df = df.loc[(df.index >= aligned_start) & (df.index <= aligned_end)].copy()
+    if df.empty:
+        empty_series = pd.Series(dtype=float)
+        meta = dict(base_meta)
+        meta["costs"] = {
+            "enabled": enable_costs,
+            "summary": {
+                "turnover": 0.0,
+                "weighted_slippage_bps": 0.0,
+                "weighted_fees_bps": 0.0,
+                "pre_cost_cagr": 0.0,
+                "post_cost_cagr": 0.0,
+                "annualized_drag": 0.0,
+                "total_cost": 0.0,
+            },
+        }
+        return {
+            "equity": empty_series,
+            "daily_returns": empty_series,
+            "trades": [],
+            "equity_pre_cost": empty_series,
+            "daily_returns_pre_cost": empty_series,
+            "trades_df": pd.DataFrame(),
+            "meta": meta,
+        }
+
+    align_index = df.index
+    atr = atr.reindex(align_index)
+    roll_high = roll_high.reindex(align_index)
+    roll_low = roll_low.reindex(align_index)
+    prior_high = prior_high.reindex(align_index)
+    long_base = long_base.reindex(align_index).fillna(False)
+    buffer_gate = buffer_gate.reindex(align_index).fillna(False)
+    long_signal = long_signal.reindex(align_index).fillna(False)
+    raw_long_breakout = raw_long_breakout.reindex(align_index).fillna(False)
+    trend_filter_price_ok = trend_filter_price_ok.reindex(align_index).fillna(False)
+    trend_filter_slope_ok = trend_filter_slope_ok.reindex(align_index).fillna(False)
+    trend_filter_ok = trend_filter_ok.reindex(align_index).fillna(False)
+    vol_target_scale_series = vol_target_scale_series.reindex(align_index).fillna(1.0)
+    vol_target_atr_pct = vol_target_atr_pct.reindex(align_index).fillna(0.0)
+    if gate_probabilities is not None:
+        gate_probabilities = gate_probabilities.reindex(align_index)
+    if dip_overlay_active:
+        dip_trend_ok = dip_trend_ok.reindex(align_index).fillna(False)
+        dip_depth_ok = dip_depth_ok.reindex(align_index).fillna(False)
+        dip_rsi_ok = dip_rsi_ok.reindex(align_index).fillna(False)
+        dip_confirm_ok = dip_confirm_ok.reindex(align_index).fillna(False)
+        dip_conditions_ok = dip_conditions_ok.reindex(align_index).fillna(False)
 
     in_pos = False
     entry_idx: Optional[int] = None
