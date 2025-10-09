@@ -839,6 +839,8 @@ def run_equity_curve(
     end_iso: str,
     starting_equity: float,
     params: Dict[str, Any],
+    *,
+    disable_warmup: bool = True,
 ) -> pd.DataFrame:
     """
     Produce an equity curve [date,equity] for the window using the same path the EA uses.
@@ -854,7 +856,15 @@ def run_equity_curve(
     try:
         from src.models.general_trainer import train_general_model
         _dbg("trainer: calling train_general_model(...)")
-        res = train_general_model(strategy_dotted, tickers, start_iso, end_iso, starting_equity, params)
+        res = train_general_model(
+            strategy_dotted,
+            tickers,
+            start_iso,
+            end_iso,
+            starting_equity,
+            params,
+            disable_warmup=disable_warmup,
+        )
         if isinstance(res, dict):
             agg = res.get("aggregate") or {}
             for key in ("equity_curve", "curve", "equity"):
@@ -959,9 +969,25 @@ def _plot_gen_topK(
     flat_warn = False
     for _, row in G.iterrows():
         params = _row_params(row)
-        ec_train = run_equity_curve(strategy, tickers, train_start, train_end, starting_equity, params)
+        ec_train = run_equity_curve(
+            strategy,
+            tickers,
+            train_start,
+            train_end,
+            starting_equity,
+            params,
+            disable_warmup=True,
+        )
         end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
-        ec_test = run_equity_curve(strategy, tickers, test_start, test_end, end_equity, params)
+        ec_test = run_equity_curve(
+            strategy,
+            tickers,
+            test_start,
+            test_end,
+            end_equity,
+            params,
+            disable_warmup=False,
+        )
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
         if len(ec) <= 2 or ec["equity"].nunique() <= 1:
             flat_warn = True
@@ -1014,9 +1040,25 @@ def _plot_leaders_through_gen(
             continue
         row = G.loc[G["total_return"].idxmax()]  # best by return in that gen
         params = _row_params(row)
-        ec_train = run_equity_curve(strategy, tickers, train_start, train_end, starting_equity, params)
+        ec_train = run_equity_curve(
+            strategy,
+            tickers,
+            train_start,
+            train_end,
+            starting_equity,
+            params,
+            disable_warmup=True,
+        )
         end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
-        ec_test = run_equity_curve(strategy, tickers, test_start, test_end, end_equity, params)
+        ec_test = run_equity_curve(
+            strategy,
+            tickers,
+            test_start,
+            test_end,
+            end_equity,
+            params,
+            disable_warmup=False,
+        )
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
         legend_label = _best_individual_label(row)
         if not legend_label:
@@ -1285,6 +1327,7 @@ def main():
                     train_end,
                     starting_equity,
                     params,
+                    disable_warmup=True,
                 )
                 if not train_curve.empty and "equity" in train_curve:
                     end_equity = float(train_curve["equity"].iloc[-1])
@@ -1387,6 +1430,7 @@ def main():
                 train_end,
                 starting_equity,
                 params,
+                disable_warmup=True,
             )
             end_equity = ec_train["equity"].iloc[-1] if not ec_train.empty else starting_equity
             ec_test = run_equity_curve(
@@ -1396,6 +1440,7 @@ def main():
                 test_end,
                 end_equity,
                 params,
+                disable_warmup=False,
             )
             ec = pd.concat([ec_train, ec_test], ignore_index=True)
             if {"date", "equity"}.issubset(ec.columns):

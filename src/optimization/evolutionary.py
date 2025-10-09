@@ -603,6 +603,7 @@ def _eval_one(
                 test_end,
                 starting_equity,
                 params,
+                disable_warmup=False,
             )
             test_metrics = test_res.get("aggregate", {}).get("metrics", {}) or {}
         except Exception as exc:
