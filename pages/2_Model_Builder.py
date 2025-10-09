@@ -48,6 +48,12 @@ BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
         "tp_multiple": 1.78,
         "holding_period_limit": 20,
         "risk_per_trade": 0.005,
+        "use_risk_reward_sizing": False,
+        "risk_reward_min_scale": 0.5,
+        "risk_reward_max_scale": 1.5,
+        "risk_reward_target": 1.5,
+        "risk_reward_sensitivity": 0.5,
+        "risk_reward_fallback": 1.0,
         "use_trend_filter": False,
         "sma_fast": 20,
         "sma_slow": 50,
@@ -74,6 +80,12 @@ BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
         "tp_multiple": 1.78,
         "holding_period_limit": 20,
         "risk_per_trade": 0.005,
+        "use_risk_reward_sizing": False,
+        "risk_reward_min_scale": 0.5,
+        "risk_reward_max_scale": 1.5,
+        "risk_reward_target": 1.5,
+        "risk_reward_sensitivity": 0.5,
+        "risk_reward_fallback": 1.0,
         "use_trend_filter": False,
         "sma_fast": 20,
         "sma_slow": 50,
@@ -108,6 +120,11 @@ BASE_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
     "tp_multiple": (0.2, 10.0),
     "holding_period_limit": (1, 400),
     "risk_per_trade": (0.0005, 0.05),
+    "risk_reward_min_scale": (0.0, 1.0),
+    "risk_reward_max_scale": (0.5, 3.0),
+    "risk_reward_target": (0.5, 5.0),
+    "risk_reward_sensitivity": (0.0, 2.0),
+    "risk_reward_fallback": (0.5, 5.0),
     "sma_fast": (5, 100),
     "sma_slow": (10, 200),
     "sma_long": (100, 400),
@@ -164,6 +181,20 @@ EA_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
     "trend_filter_slope_threshold_max": (0.0, 0.02),
     "trend_filter_exit_min": (0, 1),
     "trend_filter_exit_max": (0, 1),
+    "risk_per_trade_min": (0.0005, 0.05),
+    "risk_per_trade_max": (0.0005, 0.05),
+    "use_risk_reward_sizing_min": (0, 1),
+    "use_risk_reward_sizing_max": (0, 1),
+    "risk_reward_min_scale_min": (0.0, 1.0),
+    "risk_reward_min_scale_max": (0.0, 1.5),
+    "risk_reward_max_scale_min": (0.5, 3.0),
+    "risk_reward_max_scale_max": (0.5, 4.0),
+    "risk_reward_target_min": (0.5, 3.0),
+    "risk_reward_target_max": (0.5, 6.0),
+    "risk_reward_sensitivity_min": (0.0, 2.0),
+    "risk_reward_sensitivity_max": (0.0, 2.0),
+    "risk_reward_fallback_min": (0.5, 3.0),
+    "risk_reward_fallback_max": (0.5, 6.0),
 }
 
 EA_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
@@ -181,6 +212,13 @@ EA_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
     ("trend_filter_slope_lookback_min", "trend_filter_slope_lookback_max"),
     ("trend_filter_slope_threshold_min", "trend_filter_slope_threshold_max"),
     ("trend_filter_exit_min", "trend_filter_exit_max"),
+    ("risk_per_trade_min", "risk_per_trade_max"),
+    ("use_risk_reward_sizing_min", "use_risk_reward_sizing_max"),
+    ("risk_reward_min_scale_min", "risk_reward_min_scale_max"),
+    ("risk_reward_max_scale_min", "risk_reward_max_scale_max"),
+    ("risk_reward_target_min", "risk_reward_target_max"),
+    ("risk_reward_sensitivity_min", "risk_reward_sensitivity_max"),
+    ("risk_reward_fallback_min", "risk_reward_fallback_max"),
 ]
 
 EA_DIP_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
@@ -256,6 +294,20 @@ EA_DEFAULTS_BASE: Dict[str, Any] = {
     "trend_filter_slope_threshold_max": 0.001,
     "trend_filter_exit_min": 0,
     "trend_filter_exit_max": 1,
+    "risk_per_trade_min": 0.002,
+    "risk_per_trade_max": 0.02,
+    "use_risk_reward_sizing_min": 0,
+    "use_risk_reward_sizing_max": 1,
+    "risk_reward_min_scale_min": 0.4,
+    "risk_reward_min_scale_max": 1.0,
+    "risk_reward_max_scale_min": 1.0,
+    "risk_reward_max_scale_max": 2.5,
+    "risk_reward_target_min": 1.0,
+    "risk_reward_target_max": 3.0,
+    "risk_reward_sensitivity_min": 0.0,
+    "risk_reward_sensitivity_max": 1.0,
+    "risk_reward_fallback_min": 1.0,
+    "risk_reward_fallback_max": 3.0,
 }
 
 EA_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
@@ -410,6 +462,20 @@ def _apply_bounds_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> No
         "trend_filter_slope_threshold_max": ("trend_filter_slope_threshold_max", float),
         "trend_filter_exit_min": ("trend_filter_exit_min", int),
         "trend_filter_exit_max": ("trend_filter_exit_max", int),
+        "risk_per_trade_min": ("risk_per_trade_min", float),
+        "risk_per_trade_max": ("risk_per_trade_max", float),
+        "use_risk_reward_sizing_min": ("use_risk_reward_sizing_min", int),
+        "use_risk_reward_sizing_max": ("use_risk_reward_sizing_max", int),
+        "risk_reward_min_scale_min": ("risk_reward_min_scale_min", float),
+        "risk_reward_min_scale_max": ("risk_reward_min_scale_max", float),
+        "risk_reward_max_scale_min": ("risk_reward_max_scale_min", float),
+        "risk_reward_max_scale_max": ("risk_reward_max_scale_max", float),
+        "risk_reward_target_min": ("risk_reward_target_min", float),
+        "risk_reward_target_max": ("risk_reward_target_max", float),
+        "risk_reward_sensitivity_min": ("risk_reward_sensitivity_min", float),
+        "risk_reward_sensitivity_max": ("risk_reward_sensitivity_max", float),
+        "risk_reward_fallback_min": ("risk_reward_fallback_min", float),
+        "risk_reward_fallback_max": ("risk_reward_fallback_max", float),
     }
     for src, (dest, caster) in mapping.items():
         if src in profile and profile[src] is not None:
@@ -439,6 +505,12 @@ def _apply_strategy_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> 
         "stop_atr_mult": ("atr_multiple", float),
         "take_profit_atr_mult": ("tp_multiple", float),
         "trailing_atr_mult": ("trailing_atr_mult", float),
+        "use_risk_reward_sizing": ("use_risk_reward_sizing", bool),
+        "risk_reward_min_scale": ("risk_reward_min_scale", float),
+        "risk_reward_max_scale": ("risk_reward_max_scale", float),
+        "risk_reward_target": ("risk_reward_target", float),
+        "risk_reward_sensitivity": ("risk_reward_sensitivity", float),
+        "risk_reward_fallback": ("risk_reward_fallback", float),
     }
     for src, (dest, caster) in mapping.items():
         if src in profile and profile[src] is not None:
@@ -1741,6 +1813,147 @@ with st.expander("Optimization parameter bounds", expanded=True):
     ea_cfg["tp_multiple_min"], ea_cfg["tp_multiple_max"] = float(tpm_lo), float(tpm_hi)
     ea_cfg["hold_min"], ea_cfg["hold_max"] = int(hold_lo), int(hold_hi)
 
+    risk_bound_cols = st.columns(3)
+    with risk_bound_cols[0]:
+        rptr_lo = st.number_input(
+            "risk_per_trade min",
+            0.0005,
+            0.5,
+            float(ea_cfg.get("risk_per_trade_min", 0.002)),
+            0.0005,
+            format="%.4f",
+            help="Lower bound for fraction of equity risked per trade during EA runs.",
+        )
+        rptr_hi = st.number_input(
+            "risk_per_trade max",
+            float(rptr_lo),
+            0.5,
+            float(ea_cfg.get("risk_per_trade_max", 0.02)),
+            0.0005,
+            format="%.4f",
+            help="Upper bound for fraction of equity risked per trade during EA runs.",
+        )
+        use_min_default = int(ea_cfg.get("use_risk_reward_sizing_min", 0))
+        use_max_default = int(ea_cfg.get("use_risk_reward_sizing_max", 1))
+        use_options = [0, 1]
+        use_min_idx = use_options.index(use_min_default) if use_min_default in use_options else 0
+        use_max_idx = use_options.index(use_max_default) if use_max_default in use_options else 1
+        use_min = st.selectbox(
+            "risk/reward sizing min",
+            options=use_options,
+            index=use_min_idx,
+            help="Minimum boolean (0=off,1=on) allowed for risk/reward sizing in the EA genome.",
+            format_func=lambda x: f"{x} ({'on' if x else 'off'})",
+        )
+        use_max = st.selectbox(
+            "risk/reward sizing max",
+            options=use_options,
+            index=use_max_idx,
+            help="Maximum boolean (0=off,1=on) allowed for risk/reward sizing in the EA genome.",
+            format_func=lambda x: f"{x} ({'on' if x else 'off'})",
+        )
+        if use_max < use_min:
+            use_max = use_min
+    with risk_bound_cols[1]:
+        rrmin_lo = st.number_input(
+            "rr_min_scale min",
+            0.0,
+            2.0,
+            float(ea_cfg.get("risk_reward_min_scale_min", 0.4)),
+            0.1,
+            help="Smallest multiplier clamp when sizing by reward/risk.",
+        )
+        rrmin_hi = st.number_input(
+            "rr_min_scale max",
+            float(rrmin_lo),
+            2.0,
+            float(ea_cfg.get("risk_reward_min_scale_max", 1.0)),
+            0.1,
+            help="Largest multiplier clamp for the lower bound.",
+        )
+        rrmax_lo = st.number_input(
+            "rr_max_scale min",
+            0.5,
+            5.0,
+            float(ea_cfg.get("risk_reward_max_scale_min", 1.0)),
+            0.1,
+            help="Minimum multiplier allowed for the upper clamp.",
+        )
+    with risk_bound_cols[2]:
+        rrmax_hi = st.number_input(
+            "rr_max_scale max",
+            float(rrmax_lo),
+            5.0,
+            float(ea_cfg.get("risk_reward_max_scale_max", 2.5)),
+            0.1,
+            help="Maximum multiplier allowed for the upper clamp.",
+        )
+        target_lo = st.number_input(
+            "rr_target min",
+            0.1,
+            10.0,
+            float(ea_cfg.get("risk_reward_target_min", 1.0)),
+            0.1,
+            help="Smallest reward/risk ratio the EA can treat as neutral.",
+        )
+        target_hi = st.number_input(
+            "rr_target max",
+            float(target_lo),
+            10.0,
+            float(ea_cfg.get("risk_reward_target_max", 3.0)),
+            0.1,
+            help="Largest reward/risk ratio the EA can treat as neutral.",
+        )
+
+    rr_cols_secondary = st.columns(3)
+    with rr_cols_secondary[0]:
+        sens_lo = st.number_input(
+            "rr_sensitivity min",
+            0.0,
+            3.0,
+            float(ea_cfg.get("risk_reward_sensitivity_min", 0.0)),
+            0.05,
+            help="Lower bound on multiplier slope when scaling by reward/risk.",
+        )
+        sens_hi = st.number_input(
+            "rr_sensitivity max",
+            float(sens_lo),
+            3.0,
+            float(ea_cfg.get("risk_reward_sensitivity_max", 1.0)),
+            0.05,
+            help="Upper bound on multiplier slope when scaling by reward/risk.",
+        )
+    with rr_cols_secondary[1]:
+        fallback_lo = st.number_input(
+            "rr_fallback min",
+            0.1,
+            10.0,
+            float(ea_cfg.get("risk_reward_fallback_min", 1.0)),
+            0.1,
+            help="Minimum assumed reward/risk ratio when no explicit target exists.",
+        )
+        fallback_hi = st.number_input(
+            "rr_fallback max",
+            float(fallback_lo),
+            10.0,
+            float(ea_cfg.get("risk_reward_fallback_max", 3.0)),
+            0.1,
+            help="Maximum assumed reward/risk ratio when no explicit target exists.",
+        )
+    with rr_cols_secondary[2]:
+        st.markdown(
+            """<div style='height:2.2em'></div>""",
+            unsafe_allow_html=True,
+        )
+
+    ea_cfg["risk_per_trade_min"], ea_cfg["risk_per_trade_max"] = float(rptr_lo), float(rptr_hi)
+    ea_cfg["use_risk_reward_sizing_min"], ea_cfg["use_risk_reward_sizing_max"] = int(use_min), int(use_max)
+    ea_cfg["risk_reward_min_scale_min"], ea_cfg["risk_reward_min_scale_max"] = float(rrmin_lo), float(rrmin_hi)
+    ea_cfg["risk_reward_max_scale_min"], ea_cfg["risk_reward_max_scale_max"] = float(rrmax_lo), float(rrmax_hi)
+    ea_cfg["risk_reward_target_min"], ea_cfg["risk_reward_target_max"] = float(target_lo), float(target_hi)
+    ea_cfg["risk_reward_sensitivity_min"], ea_cfg["risk_reward_sensitivity_max"] = float(sens_lo), float(sens_hi)
+    ea_cfg["risk_reward_fallback_min"], ea_cfg["risk_reward_fallback_max"] = float(fallback_lo), float(fallback_hi)
+
 if dip_strategy:
     with st.expander("Buy-the-Dip Parameters", expanded=True):
         dip_profiles = _profiles_for("buy_the_dip")
@@ -2010,6 +2223,57 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
             0.0005,
             format="%.4f",
             help="Fraction of equity risked per trade.",
+        )
+        base["use_risk_reward_sizing"] = st.checkbox(
+            "use_risk_reward_sizing",
+            value=bool(base.get("use_risk_reward_sizing", False)),
+            help="Enable ATR-based risk sizing that scales position size by the trade's reward/risk ratio.",
+        )
+        rr_disabled = not base["use_risk_reward_sizing"]
+        base["risk_reward_min_scale"] = st.number_input(
+            "risk_reward_min_scale",
+            0.0,
+            5.0,
+            float(base.get("risk_reward_min_scale", 0.5)),
+            0.1,
+            help="Lower clamp for the risk/reward sizing multiplier.",
+            disabled=rr_disabled,
+        )
+        base["risk_reward_max_scale"] = st.number_input(
+            "risk_reward_max_scale",
+            0.0,
+            5.0,
+            float(base.get("risk_reward_max_scale", 1.5)),
+            0.1,
+            help="Upper clamp for the risk/reward sizing multiplier.",
+            disabled=rr_disabled,
+        )
+        base["risk_reward_target"] = st.number_input(
+            "risk_reward_target",
+            0.1,
+            10.0,
+            float(base.get("risk_reward_target", 1.5)),
+            0.1,
+            help="Reward/risk ratio considered neutral (multiplier=1).",
+            disabled=rr_disabled,
+        )
+        base["risk_reward_sensitivity"] = st.number_input(
+            "risk_reward_sensitivity",
+            0.0,
+            3.0,
+            float(base.get("risk_reward_sensitivity", 0.5)),
+            0.1,
+            help="Multiplier slope per unit change in reward/risk vs target.",
+            disabled=rr_disabled,
+        )
+        base["risk_reward_fallback"] = st.number_input(
+            "risk_reward_fallback",
+            0.1,
+            10.0,
+            float(base.get("risk_reward_fallback", 1.0)),
+            0.1,
+            help="Assumed reward/risk ratio when no explicit take-profit is defined.",
+            disabled=rr_disabled,
         )
         base["use_trend_filter"] = st.checkbox(
             "use_trend_filter",
@@ -2308,6 +2572,25 @@ if run_btn:
         "atr_multiple": _clamp_float(cfg["atr_multiple_min"], cfg["atr_multiple_max"]),
         "tp_multiple": _clamp_float(cfg["tp_multiple_min"], cfg["tp_multiple_max"]),
         "holding_period_limit": _clamp_int(cfg["hold_min"], cfg["hold_max"]),
+        "risk_per_trade": _clamp_float(cfg["risk_per_trade_min"], cfg["risk_per_trade_max"]),
+        "use_risk_reward_sizing": _clamp_int(
+            cfg["use_risk_reward_sizing_min"], cfg["use_risk_reward_sizing_max"]
+        ),
+        "risk_reward_min_scale": _clamp_float(
+            cfg["risk_reward_min_scale_min"], cfg["risk_reward_min_scale_max"]
+        ),
+        "risk_reward_max_scale": _clamp_float(
+            cfg["risk_reward_max_scale_min"], cfg["risk_reward_max_scale_max"]
+        ),
+        "risk_reward_target": _clamp_float(
+            cfg["risk_reward_target_min"], cfg["risk_reward_target_max"]
+        ),
+        "risk_reward_sensitivity": _clamp_float(
+            cfg["risk_reward_sensitivity_min"], cfg["risk_reward_sensitivity_max"]
+        ),
+        "risk_reward_fallback": _clamp_float(
+            cfg["risk_reward_fallback_min"], cfg["risk_reward_fallback_max"]
+        ),
     }
 
     param_space.update(
@@ -2595,6 +2878,13 @@ if run_btn:
         "atr_multiple",
         "tp_multiple",
         "holding_period_limit",
+        "risk_per_trade",
+        "use_risk_reward_sizing",
+        "risk_reward_min_scale",
+        "risk_reward_max_scale",
+        "risk_reward_target",
+        "risk_reward_sensitivity",
+        "risk_reward_fallback",
     ]
     if dip_strategy:
         leaderboard_keys.extend(
