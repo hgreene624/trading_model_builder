@@ -13,6 +13,7 @@ to fetch bars. Adjust that import to your real data source.
 """
 
 from __future__ import annotations
+from collections import OrderedDict
 from dataclasses import dataclass
 import os
 import math
@@ -128,6 +129,77 @@ from src.utils.logging_setup import SafeRotatingFileHandler
 
 logger = logging.getLogger("backtest.engine")
 _ENGINE_LOGGER_CONFIGURED = False
+
+
+@dataclass
+class _WarmupCacheEntry:
+    start: pd.Timestamp
+    end: pd.Timestamp
+    frame: pd.DataFrame
+
+
+_WARMUP_CACHE: "OrderedDict[Tuple[str, pd.Timestamp], _WarmupCacheEntry]" = OrderedDict()
+
+
+def _warmup_cache_enabled() -> bool:
+    return _env_flag("ATR_WARMUP_CACHE", True)
+
+
+def _warmup_cache_maxsize() -> int:
+    raw = os.getenv("ATR_WARMUP_CACHE_SIZE")
+    size = int(max(1, _coerce_float(raw, 4.0))) if raw is not None else 4
+    return size
+
+
+def _reset_warmup_cache() -> None:
+    """Clear warmup cache (primarily for tests)."""
+
+    _WARMUP_CACHE.clear()
+
+
+def _normalize_utc(ts: Any) -> pd.Timestamp:
+    out = pd.Timestamp(ts)
+    if out.tzinfo is None:
+        return out.tz_localize("UTC")
+    return out.tz_convert("UTC")
+
+
+def _fetch_history_with_warmup(
+    symbol: str, warmup_start: pd.Timestamp, end_ts: pd.Timestamp
+) -> Tuple[pd.DataFrame, pd.Timestamp]:
+    """Fetch history including warmup using a small LRU cache for reuse."""
+
+    warmup_start = _normalize_utc(warmup_start)
+    end_ts = _normalize_utc(end_ts)
+
+    if not _warmup_cache_enabled():
+        frame = get_ohlcv(symbol, warmup_start.to_pydatetime(), end_ts.to_pydatetime())
+        return frame.copy(), warmup_start
+
+    cache_key = (symbol, end_ts)
+    entry = _WARMUP_CACHE.get(cache_key)
+    if entry and entry.start <= warmup_start and entry.end >= end_ts:
+        _WARMUP_CACHE.move_to_end(cache_key)
+        return entry.frame.copy(), entry.start
+
+    request_start = warmup_start
+    request_end = end_ts
+    if entry is not None:
+        request_start = min(request_start, entry.start)
+        request_end = max(request_end, entry.end)
+
+    frame = get_ohlcv(symbol, request_start.to_pydatetime(), request_end.to_pydatetime())
+    frame = frame.sort_index()
+
+    new_entry = _WarmupCacheEntry(start=request_start, end=request_end, frame=frame)
+    _WARMUP_CACHE[cache_key] = new_entry
+    _WARMUP_CACHE.move_to_end(cache_key)
+
+    maxsize = _warmup_cache_maxsize()
+    while len(_WARMUP_CACHE) > maxsize:
+        _WARMUP_CACHE.popitem(last=False)
+
+    return frame.copy(), request_start
 
 
 def _ensure_engine_logger() -> None:
@@ -661,7 +733,7 @@ def backtest_atr_breakout(
         cost_model.enabled = False
     enable_costs = bool(cost_model.enabled or phase0_cost_model.enabled)
 
-    df = get_ohlcv(symbol, warmup_start.to_pydatetime(), end_ts.to_pydatetime()).copy()
+    df, data_fetch_start = _fetch_history_with_warmup(symbol, warmup_start, end_ts)
     aligned_start = start_ts
     aligned_end = end_ts
     if isinstance(df.index, pd.DatetimeIndex):
@@ -686,7 +758,7 @@ def backtest_atr_breakout(
         "notes": "ATR breakout long-only reference engine",
     }
     if warmup_start < start_ts:
-        base_meta["data_start"] = warmup_start
+        base_meta["data_start"] = data_fetch_start
         base_meta["warmup_bars"] = total_warmup
 
     if df.empty:

@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
 
-from src.backtest.engine import ATRParams, backtest_atr_breakout
+from src.backtest.engine import ATRParams, backtest_atr_breakout, _reset_warmup_cache
 
 
 def test_backtest_requests_warmup_history(monkeypatch):
+    _reset_warmup_cache()
     idx = pd.bdate_range("2023-01-02", periods=400, tz="UTC")
     base_price = pd.Series(100.0 + np.linspace(0, 40, len(idx)), index=idx)
     frame = pd.DataFrame(
@@ -70,3 +71,50 @@ def test_backtest_requests_warmup_history(monkeypatch):
         meta_start = meta_start.tz_convert("UTC")
     assert meta_start <= requested_start
     assert meta.get("warmup_bars") >= params.breakout_n
+
+
+def test_warmup_cache_reuses_extended_history(monkeypatch):
+    _reset_warmup_cache()
+    calls = {"count": 0}
+
+    idx = pd.bdate_range("2022-01-03", periods=600, tz="UTC")
+    prices = pd.Series(150.0 + np.linspace(0, 60, len(idx)), index=idx)
+    frame = pd.DataFrame(
+        {
+            "open": prices,
+            "high": prices + 1.0,
+            "low": prices - 1.0,
+            "close": prices + 0.2,
+            "volume": 1_000,
+        }
+    )
+
+    def fake_loader(symbol, start, end):
+        calls["count"] += 1
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        if start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize("UTC")
+        else:
+            start_ts = start_ts.tz_convert("UTC")
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.tz_localize("UTC")
+        else:
+            end_ts = end_ts.tz_convert("UTC")
+        return frame.loc[start_ts:end_ts]
+
+    monkeypatch.setattr("src.backtest.engine.get_ohlcv", fake_loader)
+    monkeypatch.setenv("ATR_WARMUP_CACHE", "1")
+    monkeypatch.setenv("ATR_WARMUP_CACHE_SIZE", "2")
+
+    start = pd.Timestamp("2023-06-01", tz="UTC")
+    end = pd.Timestamp("2023-12-29", tz="UTC")
+
+    wide_params = ATRParams(breakout_n=80, exit_n=20, atr_n=40, atr_multiple=2.0)
+    narrow_params = ATRParams(breakout_n=20, exit_n=10, atr_n=14, atr_multiple=1.5)
+
+    backtest_atr_breakout("TEST", start, end, 100_000.0, wide_params)
+    assert calls["count"] == 1
+
+    backtest_atr_breakout("TEST", start, end, 100_000.0, narrow_params)
+    assert calls["count"] == 1
