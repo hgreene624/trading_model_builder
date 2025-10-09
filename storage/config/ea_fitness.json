@@ -18,5 +18,10 @@
   "trade_rate_max": 50.0,
   "rate_penalize_upper": false,
 
-  "elite_by_return_frac": 0.10
+  "elite_by_return_frac": 0.10,
+
+  "holdout_score_weight": 0.65,
+  "holdout_gap_tolerance": 0.15,
+  "holdout_gap_penalty": 0.50,
+  "holdout_shortfall_penalty": 0.35
 }
