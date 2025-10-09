@@ -1,10 +1,10 @@
 {
   "use_normalized_scoring": true,
 
-  "alpha_cagr": 0.335,
+  "alpha_cagr": 0.535,
   "beta_calmar": 0.11,
   "gamma_sharpe": 0.124,
-  "delta_total_return": 0.5029,
+  "delta_total_return": 0.4029,
   "calmar_cap": 3.0,
 
   "holding_penalty_weight": 0.05,
