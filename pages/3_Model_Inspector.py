@@ -231,6 +231,14 @@ def _coerce_timestamp(value: Any) -> Optional[pd.Timestamp]:
     return pd.Timestamp(ts)
 
 
+def _strategy_params_payload(
+    strategy_dotted: str, params: Dict[str, Any] | None, *, disable_warmup: bool
+) -> Dict[str, Any]:
+    payload = apply_disable_warmup_flag(params, disable_warmup=disable_warmup)
+    payload.setdefault("model_key", strategy_dotted)
+    return payload
+
+
 @st.cache_data(show_spinner=True, hash_funcs={dict: lambda d: json.dumps(d, sort_keys=True)})
 def load_trades(
     strategy_dotted: str,
@@ -239,6 +247,8 @@ def load_trades(
     end_iso: str,
     starting_equity: float,
     params: Dict[str, Any],
+    *,
+    disable_warmup: bool = True,
 ) -> pd.DataFrame:
     runner = _import_strategy_runner(strategy_dotted)
     if runner is None:
@@ -249,8 +259,9 @@ def load_trades(
     if start_ts is None or end_ts is None:
         return pd.DataFrame()
 
-    params_payload = dict(params or {})
-    params_payload.setdefault("model_key", strategy_dotted)
+    params_payload = _strategy_params_payload(
+        strategy_dotted, params, disable_warmup=disable_warmup
+    )
 
     if isinstance(tickers, str):
         tickers = [t.strip() for t in tickers.split(",") if t.strip()]
@@ -854,7 +865,9 @@ def run_equity_curve(
         tickers = [t.strip() for t in tickers.split(",") if t.strip()]
     tickers = list(tickers)
 
-    params_payload = apply_disable_warmup_flag(params, disable_warmup=disable_warmup)
+    params_payload = _strategy_params_payload(
+        strategy_dotted, params, disable_warmup=disable_warmup
+    )
 
     # 1) general_trainer
     try:
@@ -867,7 +880,6 @@ def run_equity_curve(
             end_iso,
             starting_equity,
             params_payload,
-            params,
             disable_warmup=disable_warmup,
         )
         if isinstance(res, dict):
@@ -1323,6 +1335,7 @@ def main():
                     train_end,
                     starting_equity,
                     params,
+                    disable_warmup=True,
                 )
 
                 train_curve = run_equity_curve(
@@ -1348,6 +1361,7 @@ def main():
                         test_end,
                         end_equity,
                         params,
+                        disable_warmup=False,
                     )
 
                 window_frames: Dict[str, pd.DataFrame] = {}
