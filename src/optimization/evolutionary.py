@@ -586,6 +586,9 @@ def _eval_one(
     _loader_file = getattr(L, "__file__", "<??>")
     res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
     metrics = res.get("aggregate", {}).get("metrics", {}) or {}
+    resolved_params = res.get("params") if isinstance(res, dict) else None
+    if not isinstance(resolved_params, dict):
+        resolved_params = None
 
     test_metrics: Optional[Dict[str, Any]] = None
     test_error: Optional[str] = None
@@ -611,6 +614,8 @@ def _eval_one(
         "params": params,
         "loader_file": _loader_file,
     }
+    if resolved_params is not None:
+        payload["resolved_params"] = resolved_params
     if test_metrics is not None:
         payload["test_metrics"] = test_metrics
     if test_error is not None:
@@ -952,6 +957,7 @@ def evolutionary_search(
             logger.log("ea_config", cfg.to_log_payload())
 
         gen_scores: List[Tuple[Dict[str, Any], float, float]] = []
+        gen_records: List[Dict[str, Any]] = []
         gen_trades: List[int] = []
         no_trade_count = 0
         best_gen_return_rec: Optional[Tuple[Dict[str, Any], float, float]] = None  # (params, total_return, score)
@@ -1024,6 +1030,7 @@ def evolutionary_search(
                 elapsed = 0.0
                 loader_file = None
                 test_error = None
+                resolved_params: Optional[Dict[str, Any]] = None
             else:
                 rec = results.pop(hit_idx)
                 metrics_train = rec.get("metrics", {}) or {}
@@ -1033,6 +1040,21 @@ def evolutionary_search(
                 elapsed = rec.get("elapsed_sec", 0.0)
                 loader_file = rec.get("loader_file")
                 test_error = rec.get("test_error")
+                resolved_params = rec.get("resolved_params")
+                if not isinstance(resolved_params, dict):
+                    resolved_params = None
+
+            raw_params_copy: Dict[str, Any]
+            if isinstance(params, dict):
+                raw_params_copy = dict(params)
+            else:
+                raw_params_copy = {}
+            resolved_params_copy = dict(resolved_params) if resolved_params is not None else None
+            params_for_logging: Dict[str, Any]
+            if resolved_params_copy is not None:
+                params_for_logging = resolved_params_copy
+            else:
+                params_for_logging = raw_params_copy
 
             train_eval = _score_metrics_block(metrics_train)
             test_eval = _score_metrics_block(metrics_test) if metrics_test else None
@@ -1143,10 +1165,19 @@ def evolutionary_search(
 
             # Track best-by-return for this generation
             if (best_gen_return_rec is None) or (ret > best_gen_return_rec[1]):
-                best_gen_return_rec = (params, ret, score)
+                best_gen_return_rec = (params_for_logging, ret, score)
             # Track best-by-return across the whole run
             if (best_run_return_rec is None) or (ret > best_run_return_rec[1]):
-                best_run_return_rec = (params, ret, score)
+                best_run_return_rec = (params_for_logging, ret, score)
+
+            gen_records.append(
+                {
+                    "resolved_params": dict(params_for_logging) if isinstance(params_for_logging, dict) else params_for_logging,
+                    "raw_params": raw_params_copy,
+                    "score": score,
+                    "return": ret,
+                }
+            )
 
             payload = {
                 "gen": gen,
@@ -1159,6 +1190,7 @@ def evolutionary_search(
                 "loader_file": loader_file,
                 "fitness_debug": fitness_dbg,
             }
+            payload["resolved_params"] = params_for_logging
             if test_range is not None:
                 payload["test_metrics"] = metrics_test
             if blend_info is not None:
@@ -1177,7 +1209,12 @@ def evolutionary_search(
         # ---- Selection & breeding ----
         # Sort primarily by score, then tie-break by total_return
         gen_scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
-        scored.extend([(p, s) for (p, s, _ret) in gen_scores])
+        for rec in gen_records:
+            params_out = rec.get("resolved_params")
+            if not isinstance(params_out, dict):
+                params_out = rec.get("raw_params")
+            params_out = dict(params_out) if isinstance(params_out, dict) else {}
+            scored.append((params_out, rec.get("score", 0.0)))
 
         elite_n = max(1, int(pop_size_effective * elite_frac)) if not cfg else min(
             pop_size_effective, cfg.elite_count()
@@ -1336,6 +1373,21 @@ def evolutionary_search(
                 if cfg.fitness_patience > 0 and stale_generations >= cfg.fitness_patience:
                     should_stop = True
 
+        top_params_resolved: Dict[str, Any] = {}
+        if gen_records:
+            try:
+                best_record = max(gen_records, key=lambda r: float(r.get("score", float("-inf"))))
+            except ValueError:
+                best_record = None
+            if best_record:
+                resolved_best = best_record.get("resolved_params")
+                if isinstance(resolved_best, dict):
+                    top_params_resolved = dict(resolved_best)
+                else:
+                    raw_best = best_record.get("raw_params")
+                    if isinstance(raw_best, dict):
+                        top_params_resolved = dict(raw_best)
+
         end_payload = {
             "gen": gen,
             "best_score": best_score,
@@ -1344,6 +1396,7 @@ def evolutionary_search(
             "pct_no_trades": pct_no_trades,
             "top_params": gen_scores[0][0] if gen_scores else {},
             "top_by_return_params": (best_gen_return_rec[0] if best_gen_return_rec else {}),
+            "top_params_resolved": top_params_resolved,
             "best_return": (best_gen_return_rec[1] if best_gen_return_rec else 0.0),
             "best_return_score": (best_gen_return_rec[2] if best_gen_return_rec else 0.0),
             "elite_n": elite_n,

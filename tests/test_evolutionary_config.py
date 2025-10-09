@@ -452,3 +452,67 @@ def test_holdout_blend_penalizes_train_shortfall(monkeypatch):
     best_params, best_score = results[0]
     assert best_params["x"] == 1, "Strategy with healthier training window should win"
     assert best_score > 0.0
+
+def test_ea_returns_resolved_params(monkeypatch):
+    """EA results and logs should surface resolved params (e.g., trained gate ids)."""
+
+    resolved_params = {"x": 2, "prob_model_id": "gate_123"}
+
+    def _fake_train_general_model(*_args, **_kwargs):
+        return {
+            "aggregate": {
+                "metrics": {
+                    "trades": 20,
+                    "avg_holding_days": 5.0,
+                    "cagr": 0.25,
+                    "calmar": 0.25,
+                    "sharpe": 0.25,
+                    "total_return": 0.30,
+                }
+            },
+            "params": dict(resolved_params),
+        }
+
+    captured: list[dict] = []
+
+    def _progress(event, payload):
+        if event == "individual_evaluated":
+            resolved = payload.get("resolved_params")
+            if isinstance(resolved, dict):
+                captured.append(resolved)
+
+    monkeypatch.setattr(evolutionary, "train_general_model", _fake_train_general_model)
+
+    results = evolutionary.evolutionary_search(
+        strategy_dotted="tests.fake",
+        tickers=["AAPL"],
+        start="2020-01-01",
+        end="2020-12-31",
+        starting_equity=10000.0,
+        param_space={"x": (1, 3)},
+        min_trades=0,
+        n_jobs=1,
+        progress_cb=_progress,
+        config={
+            "pop_size": 2,
+            "generations": 1,
+            "selection_method": "tournament",
+            "tournament_k": 2,
+            "replacement": "generational",
+            "elitism_fraction": 0.5,
+            "crossover_rate": 0.0,
+            "mutation_rate": 0.0,
+            "mutation_scale": 0.1,
+            "anneal_mutation": False,
+            "fitness_patience": 0,
+            "shuffle_eval": False,
+            "seed": 99,
+        },
+    )
+
+    assert results, "EA should return candidates"
+    best_params, best_score = results[0]
+    assert best_score > 0.0
+    assert best_params.get("prob_model_id") == resolved_params["prob_model_id"]
+    assert captured, "Progress callback should receive resolved params"
+    assert any(rec.get("prob_model_id") == resolved_params["prob_model_id"] for rec in captured)
