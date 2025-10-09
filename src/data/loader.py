@@ -220,8 +220,12 @@ def get_ohlcv(
         end = end.replace(tzinfo=timezone.utc)
 
     provider_env = (force_provider or os.getenv("DATA_PROVIDER", "auto")).lower()
-    use_alpaca_first = provider_env in {"alpaca", "auto", "alpaca_first"}
-    use_yf = provider_env in {"yahoo", "auto", "alpaca_first", "yf_first"}
+    cache_only_values = {"cache", "cache_only", "disk", "offline"}
+    cache_only_mode = provider_env in cache_only_values
+    alpaca_values = {"alpaca", "alpaca_first", "alpaca_only", "auto"}
+    yahoo_values = {"yahoo", "yahoo_only", "yahoo_first", "yf", "yf_first", "auto"}
+    use_alpaca_first = provider_env in alpaca_values and not cache_only_mode
+    use_yf = provider_env in yahoo_values and not cache_only_mode
 
     end_adj = _widen_daily_end(end, timeframe)
     start_naive = _as_utc_naive(start)
@@ -276,6 +280,17 @@ def get_ohlcv(
         except Exception as e:
             last_err = e
             print(f"[loader] yahoo error symbol={symbol}: {repr(e)}")
+
+    if cache_only_mode:
+        s_iso = _to_utc_timestamp(start).date().isoformat()
+        e_iso = _to_utc_timestamp(end).date().isoformat()
+        cache_root = _cache_root()
+        msg = (
+            f"No cached data for {symbol} between {s_iso} and {e_iso}. "
+            "Prefetch the portfolio before training or set DATA_PROVIDER=auto to allow live fetch."
+            f" Cache root: {cache_root}"
+        )
+        raise RuntimeError(msg) from last_err
 
     msg = f"No data returned for {symbol} ({provider_env})."
     if last_err is not None:

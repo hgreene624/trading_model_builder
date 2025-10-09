@@ -1227,6 +1227,33 @@ if shard_total_count:
         shard_msg += f" Root: {data_cache_root}"
     st.caption(shard_msg)
 
+cache_only_hint = bool(data_shards_daily)
+cache_env_values = {"cache", "cache_only", "disk", "offline"}
+current_provider = os.environ.get("DATA_PROVIDER")
+default_cache_only = current_provider in cache_env_values or cache_only_hint
+cache_only_state = st.checkbox(
+    "Use cached OHLCV only (skip live API fetches)",
+    value=st.session_state.get("_adapter_cache_only", default_cache_only),
+    help=(
+        "When enabled the trainer will read OHLCV from disk cache and raise an error if data is missing. "
+        "Disable to allow automatic Alpaca/Yahoo requests."
+    ),
+)
+st.session_state["_adapter_cache_only"] = cache_only_state
+
+if cache_only_state:
+    if current_provider not in cache_env_values:
+        st.session_state["_adapter_prev_data_provider"] = current_provider
+    os.environ["DATA_PROVIDER"] = "cache_only"
+    st.caption("Cache-only mode active — remote providers are disabled for training runs.")
+else:
+    if current_provider in cache_env_values:
+        prev_provider = st.session_state.get("_adapter_prev_data_provider")
+        if prev_provider:
+            os.environ["DATA_PROVIDER"] = prev_provider
+        else:
+            os.environ.pop("DATA_PROVIDER", None)
+
 train_pct_ui = st.slider(
     "Training share (%)",
     min_value=50,

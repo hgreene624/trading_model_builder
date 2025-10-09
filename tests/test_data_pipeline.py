@@ -46,10 +46,10 @@ def test_widen_daily_end_adds_one_day_for_daily_bars() -> None:
     assert widened == end + timedelta(days=1)
 
     intraday = loader._widen_daily_end(end, "1h")
-    assert intraday == end
+    assert intraday == end + timedelta(minutes=5)
 
 
-def test_get_ohlcv_prefers_alpaca_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_ohlcv_prefers_alpaca_when_available(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Build a minimal DataFrame that _normalize_ohlcv will accept.
     idx = pd.date_range("2024-01-01", periods=2, freq="D", tz="UTC")
     alpaca_df = pd.DataFrame({
@@ -73,13 +73,14 @@ def test_get_ohlcv_prefers_alpaca_when_available(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(loader.A, "load_ohlcv", fake_alpaca)
     monkeypatch.setattr(loader.Y, "load_ohlcv", fake_yahoo)
+    monkeypatch.setattr(loader, "_cache_root", lambda: tmp_path)
 
     start = datetime(2024, 1, 1, tzinfo=timezone.utc)
     end = datetime(2024, 1, 2, tzinfo=timezone.utc)
 
     df = loader.get_ohlcv("AAPL", start, end, timeframe="1d")
-
-    pd.testing.assert_frame_equal(df, alpaca_df)
+    expected = loader._normalize_ohlcv(alpaca_df)
+    pd.testing.assert_frame_equal(df, expected, check_freq=False)
     assert called == {"alpaca": 1, "yahoo": 0}
 
 
@@ -129,4 +130,33 @@ def test_get_ohlcv_respects_force_provider(monkeypatch: pytest.MonkeyPatch) -> N
     end = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
     df = loader.get_ohlcv("SPY", start, end, timeframe="1d", force_provider="yf")
-    pd.testing.assert_frame_equal(df, yahoo_df)
+    expected = loader._normalize_ohlcv(yahoo_df)
+    pd.testing.assert_frame_equal(df, expected, check_freq=False)
+
+
+def test_cache_only_mode_skips_remote_fetch(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"alpaca": 0, "yahoo": 0}
+
+    def _fail_alpaca(*_args: Any, **_kwargs: Any) -> pd.DataFrame:
+        calls["alpaca"] += 1
+        raise AssertionError("Alpaca should not be called in cache-only mode")
+
+    def _fail_yahoo(*_args: Any, **_kwargs: Any) -> pd.DataFrame:
+        calls["yahoo"] += 1
+        raise AssertionError("Yahoo should not be called in cache-only mode")
+
+    monkeypatch.setattr(loader.A, "load_ohlcv", _fail_alpaca)
+    monkeypatch.setattr(loader.Y, "load_ohlcv", _fail_yahoo)
+    monkeypatch.setattr(loader, "_cache_root", lambda: tmp_path)
+    monkeypatch.setenv("DATA_PROVIDER", "cache_only")
+
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 5, tzinfo=timezone.utc)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        loader.get_ohlcv("NVDA", start, end, timeframe="1d")
+
+    msg = str(excinfo.value).lower()
+    assert "no cached data" in msg
+    assert "prefetch" in msg
+    assert calls == {"alpaca": 0, "yahoo": 0}

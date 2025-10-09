@@ -1,11 +1,40 @@
 # src/data/alpaca_data.py
 from __future__ import annotations
 
+import logging
 import os
+import time
 from datetime import datetime, timezone
+from typing import Optional
+
 import pandas as pd
 
 from ._tz_utils import to_utc_index
+
+
+logger = logging.getLogger(__name__)
+
+_RATE_LIMIT_STATUS = 429
+_RATE_LIMIT_MESSAGE = "too many requests"
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_BACKOFF_SECONDS = 1.0
+
+
+def _as_text(value: Optional[object]) -> str:
+    if value is None:
+        return ""
+    return str(value).lower()
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Return True if *exc* looks like an Alpaca rate-limit error."""
+
+    status = getattr(exc, "status_code", None)
+    code = getattr(exc, "code", None)
+    text = _as_text(getattr(exc, "message", None)) or _as_text(exc)
+    if status == _RATE_LIMIT_STATUS or code == _RATE_LIMIT_STATUS:
+        return True
+    return _RATE_LIMIT_MESSAGE in text
 
 
 def _iso_utc(dt: datetime) -> datetime:
@@ -50,7 +79,7 @@ def load_ohlcv(symbol: str, start: datetime, end: datetime, timeframe: str = "1D
     Fetch OHLCV via alpaca-py Historical Data client.
     - Uses IEX feed (works on paper/basic plans; avoids 'recent SIP' errors).
     - Returns a DataFrame indexed by UTC DatetimeIndex with columns open, high, low, close, volume.
-    - Accepts **kwargs (ignored) to be tolerant with callers.
+    - Accepts **kwargs to allow optional retry/backoff overrides.
     """
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
@@ -69,7 +98,35 @@ def load_ohlcv(symbol: str, start: datetime, end: datetime, timeframe: str = "1D
         limit=None,
     )
 
-    bars = client.get_stock_bars(req)
+    max_retries = max(int(kwargs.get("max_retries", _DEFAULT_MAX_RETRIES)), 0)
+    base_backoff = float(kwargs.get("backoff_seconds", _DEFAULT_BACKOFF_SECONDS))
+    total_attempts = max_retries + 1
+
+    last_exc = None
+    for attempt in range(1, total_attempts + 1):
+        try:
+            bars = client.get_stock_bars(req)
+            break
+        except Exception as exc:  # pragma: no cover - network errors hard to simulate
+            last_exc = exc
+            if _is_rate_limit_error(exc) and attempt < total_attempts:
+                delay = base_backoff * (2 ** (attempt - 1))
+                if delay > 0:
+                    logger.warning(
+                        "Alpaca rate limit for %s (attempt %s/%s); retrying in %.1fs",
+                        symbol,
+                        attempt,
+                        total_attempts,
+                        delay,
+                    )
+                    time.sleep(delay)
+                continue
+            raise
+    else:
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Unexpected rate-limit retry failure")
+
     df = bars.df
 
     if df is None or df.empty:
