@@ -1,92 +1,30 @@
-// -----------------------------------------------------------------------------
-// Return-focused scoring weights. Increasing these tilt the EA toward high-growth
-// candidates, while reducing them frees capacity for risk or execution penalties.
-// -----------------------------------------------------------------------------
 {
-  // Normalize each metric before weighting so weights behave consistently.
-  "use_normalized_scoring": true,
-
-  // Higher values reward compounding annual growth; lower values downplay CAGR.
-  "alpha_cagr": 0.535,
-
-  // Raising this lifts the importance of capped drawdown-adjusted returns; lowering
-  // it tolerates deeper drawdowns if other metrics excel.
-  "beta_calmar": 0.11,
-
-  // Increasing this enforces steadier risk-adjusted performance; decreasing it lets
-  // volatile winners advance if total return stays high.
-  "gamma_sharpe": 0.124,
-
-  // Higher weight favors large absolute gains; reducing it shifts focus to ratios.
-  "delta_total_return": 0.4029,
-
-  // Lower caps tighten acceptable Calmar spikes; higher caps allow more upside from
-  // exceptional drawdown control before clipping.
-  "calmar_cap": 3.0,
-
-  // ---------------------------------------------------------------------------
-  // Execution discipline penalties. Raising weights or lowering the cap makes
-  // violations hurt sooner; easing them allows more rule-breaking before pruning.
-  // ---------------------------------------------------------------------------
-
-  // Stronger penalties push the EA away from too-short or too-long holding periods;
-  // weaker penalties let it explore more extreme durations.
-  "holding_penalty_weight": 0.05,
-
-  // Increasing this punishes trading too infrequently or too often; decreasing it
-  // lets turnover drift without heavy scoring impact.
-  "trade_rate_penalty_weight": 0.02,
-
-  // Lower caps apply penalty pressure aggressively; higher caps soften the maximum
-  // deduction from combined holding and trade violations.
-  "penalty_cap": 0.45,
-
-  // ---------------------------------------------------------------------------
-  // Preferred holding windows. Tightening bounds forces swing-trade behaviour;
-  // widening them embraces shorter scalps or longer trend holds.
-  // ---------------------------------------------------------------------------
-
-  // Raising the floor discourages quick exits; lowering it permits faster flips.
-  "min_holding_days": 3.0,
-
-  // Lower ceilings rein in prolonged positions; higher ceilings support trend riding.
-  "max_holding_days": 30.0,
-
-  // ---------------------------------------------------------------------------
-  // Preferred trade rate band. Narrow ranges make yearly trade cadence stricter;
-  // broad ranges invite experimentation.
-  // ---------------------------------------------------------------------------
-
-  // Increasing the minimum demands more trades per symbol; lowering it tolerates
-  // slower strategies before penalties kick in.
-  "trade_rate_min": 5.0,
-
-  // Lowering the maximum restrains hyperactive systems; raising it relaxes the
-  // ceiling when upper-band penalties are enabled.
-  "trade_rate_max": 50.0,
-
-  // When true, exceeding the upper trade rate is penalized; leaving it false keeps
-  // the focus on meeting the minimum cadence.
-  "rate_penalize_upper": false,
-
-  // ---------------------------------------------------------------------------
-  // Holdout protection. Increasing weights and penalties prioritizes generalization;
-  // easing them accepts greater divergence between train and test scores.
-  // ---------------------------------------------------------------------------
-
-  // Higher blend weight leans the EA toward holdout metrics; lower weight rebalances
-  // toward in-sample performance when both sets exist.
-  "holdout_score_weight": 0.65,
-
-  // Tight tolerances flag smaller gaps between train and test; wider tolerances
-  // forgive more separation before penalties apply.
-  "holdout_gap_tolerance": 0.15,
-
-  // Raising the penalty clamps down on cases where training outperforms holdout;
-  // lowering it softens overfitting deterrence.
-  "holdout_gap_penalty": 0.50,
-
-  // Higher values punish holdout underperformance more severely; lower values allow
-  // promising training results to persist despite softer holdout scores.
-  "holdout_shortfall_penalty": 0.35
+  "return_emphasis": {
+    "use_normalized_scoring": true,
+    "alpha_cagr": 0.535,
+    "beta_calmar": 0.11,
+    "gamma_sharpe": 0.124,
+    "delta_total_return": 0.4029,
+    "calmar_cap": 3.0
+  },
+  "execution_penalties": {
+    "holding_penalty_weight": 0.05,
+    "trade_rate_penalty_weight": 0.02,
+    "penalty_cap": 0.45
+  },
+  "holding_windows": {
+    "min_holding_days": 3.0,
+    "max_holding_days": 30.0
+  },
+  "trade_rate_band": {
+    "trade_rate_min": 5.0,
+    "trade_rate_max": 50.0,
+    "rate_penalize_upper": false
+  },
+  "holdout_protection": {
+    "holdout_score_weight": 0.65,
+    "holdout_gap_tolerance": 0.15,
+    "holdout_gap_penalty": 0.50,
+    "holdout_shortfall_penalty": 0.35
+  }
 }
