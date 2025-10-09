@@ -41,6 +41,65 @@ if ROOT not in sys.path:
 
 # ---- Fitness config (JSON) ----------------------------------------------
 
+
+def _strip_json_comments(text: str) -> str:
+    """Remove //, #, and /* */ style comments while preserving string literals."""
+
+    out: List[str] = []
+    i = 0
+    length = len(text)
+    in_string = False
+    string_char = ""
+
+    while i < length:
+        ch = text[i]
+
+        if in_string:
+            out.append(ch)
+            if ch == "\\":
+                i += 1
+                if i < length:
+                    out.append(text[i])
+            elif ch == string_char:
+                in_string = False
+            i += 1
+            continue
+
+        if ch in {'"', "'"}:
+            in_string = True
+            string_char = ch
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and i + 1 < length:
+            nxt = text[i + 1]
+            if nxt == "/":
+                i += 2
+                while i < length and text[i] not in "\r\n":
+                    i += 1
+                continue
+            if nxt == "*":
+                i += 2
+                while i + 1 < length and not (text[i] == "*" and text[i + 1] == "/"):
+                    if text[i] in "\r\n":
+                        out.append(text[i])
+                    i += 1
+                i += 2
+                continue
+
+        if ch == "#":
+            i += 1
+            while i < length and text[i] not in "\r\n":
+                i += 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
 def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
     """
     Load fitness weight configuration from JSON. Returns {} if file missing or malformed.
@@ -51,14 +110,15 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
       - use_normalized_scoring (bool)
       - holding_penalty_weight, trade_rate_penalty_weight, penalty_cap (floats)
       - min_holding_days, max_holding_days, trade_rate_min, trade_rate_max (floats)
-      - rate_penalize_upper (bool), elite_by_return_frac (float)
+      - rate_penalize_upper (bool)
       - holdout_score_weight, holdout_gap_tolerance, holdout_gap_penalty, holdout_shortfall_penalty (floats)
     """
     try:
         p = Path(path or "storage/config/ea_fitness.json")
         if not p.exists():
             return {}
-        data = json.loads(p.read_text())
+        raw = p.read_text()
+        data = json.loads(_strip_json_comments(raw))
         if not isinstance(data, dict):
             return {}
         out: Dict[str, Any] = {}
@@ -84,7 +144,6 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         if "trade_rate_min" in data: out["trade_rate_min"] = _getf("trade_rate_min")
         if "trade_rate_max" in data: out["trade_rate_max"] = _getf("trade_rate_max")
         # new optional keys
-        if "elite_by_return_frac" in data: out["elite_by_return_frac"] = _getf("elite_by_return_frac")
         if "holdout_score_weight" in data: out["holdout_score_weight"] = _getf("holdout_score_weight")
         if "holdout_gap_tolerance" in data: out["holdout_gap_tolerance"] = _getf("holdout_gap_tolerance")
         if "holdout_gap_penalty" in data: out["holdout_gap_penalty"] = _getf("holdout_gap_penalty")
@@ -98,7 +157,7 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
             "alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap",
             "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
             "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
-            "elite_by_return_frac","holdout_score_weight","holdout_gap_tolerance","holdout_gap_penalty",
+            "holdout_score_weight","holdout_gap_tolerance","holdout_gap_penalty",
             "holdout_shortfall_penalty",
         ]:
             if k in out and out[k] is None:
@@ -568,6 +627,41 @@ def _clamped_fitness(
 
 # --------------------------- Child evaluation ----------------------------
 
+def _train_general_model_optional_disable(
+    strategy_dotted: str,
+    tickers: List[str],
+    start,
+    end,
+    starting_equity: float,
+    params: Dict[str, Any],
+    *,
+    disable_warmup: bool,
+):
+    """Call ``train_general_model`` with a best-effort ``disable_warmup`` flag."""
+
+    try:
+        return train_general_model(
+            strategy_dotted,
+            tickers,
+            start,
+            end,
+            starting_equity,
+            params,
+            disable_warmup=disable_warmup,
+        )
+    except TypeError as exc:
+        if "disable_warmup" not in str(exc):
+            raise
+        return train_general_model(
+            strategy_dotted,
+            tickers,
+            start,
+            end,
+            starting_equity,
+            params,
+        )
+
+
 def _eval_one(
     strategy_dotted: str,
     tickers: List[str],
@@ -585,7 +679,7 @@ def _eval_one(
     # prove which loader module is actually imported inside the worker process
     L = importlib.import_module("src.data.loader")
     _loader_file = getattr(L, "__file__", "<??>")
-    res = train_general_model(
+    res = _train_general_model_optional_disable(
         strategy_dotted,
         tickers,
         start,
@@ -604,7 +698,7 @@ def _eval_one(
     if test_range and test_range[0] is not None and test_range[1] is not None:
         try:
             test_start, test_end = test_range
-            test_res = train_general_model(
+            test_res = _train_general_model_optional_disable(
                 strategy_dotted,
                 tickers,
                 test_start,
@@ -760,7 +854,6 @@ def evolutionary_search(
         trade_rate_min = _cfg.get("trade_rate_min", trade_rate_min)
         trade_rate_max = _cfg.get("trade_rate_max", trade_rate_max)
         rate_penalize_upper = _cfg.get("rate_penalize_upper", rate_penalize_upper)
-        elite_by_return_frac = _cfg.get("elite_by_return_frac", elite_by_return_frac)
         holdout_weight = _cfg.get("holdout_score_weight", holdout_weight)
         holdout_gap_tolerance = _cfg.get("holdout_gap_tolerance", holdout_gap_tolerance)
         holdout_gap_penalty = _cfg.get("holdout_gap_penalty", holdout_gap_penalty)
@@ -785,7 +878,6 @@ def evolutionary_search(
                 "trade_rate_min": trade_rate_min,
                 "trade_rate_max": trade_rate_max,
                 "rate_penalize_upper": rate_penalize_upper,
-                "elite_by_return_frac": elite_by_return_frac,
                 "holdout_score_weight": holdout_weight,
                 "holdout_gap_tolerance": holdout_gap_tolerance,
                 "holdout_gap_penalty": holdout_gap_penalty,
