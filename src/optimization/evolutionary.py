@@ -41,6 +41,9 @@ if ROOT not in sys.path:
 
 # ---- Fitness config (JSON) ----------------------------------------------
 
+_FITNESS_CONFIG_CACHE: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
+
+
 def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
     """
     Load fitness weight configuration from JSON. Returns {} if file missing or malformed.
@@ -53,11 +56,26 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
       - min_holding_days, max_holding_days, trade_rate_min, trade_rate_max (floats)
       - rate_penalize_upper (bool), elite_by_return_frac (float)
     """
+    p = Path(path or "storage/config/ea_fitness.json").expanduser()
+    cache_key = str(p.resolve(strict=False))
     try:
-        p = Path(path or "storage/config/ea_fitness.json")
         if not p.exists():
+            _FITNESS_CONFIG_CACHE.pop(cache_key, None)
             return {}
-        data = json.loads(p.read_text())
+
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            _FITNESS_CONFIG_CACHE.pop(cache_key, None)
+            return {}
+
+        raw_text = p.read_text()
+        cached = _FITNESS_CONFIG_CACHE.get(cache_key)
+        if cached and cached[1] == raw_text:
+            _FITNESS_CONFIG_CACHE[cache_key] = (mtime, raw_text, cached[2])
+            return dict(cached[2])
+
+        data = json.loads(raw_text)
         if not isinstance(data, dict):
             return {}
         out: Dict[str, Any] = {}
@@ -102,8 +120,10 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         ]:
             if k in out and out[k] is None:
                 out.pop(k, None)
-        return out
+        _FITNESS_CONFIG_CACHE[cache_key] = (mtime, raw_text, out)
+        return dict(out)
     except Exception:
+        _FITNESS_CONFIG_CACHE.pop(cache_key, None)
         return {}
 
 import multiprocessing as mp

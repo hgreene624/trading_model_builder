@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,24 @@ def test_load_fitness_config_shortfall_penalty(tmp_path):
 
     assert "holdout_shortfall_penalty" in loaded
     assert loaded["holdout_shortfall_penalty"] == pytest.approx(0.9)
+
+
+def test_fitness_config_reload_on_change(tmp_path):
+    """Reload the fitness config when the JSON file changes on disk."""
+
+    cfg_path = tmp_path / "ea_fitness.json"
+    cfg_path.write_text(json.dumps({"alpha_cagr": 0.1}))
+
+    evolutionary._FITNESS_CONFIG_CACHE.clear()
+
+    loaded_initial = evolutionary._load_fitness_config_json(str(cfg_path))
+    assert loaded_initial["alpha_cagr"] == pytest.approx(0.1)
+
+    cfg_path.write_text(json.dumps({"alpha_cagr": 0.9}))
+    os.utime(cfg_path, None)
+
+    loaded_updated = evolutionary._load_fitness_config_json(str(cfg_path))
+    assert loaded_updated["alpha_cagr"] == pytest.approx(0.9)
 
 
 @pytest.mark.parametrize("fitness_value", [0.25])
