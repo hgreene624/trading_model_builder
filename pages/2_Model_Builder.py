@@ -765,8 +765,10 @@ def _render_holdout_heatmap(
     returns: pd.Series | None,
     x_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> None:
+    container = placeholder.container()
+
     if returns is None or returns.dropna().empty:
-        placeholder.info("Rolling performance heatmap will populate after a completed holdout run.")
+        container.info("Rolling performance heatmap will populate after a completed holdout run.")
         return
 
     returns = _ensure_dt_index(returns.copy())
@@ -783,7 +785,7 @@ def _render_holdout_heatmap(
 
     heatmap_df = pd.DataFrame(metrics).dropna(how="all")
     if heatmap_df.empty:
-        placeholder.info("Not enough overlapping holdout data to compute rolling performance windows yet.")
+        container.info("Not enough overlapping holdout data to compute rolling performance windows yet.")
         return
 
     heatmap_df = heatmap_df.fillna(np.nan)
@@ -813,7 +815,18 @@ def _render_holdout_heatmap(
     )
     if x_range is not None:
         fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
-    placeholder.plotly_chart(fig, use_container_width=True)
+    container.plotly_chart(fig, use_container_width=True)
+    container.markdown(
+        """
+        **How to read this heatmap**
+
+        * Each row represents a rolling window (e.g., 5-day) of compounded strategy returns.
+        * Colors encode the annualized return for that window—greens indicate positive momentum, yellows are flat, and reds
+          highlight stretches of drawdown.
+        * Line up the vertical date bands with the equity curve above and trade timeline below to spot which clusters of
+          trades produced the strongest or weakest performance at different horizons.
+        """
+    )
 
 
 def _render_trade_timeline(
