@@ -11,11 +11,11 @@
   "trade_rate_penalty_weight": 0.02,
   "penalty_cap": 0.15,
 
-  "min_holding_days": 3.0,
-  "max_holding_days": 30.0,
+  "holding_days_penalty_min": 3.0,
+  "holding_days_penalty_max": 30.0,
 
-  "trade_rate_min": 5.0,
-  "trade_rate_max": 50.0,
+  "trade_rate_penalty_min": 5.0,
+  "trade_rate_penalty_max": 50.0,
   "rate_penalize_upper": false,
 
   "elite_by_return_frac": 0.10

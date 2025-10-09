@@ -7,12 +7,12 @@ New in this revision:
 - Swing hard gate: min_avg_holding_days_gate (score=0 if avg_hold < gate)
 - Trade-rate band penalty:
     trades_per_symbol_per_year = total_trades / num_symbols / years
-    soft penalty outside [trade_rate_min, trade_rate_max]
+    soft penalty outside [trade_rate_penalty_min, trade_rate_penalty_max]
 - Fitness:
         base = α*CAGR + β*Calmar + γ*Sharpe + δ*TotalReturn
         Calmar is clamped to ±calmar_cap before weighting to avoid runaway ratios.
-    hold_pen = λ_hold * normalized_penalty(avg_holding_days outside [min_hold, max_hold])
-    rate_pen = λ_rate * normalized_penalty(trade_rate outside [rate_min, rate_max])
+    hold_pen = λ_hold * normalized_penalty(avg_holding_days outside [penalty_hold_min, penalty_hold_max])
+    rate_pen = λ_rate * normalized_penalty(trade_rate outside [penalty_rate_min, penalty_rate_max])
     score = base - min(hold_pen + rate_pen, penalty_cap)
 - All knobs exposed as function args (UI-ready)
 """
@@ -23,6 +23,7 @@ import time
 import importlib
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Tuple, Optional, Literal
+import warnings
 from datetime import date, datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -50,7 +51,8 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
       - calmar_cap (float)
       - use_normalized_scoring (bool)
       - holding_penalty_weight, trade_rate_penalty_weight, penalty_cap (floats)
-      - min_holding_days, max_holding_days, trade_rate_min, trade_rate_max (floats)
+      - holding_days_penalty_min, holding_days_penalty_max,
+        trade_rate_penalty_min, trade_rate_penalty_max (floats)
       - rate_penalize_upper (bool), elite_by_return_frac (float)
     """
     try:
@@ -78,10 +80,19 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         if "holding_penalty_weight" in data: out["holding_penalty_weight"] = _getf("holding_penalty_weight")
         if "trade_rate_penalty_weight" in data: out["trade_rate_penalty_weight"] = _getf("trade_rate_penalty_weight")
         if "penalty_cap" in data: out["penalty_cap"] = _getf("penalty_cap")
-        if "min_holding_days" in data: out["min_holding_days"] = _getf("min_holding_days")
-        if "max_holding_days" in data: out["max_holding_days"] = _getf("max_holding_days")
-        if "trade_rate_min" in data: out["trade_rate_min"] = _getf("trade_rate_min")
-        if "trade_rate_max" in data: out["trade_rate_max"] = _getf("trade_rate_max")
+        penalty_band_keys = (
+            ("holding_days_penalty_min", "min_holding_days"),
+            ("holding_days_penalty_max", "max_holding_days"),
+            ("trade_rate_penalty_min", "trade_rate_min"),
+            ("trade_rate_penalty_max", "trade_rate_max"),
+        )
+        for new_key, legacy_key in penalty_band_keys:
+            chosen_key = new_key if new_key in data else legacy_key if legacy_key in data else None
+            if not chosen_key:
+                continue
+            val = _getf(chosen_key)
+            if val is not None:
+                out[new_key] = val
         # new optional keys
         if "elite_by_return_frac" in data: out["elite_by_return_frac"] = _getf("elite_by_return_frac")
         if "holdout_score_weight" in data: out["holdout_score_weight"] = _getf("holdout_score_weight")
@@ -96,7 +107,8 @@ def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
         for k in [
             "alpha_cagr","beta_calmar","gamma_sharpe","delta_total_return","calmar_cap",
             "holding_penalty_weight","trade_rate_penalty_weight","penalty_cap",
-            "min_holding_days","max_holding_days","trade_rate_min","trade_rate_max",
+            "holding_days_penalty_min","holding_days_penalty_max",
+            "trade_rate_penalty_min","trade_rate_penalty_max",
             "elite_by_return_frac","holdout_score_weight","holdout_gap_tolerance","holdout_gap_penalty",
             "holdout_shortfall_penalty",
         ]:
@@ -463,12 +475,12 @@ def _clamped_fitness(
     gamma_sharpe: float,
     delta_total_return: float,
     # holding window preference
-    min_holding_days: float,
-    max_holding_days: float,
+    holding_days_penalty_min: float,
+    holding_days_penalty_max: float,
     holding_penalty_weight: float,
     # trade rate preference
-    trade_rate_min: float,
-    trade_rate_max: float,
+    trade_rate_penalty_min: float,
+    trade_rate_penalty_max: float,
     trade_rate_penalty_weight: float,
     # context for rate
     num_symbols: int,
@@ -481,8 +493,8 @@ def _clamped_fitness(
     """
     Robust fitness:
         base = α*CAGR + β*Calmar + γ*Sharpe
-        hold_pen = λ_hold * penalty(avg_holding_days in [min_hold, max_hold])
-        rate_pen = λ_rate * penalty(trade_rate in [rate_min, rate_max])
+        hold_pen = λ_hold * penalty(avg_holding_days in [penalty_hold_min, penalty_hold_max])
+        rate_pen = λ_rate * penalty(trade_rate in [penalty_rate_min, penalty_rate_max])
         score = base - hold_pen - rate_pen
     Safety:
         - trades < min_trades => 0
@@ -550,15 +562,24 @@ def _clamped_fitness(
         )
 
     # ---- Normalized, capped penalties ----------------------------------
-    _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
-    hold_dist = _holding_penalty(avg_hold, min_holding_days, max_holding_days)
+    _bw_hold = max(1e-9, (holding_days_penalty_max - holding_days_penalty_min))
+    hold_dist = _holding_penalty(
+        avg_hold,
+        holding_days_penalty_min,
+        holding_days_penalty_max,
+    )
     hold_pen  = holding_penalty_weight * (hold_dist / _bw_hold)
 
     trade_rate = 0.0
     if num_symbols > 0 and years > 0:
         trade_rate = float(trades) / float(num_symbols) / float(years)
-    _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
-    rate_dist = _rate_penalty(trade_rate, trade_rate_min, trade_rate_max, rate_penalize_upper)
+    _bw_rate = max(1e-9, (trade_rate_penalty_max - trade_rate_penalty_min))
+    rate_dist = _rate_penalty(
+        trade_rate,
+        trade_rate_penalty_min,
+        trade_rate_penalty_max,
+        rate_penalize_upper,
+    )
     rate_pen  = trade_rate_penalty_weight * (rate_dist / _bw_rate)
 
     penalty_total = min(hold_pen + rate_pen, float(penalty_cap))
@@ -650,12 +671,12 @@ def evolutionary_search(
     gamma_sharpe: float = 0.25,
     delta_total_return: float = 1.0,
     # Holding window preference (avoid day-trading & buy/hold)
-    min_holding_days: float = 3.0,
-    max_holding_days: float = 30.0,
+    holding_days_penalty_min: float = 3.0,
+    holding_days_penalty_max: float = 30.0,
     holding_penalty_weight: float = 1.0,
     # Trade-rate preference (per symbol per year)
-    trade_rate_min: float = 5.0,
-    trade_rate_max: float = 50.0,
+    trade_rate_penalty_min: float = 5.0,
+    trade_rate_penalty_max: float = 50.0,
     trade_rate_penalty_weight: float = 0.5,
     calmar_cap: float = 3.0,
     penalty_cap: float = 0.50,
@@ -669,6 +690,7 @@ def evolutionary_search(
     seed: Optional[int] = None,
     # New-style config
     config: Optional[Any] = None,
+    **legacy_kwargs,
 ) -> List[Tuple[Dict[str, Any], float]]:
     """
     Run EA and return top parameter sets [(params, score)].
@@ -682,6 +704,44 @@ def evolutionary_search(
     - If `test_start`/`test_end` are supplied, scoring and gating use the holdout metrics from that range,
       while training metrics remain available for logging.
     """
+    legacy_alias_notes: Dict[str, float] = {}
+    alias_pairs = (
+        ("min_holding_days", "holding_days_penalty_min"),
+        ("max_holding_days", "holding_days_penalty_max"),
+        ("trade_rate_min", "trade_rate_penalty_min"),
+        ("trade_rate_max", "trade_rate_penalty_max"),
+    )
+    for legacy_key, target_key in alias_pairs:
+        if legacy_key not in legacy_kwargs:
+            continue
+        raw_val = legacy_kwargs.pop(legacy_key)
+        try:
+            coerced = float(raw_val)
+        except Exception:
+            continue
+        legacy_alias_notes[target_key] = coerced
+    if legacy_kwargs:
+        unknown = ", ".join(sorted(map(str, legacy_kwargs.keys())))
+        raise TypeError(f"Unsupported keyword arguments: {unknown}")
+
+    for target_key, value in legacy_alias_notes.items():
+        if target_key == "holding_days_penalty_min":
+            holding_days_penalty_min = value
+        elif target_key == "holding_days_penalty_max":
+            holding_days_penalty_max = value
+        elif target_key == "trade_rate_penalty_min":
+            trade_rate_penalty_min = value
+        elif target_key == "trade_rate_penalty_max":
+            trade_rate_penalty_max = value
+
+    if legacy_alias_notes:
+        warnings.warn(
+            "Deprecated fitness penalty kwargs detected: use holding_days_penalty_* "
+            "and trade_rate_penalty_* instead of min/max_holding_days or trade_rate_min/max.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     resolved_cb: Optional[ProgressCb] = progress_cb or console_progress
     if resolved_cb is None:
         resolved_cb = _noop_progress
@@ -744,10 +804,18 @@ def evolutionary_search(
         holding_penalty_weight = _cfg.get("holding_penalty_weight", holding_penalty_weight)
         trade_rate_penalty_weight = _cfg.get("trade_rate_penalty_weight", trade_rate_penalty_weight)
         penalty_cap = _cfg.get("penalty_cap", penalty_cap)
-        min_holding_days = _cfg.get("min_holding_days", min_holding_days)
-        max_holding_days = _cfg.get("max_holding_days", max_holding_days)
-        trade_rate_min = _cfg.get("trade_rate_min", trade_rate_min)
-        trade_rate_max = _cfg.get("trade_rate_max", trade_rate_max)
+        holding_days_penalty_min = _cfg.get(
+            "holding_days_penalty_min", holding_days_penalty_min
+        )
+        holding_days_penalty_max = _cfg.get(
+            "holding_days_penalty_max", holding_days_penalty_max
+        )
+        trade_rate_penalty_min = _cfg.get(
+            "trade_rate_penalty_min", trade_rate_penalty_min
+        )
+        trade_rate_penalty_max = _cfg.get(
+            "trade_rate_penalty_max", trade_rate_penalty_max
+        )
         rate_penalize_upper = _cfg.get("rate_penalize_upper", rate_penalize_upper)
         elite_by_return_frac = _cfg.get("elite_by_return_frac", elite_by_return_frac)
         holdout_weight = _cfg.get("holdout_score_weight", holdout_weight)
@@ -769,10 +837,10 @@ def evolutionary_search(
                 "holding_penalty_weight": holding_penalty_weight,
                 "trade_rate_penalty_weight": trade_rate_penalty_weight,
                 "penalty_cap": penalty_cap,
-                "min_holding_days": min_holding_days,
-                "max_holding_days": max_holding_days,
-                "trade_rate_min": trade_rate_min,
-                "trade_rate_max": trade_rate_max,
+                "holding_days_penalty_min": holding_days_penalty_min,
+                "holding_days_penalty_max": holding_days_penalty_max,
+                "trade_rate_penalty_min": trade_rate_penalty_min,
+                "trade_rate_penalty_max": trade_rate_penalty_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
                 "holdout_shortfall_penalty": holdout_shortfall_penalty,
@@ -889,18 +957,27 @@ def evolutionary_search(
                 + (delta_total_return * tr_n)
             )
 
-            _bw_hold = max(1e-9, (max_holding_days - min_holding_days))
-            if not (min_holding_days <= avg_hold <= max_holding_days):
-                hold_dist = (min_holding_days - avg_hold) if avg_hold < min_holding_days else (avg_hold - max_holding_days)
+            _bw_hold = max(
+                1e-9,
+                (holding_days_penalty_max - holding_days_penalty_min),
+            )
+            hold_dist = _holding_penalty(
+                avg_hold,
+                holding_days_penalty_min,
+                holding_days_penalty_max,
+            )
             hold_pen = holding_penalty_weight * (hold_dist / _bw_hold)
 
-            _bw_rate = max(1e-9, (trade_rate_max - trade_rate_min))
-            if trade_rate < trade_rate_min:
-                rate_dist = (trade_rate_min - trade_rate)
-            elif rate_penalize_upper and trade_rate > trade_rate_max:
-                rate_dist = (trade_rate - trade_rate_max)
-            else:
-                rate_dist = 0.0
+            _bw_rate = max(
+                1e-9,
+                (trade_rate_penalty_max - trade_rate_penalty_min),
+            )
+            rate_dist = _rate_penalty(
+                trade_rate,
+                trade_rate_penalty_min,
+                trade_rate_penalty_max,
+                rate_penalize_upper,
+            )
             rate_pen = trade_rate_penalty_weight * (rate_dist / _bw_rate)
 
             pen_raw = hold_pen + rate_pen
@@ -1359,10 +1436,10 @@ def evolutionary_search(
                 "holding_penalty_weight": holding_penalty_weight,
                 "trade_rate_penalty_weight": trade_rate_penalty_weight,
                 "penalty_cap": penalty_cap,
-                "min_holding_days": min_holding_days,
-                "max_holding_days": max_holding_days,
-                "trade_rate_min": trade_rate_min,
-                "trade_rate_max": trade_rate_max,
+                "holding_days_penalty_min": holding_days_penalty_min,
+                "holding_days_penalty_max": holding_days_penalty_max,
+                "trade_rate_penalty_min": trade_rate_penalty_min,
+                "trade_rate_penalty_max": trade_rate_penalty_max,
                 "rate_penalize_upper": rate_penalize_upper,
                 "elite_by_return_frac": elite_by_return_frac,
             },
@@ -1400,10 +1477,10 @@ def evolutionary_search(
             "holding_penalty_weight": holding_penalty_weight,
             "trade_rate_penalty_weight": trade_rate_penalty_weight,
             "penalty_cap": penalty_cap,
-            "min_holding_days": min_holding_days,
-            "max_holding_days": max_holding_days,
-            "trade_rate_min": trade_rate_min,
-            "trade_rate_max": trade_rate_max,
+            "holding_days_penalty_min": holding_days_penalty_min,
+            "holding_days_penalty_max": holding_days_penalty_max,
+            "trade_rate_penalty_min": trade_rate_penalty_min,
+            "trade_rate_penalty_max": trade_rate_penalty_max,
             "rate_penalize_upper": rate_penalize_upper,
             "elite_by_return_frac": elite_by_return_frac,
         },
