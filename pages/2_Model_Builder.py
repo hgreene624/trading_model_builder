@@ -932,13 +932,18 @@ def _portfolio_equity_curve(
         return PortfolioHoldoutResult()
 
     base_equity = float(starting_equity)
+    params_template: Dict[str, Any] = {}
+    if isinstance(params, dict):
+        params_template = dict(params)
+    params_template.setdefault("model_key", strategy_dotted)
     per_symbol_equity: Dict[str, pd.Series] = {}
     per_symbol_ratio: Dict[str, pd.Series] = {}
     trades_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
 
     for sym in tickers:
         try:
-            result = run(sym, start, end, starting_equity, params)
+            run_params = dict(params_template)
+            result = run(sym, start, end, starting_equity, run_params)
         except Exception:
             continue
 
@@ -2416,13 +2421,18 @@ if run_btn:
                     cur_best = gen_best.get("score")
                 except Exception:
                     cur_best = float("-inf")
+                params_payload = ctx.get("resolved_params") or ctx.get("params") or {}
+                if isinstance(params_payload, dict):
+                    params_payload = dict(params_payload)
+                else:
+                    params_payload = {}
                 if cur_best in (None, float("-inf")) or float(score) > float(cur_best):
                     gen_best["score"] = float(score)
-                    gen_best["params"] = dict(ctx.get("params") or {})
+                    gen_best["params"] = dict(params_payload)
                 prev = best_tracker.get("score")
                 if prev in (None, float("-inf")) or score > prev:
                     delta = None if prev in (None, float("-inf")) else float(score) - float(prev)
-                    best_tracker.update({"score": float(score), "params": dict(ctx.get("params") or {}), "delta": delta})
+                    best_tracker.update({"score": float(score), "params": dict(params_payload), "delta": delta})
                     best_score_placeholder.metric(
                         "Best score",
                         f"{best_tracker['score']:.3f}",
@@ -2448,17 +2458,23 @@ if run_btn:
             best_score_gen = ctx.get("best_score")
             if not isinstance(best_score_gen, (int, float)):
                 best_score_gen = gen_best.get("score", float("-inf"))
-            best_params_gen = ctx.get("best_params") or gen_best.get("params") or dict(ctx.get("params") or {})
+            best_params_gen = (
+                ctx.get("top_params_resolved")
+                or ctx.get("best_params")
+                or gen_best.get("params")
+                or dict(ctx.get("params") or {})
+            )
             last_plotted = st.session_state.get("_hc_last_score")
 
             # Always push Gen 0; otherwise only if score improves
             should_push = (last_plotted is None) or (isinstance(best_score_gen, (int, float)) and best_score_gen > last_plotted)
-            if should_push and isinstance(best_score_gen, (int, float)) and best_params_gen:
+            params_for_plot = dict(best_params_gen) if isinstance(best_params_gen, dict) else {}
+            if should_push and isinstance(best_score_gen, (int, float)) and params_for_plot:
                 try:
                     _update_holdout_visuals(
                         int(ctx.get("gen", 0)),
                         float(best_score_gen),
-                        dict(best_params_gen),
+                        params_for_plot,
                     )
                     st.session_state["_hc_last_score"] = float(best_score_gen)
                 except Exception:
