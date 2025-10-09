@@ -585,7 +585,15 @@ def _eval_one(
     # prove which loader module is actually imported inside the worker process
     L = importlib.import_module("src.data.loader")
     _loader_file = getattr(L, "__file__", "<??>")
-    res = train_general_model(strategy_dotted, tickers, start, end, starting_equity, params)
+    res = train_general_model(
+        strategy_dotted,
+        tickers,
+        start,
+        end,
+        starting_equity,
+        params,
+        disable_warmup=True,
+    )
     metrics = res.get("aggregate", {}).get("metrics", {}) or {}
     resolved_params = res.get("params") if isinstance(res, dict) else None
     if not isinstance(resolved_params, dict):
@@ -603,6 +611,7 @@ def _eval_one(
                 test_end,
                 starting_equity,
                 params,
+                disable_warmup=False,
             )
             test_metrics = test_res.get("aggregate", {}).get("metrics", {}) or {}
         except Exception as exc:
