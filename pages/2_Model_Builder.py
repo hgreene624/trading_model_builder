@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -689,6 +690,7 @@ class PortfolioHoldoutResult:
     per_symbol_equity: Dict[str, pd.Series] = field(default_factory=dict)
     per_symbol_ratio: Dict[str, pd.Series] = field(default_factory=dict)
     trades: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    capital_weights: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _ensure_dt_index(series: pd.Series) -> pd.Series:
@@ -731,6 +733,32 @@ def _flatten_trades(trades: Dict[str, List[Dict[str, Any]]]) -> pd.DataFrame:
                     "quantity": float(trade.get("quantity", trade.get("qty", 0.0)) or 0.0),
                     "net_pnl": float(trade.get("net_pnl", 0.0) or 0.0),
                     "notional_entry": float(trade.get("notional_entry", trade.get("notional", 0.0)) or 0.0),
+                    "risk_reward_ratio": (
+                        float(trade.get("risk_reward_ratio"))
+                        if trade.get("risk_reward_ratio") is not None
+                        else np.nan
+                    ),
+                    "risk_reward_scale": (
+                        float(trade.get("risk_reward_scale"))
+                        if trade.get("risk_reward_scale") is not None
+                        else np.nan
+                    ),
+                    "risk_reward_sizing": bool(trade.get("risk_reward_sizing", False)),
+                    "risk_per_share": (
+                        float(trade.get("risk_per_share"))
+                        if trade.get("risk_per_share") is not None
+                        else np.nan
+                    ),
+                    "reward_per_share": (
+                        float(trade.get("reward_per_share"))
+                        if trade.get("reward_per_share") is not None
+                        else np.nan
+                    ),
+                    "volatility_scale": (
+                        float(trade.get("volatility_scale"))
+                        if trade.get("volatility_scale") is not None
+                        else np.nan
+                    ),
                 }
             )
     if not rows:
@@ -923,6 +951,14 @@ def _render_trade_timeline(
 
     df["return_pct_display"] = df["return_pct"] * 100.0
     df["duration_days"] = (df["exit_time"] - df["entry_time"]).dt.days.clip(lower=0)
+    df["abs_notional"] = df["notional_entry"].abs()
+    max_notional = df["abs_notional"].max()
+    if max_notional and max_notional > 0:
+        df["size_fraction"] = df["abs_notional"] / max_notional
+    else:
+        df["size_fraction"] = 0.0
+    df["size_fraction_display"] = df["size_fraction"].clip(0.0, 1.0)
+    df["bar_width"] = 0.35 + 0.55 * df["size_fraction_display"]
 
     fig = px.timeline(
         df,
@@ -936,6 +972,11 @@ def _render_trade_timeline(
             "duration_days": True,
             "quantity": ":.2f",
             "net_pnl": ":.2f",
+            "notional_entry": ":.2f",
+            "risk_reward_ratio": ":.2f",
+            "risk_reward_scale": ":.2f",
+            "risk_reward_sizing": True,
+            "size_fraction_display": ":.1%",
         },
     )
     fig.update_layout(
@@ -950,6 +991,9 @@ def _render_trade_timeline(
         fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
     fig.update_yaxes(autorange="reversed")
     fig.update_coloraxes(cmid=0)
+    if fig.data:
+        widths = df["bar_width"].tolist()
+        fig.update_traces(width=widths, selector=dict(type="bar"))
     placeholder.plotly_chart(fig, use_container_width=True)
 
 
@@ -1091,10 +1135,79 @@ def _portfolio_equity_curve(
     if ratio_df.empty:
         return PortfolioHoldoutResult(trades=trades_by_symbol)
 
-    portfolio_ratio = ratio_df.mean(axis=1, skipna=True)
-    portfolio_ratio = portfolio_ratio.dropna()
-    if portfolio_ratio.empty:
-        return PortfolioHoldoutResult(trades=trades_by_symbol)
+    ratio_df = ratio_df.astype(float)
+    returns_df = (
+        ratio_df.pct_change()
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
+    weight_df = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns, dtype=float)
+
+    def _normalize_ts(value: Any) -> pd.Timestamp | None:
+        ts = pd.to_datetime(value, errors="coerce")
+        if ts is None or pd.isna(ts):
+            return None
+        if getattr(ts, "tzinfo", None) is not None:
+            try:
+                ts = ts.tz_convert(None)
+            except Exception:
+                ts = ts.tz_localize(None)
+        return ts
+
+    for sym, trade_list in trades_by_symbol.items():
+        if sym not in weight_df.columns:
+            continue
+        for trade in trade_list or []:
+            if not isinstance(trade, dict):
+                continue
+            entry_ts = _normalize_ts(trade.get("entry_time") or trade.get("entry_dt"))
+            exit_ts = _normalize_ts(trade.get("exit_time") or trade.get("exit_dt"))
+            if entry_ts is None or exit_ts is None:
+                continue
+            if exit_ts < entry_ts:
+                entry_ts, exit_ts = exit_ts, entry_ts
+            notional = float(trade.get("notional_entry") or trade.get("notional") or 0.0)
+            notional = abs(notional)
+            if notional <= 0.0:
+                qty = float(trade.get("quantity") or trade.get("qty") or 0.0)
+                price = float(trade.get("entry_price") or trade.get("decision_price") or 0.0)
+                notional = abs(qty * price)
+            if notional <= 0.0:
+                continue
+            mask = (weight_df.index >= entry_ts) & (weight_df.index <= exit_ts)
+            if not mask.any():
+                continue
+            weight_df.loc[mask, sym] += notional
+
+    weights_norm = weight_df.copy()
+    if len(weights_norm.columns):
+        active_totals = weights_norm.sum(axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            weights_norm = weights_norm.div(active_totals.replace(0.0, np.nan), axis=0)
+        weights_norm = weights_norm.fillna(0.0)
+        zero_mask = active_totals <= 0.0
+        if zero_mask.any():
+            equal_weight = 1.0 / float(len(weights_norm.columns))
+            weights_norm.loc[zero_mask, :] = equal_weight
+        row_sums = weights_norm.sum(axis=1).replace(0.0, 1.0)
+        weights_norm = weights_norm.div(row_sums, axis=0)
+    else:
+        weights_norm = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns)
+
+    portfolio_returns = (returns_df * weights_norm).sum(axis=1)
+    portfolio_returns = portfolio_returns.fillna(0.0)
+
+    initial_ratio = 1.0
+    if not ratio_df.empty and not weights_norm.empty:
+        try:
+            initial_ratio = float((ratio_df.iloc[0] * weights_norm.iloc[0]).sum())
+        except Exception:
+            initial_ratio = 1.0
+        if not math.isfinite(initial_ratio) or initial_ratio <= 0.0:
+            initial_ratio = 1.0
+
+    portfolio_ratio = (1.0 + portfolio_returns).cumprod() * initial_ratio
     portfolio_ratio.name = "portfolio_ratio"
 
     portfolio_equity = portfolio_ratio * base_equity
@@ -1113,6 +1226,7 @@ def _portfolio_equity_curve(
         per_symbol_equity=aligned_equity,
         per_symbol_ratio=aligned_ratio,
         trades=trades_by_symbol,
+        capital_weights=weights_norm,
     )
 
 
