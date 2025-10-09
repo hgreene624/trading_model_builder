@@ -11,8 +11,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import streamlit as st
 import warnings
+import streamlit as st
+
+from src.models._warmup import apply_disable_warmup_flag
 
 from src.utils.tri_panel import render_tri_panel
 
@@ -852,6 +854,8 @@ def run_equity_curve(
         tickers = [t.strip() for t in tickers.split(",") if t.strip()]
     tickers = list(tickers)
 
+    params_payload = apply_disable_warmup_flag(params, disable_warmup=disable_warmup)
+
     # 1) general_trainer
     try:
         from src.models.general_trainer import train_general_model
@@ -862,6 +866,7 @@ def run_equity_curve(
             start_iso,
             end_iso,
             starting_equity,
+            params_payload,
             params,
             disable_warmup=disable_warmup,
         )
@@ -911,7 +916,7 @@ def run_equity_curve(
             ("run_holdout", ("params", "start", "end", "tickers", "starting_equity", "strategy")),
         ]
         args = {
-            "params": params,
+            "params": params_payload,
             "start": start_iso,
             "end": end_iso,
             "tickers": tickers,

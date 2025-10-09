@@ -16,8 +16,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.utils.training_logger import TrainingLogger
 from src.data.portfolio_prefetch import intersection_range
+from src.models._warmup import apply_disable_warmup_flag
+from src.utils.training_logger import TrainingLogger
 from src.storage import (
     append_to_portfolio,
     get_benchmark_total_return,
@@ -942,7 +943,9 @@ def _portfolio_equity_curve(
 
     for sym in tickers:
         try:
-            run_params = dict(params_template)
+            run_params = apply_disable_warmup_flag(
+                params_template, disable_warmup=False
+            )
             result = run(sym, start, end, starting_equity, run_params)
         except Exception:
             continue

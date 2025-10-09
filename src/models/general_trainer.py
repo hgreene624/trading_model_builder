@@ -22,7 +22,7 @@ import pandas as pd
 from src.backtest.metrics import compute_core_metrics
 from src.backtest import prob_gate
 from src.data.loader import get_ohlcv
-from src.models._warmup import DISABLE_WARMUP_FLAG
+from src.models._warmup import apply_disable_warmup_flag
 
 
 def import_callable(dotted: str):
@@ -130,11 +130,9 @@ def train_general_model(
             params_no_gate["prob_gate_enabled"] = False
             params_no_gate["prob_model_id"] = ""
             try:
-                run_inputs = dict(params_no_gate)
-                if disable_warmup:
-                    run_inputs[DISABLE_WARMUP_FLAG] = True
-                else:
-                    run_inputs.pop(DISABLE_WARMUP_FLAG, None)
+                run_inputs = apply_disable_warmup_flag(
+                    params_no_gate, disable_warmup=disable_warmup
+                )
                 training_res = run(sym, start_dt, end_dt, starting_equity, run_inputs)
             except Exception:
                 continue
@@ -177,11 +175,9 @@ def train_general_model(
 
     # --- per-symbol loop ---
     for sym in tickers:
-        run_params = dict(params_for_eval)
-        if disable_warmup:
-            run_params[DISABLE_WARMUP_FLAG] = True
-        else:
-            run_params.pop(DISABLE_WARMUP_FLAG, None)
+        run_params = apply_disable_warmup_flag(
+            params_for_eval, disable_warmup=disable_warmup
+        )
         result = run(sym, start_dt, end_dt, starting_equity, run_params)
 
         # Compute symbol-level metrics
