@@ -4,18 +4,27 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
-from src.utils.holdout_chart import init_chart, on_generation_end, set_config  # package path fallback
 from src.utils.training_logger import TrainingLogger
 from src.data.portfolio_prefetch import intersection_range
-from src.storage import append_to_portfolio, list_portfolios, load_portfolio, save_strategy_params
+from src.storage import (
+    append_to_portfolio,
+    get_benchmark_total_return,
+    list_portfolios,
+    load_portfolio,
+    save_strategy_params,
+)
 
 DIP_STRATEGY_MODULE = "src.models.atr_dip_breakout"
 PARAM_PROFILE_PATH = (
@@ -592,6 +601,320 @@ def _write_kv_table(d: Dict[str, Any], title: str = ""):
     st.dataframe(df, width="stretch", height=min(360, 40 + 28 * len(df)))
 
 
+HOLDOUT_EQUITY_KEY = "adapter_holdout_equity_series"
+HOLDOUT_BENCHMARK_KEY = "adapter_holdout_benchmark_series"
+HOLDOUT_RETURNS_KEY = "adapter_holdout_returns_series"
+HOLDOUT_TRADES_KEY = "adapter_holdout_trades"
+
+HOLDOUT_CHART_MARGIN = dict(l=80, r=30, t=40, b=30)
+
+
+@dataclass
+class PortfolioHoldoutResult:
+    equity: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    ratio: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    per_symbol_equity: Dict[str, pd.Series] = field(default_factory=dict)
+    per_symbol_ratio: Dict[str, pd.Series] = field(default_factory=dict)
+    trades: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+
+
+def _ensure_dt_index(series: pd.Series) -> pd.Series:
+    if not isinstance(series.index, pd.DatetimeIndex):
+        try:
+            series.index = pd.to_datetime(series.index)
+        except Exception:
+            return series
+    if series.index.tz is not None:
+        try:
+            series.index = series.index.tz_convert(None)
+        except Exception:
+            series.index = series.index.tz_localize(None)
+    return series.sort_index()
+
+
+def _flatten_trades(trades: Dict[str, List[Dict[str, Any]]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for symbol, trade_list in (trades or {}).items():
+        if not isinstance(trade_list, list):
+            continue
+        for trade in trade_list:
+            if not isinstance(trade, dict):
+                continue
+            entry = trade.get("entry_time") or trade.get("entry_dt")
+            exit_ = trade.get("exit_time") or trade.get("exit_dt")
+            if entry is None or exit_ is None:
+                continue
+            entry_ts = pd.to_datetime(entry, errors="coerce")
+            exit_ts = pd.to_datetime(exit_, errors="coerce")
+            if pd.isna(entry_ts) or pd.isna(exit_ts):
+                continue
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "entry_time": entry_ts.tz_localize(None) if getattr(entry_ts, "tzinfo", None) else entry_ts,
+                    "exit_time": exit_ts.tz_localize(None) if getattr(exit_ts, "tzinfo", None) else exit_ts,
+                    "return_pct": float(trade.get("return_pct", 0.0) or 0.0),
+                    "holding_days": int(trade.get("holding_days", 0) or 0),
+                    "quantity": float(trade.get("quantity", trade.get("qty", 0.0)) or 0.0),
+                    "net_pnl": float(trade.get("net_pnl", 0.0) or 0.0),
+                    "notional_entry": float(trade.get("notional_entry", trade.get("notional", 0.0)) or 0.0),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=["symbol", "entry_time", "exit_time", "return_pct"])
+    df = pd.DataFrame(rows)
+    df = df.sort_values("entry_time")
+    return df
+
+
+def _render_holdout_equity_chart(
+    placeholder: st.delta_generator.DeltaGenerator,
+    equity: pd.Series | None,
+    benchmark: pd.Series | None,
+    x_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
+) -> None:
+    if equity is None or equity.empty:
+        placeholder.info("Holdout equity will appear when a best candidate is available.")
+        return
+
+    equity = _ensure_dt_index(equity.copy())
+    strategy_values = np.asarray([float(v) for v in equity.values])
+    fig = go.Figure()
+
+    if benchmark is not None and not benchmark.empty:
+        benchmark = _ensure_dt_index(benchmark.copy())
+        bench_aligned = benchmark.reindex(equity.index).ffill().bfill()
+        bench_values = np.asarray([float(v) if pd.notna(v) else np.nan for v in bench_aligned.values])
+
+        if np.isfinite(bench_values).any():
+            diff = strategy_values - bench_values
+            outperform_mask = diff >= 0
+            underperform_mask = diff < 0
+
+            def _add_fill(mask: np.ndarray, name: str, color: str) -> None:
+                if not mask.any():
+                    return
+                upper = np.where(mask, np.maximum(strategy_values, bench_values), None)
+                lower = np.where(mask, np.minimum(strategy_values, bench_values), None)
+                custom_diff = np.where(mask, diff, None)
+                fig.add_trace(
+                    go.Scatter(
+                        x=list(equity.index),
+                        y=upper,
+                        mode="lines",
+                        line=dict(width=0),
+                        hoverinfo="skip",
+                        showlegend=False,
+                        connectgaps=False,
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=list(equity.index),
+                        y=lower,
+                        mode="lines",
+                        fill="tonexty",
+                        fillcolor=color,
+                        line=dict(width=0),
+                        name=name,
+                        showlegend=True,
+                        connectgaps=False,
+                        customdata=custom_diff,
+                        hovertemplate="Date=%{x|%Y-%m-%d}<br>Diff=$%{customdata:.2f}<extra></extra>",
+                    )
+                )
+
+            _add_fill(outperform_mask, "Outperformance", "rgba(40, 167, 69, 0.25)")
+            _add_fill(underperform_mask, "Underperformance", "rgba(220, 53, 69, 0.25)")
+
+            fig.add_trace(
+                go.Scatter(
+                    x=list(bench_aligned.index),
+                    y=bench_values,
+                    mode="lines",
+                    name="Benchmark",
+                    line=dict(width=1.8, color="#6c757d", dash="dash"),
+                )
+            )
+
+    fig.add_trace(
+        go.Scatter(
+            x=list(equity.index),
+            y=strategy_values,
+            mode="lines",
+            name="Strategy",
+            line=dict(width=2.2, color="#1f78b4"),
+        )
+    )
+
+    fig.update_layout(
+        title="Holdout equity (anchored at starting capital)",
+        margin=HOLDOUT_CHART_MARGIN,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        xaxis_title="Date",
+        yaxis_title="Equity ($)",
+        yaxis_title_standoff=10,
+    )
+    if x_range is not None:
+        fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
+    placeholder.plotly_chart(fig, use_container_width=True)
+
+
+def _render_holdout_heatmap(
+    placeholder: st.delta_generator.DeltaGenerator,
+    returns: pd.Series | None,
+    x_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
+) -> None:
+    container = placeholder.container()
+
+    if returns is None or returns.dropna().empty:
+        container.info("Rolling performance heatmap will populate after a completed holdout run.")
+        return
+
+    returns = _ensure_dt_index(returns.copy())
+    windows = [5, 10, 20, 60]
+    metrics: Dict[str, pd.Series] = {}
+    for window in windows:
+        if len(returns) < window:
+            metrics[f"{window}-day"] = pd.Series(np.nan, index=returns.index)
+            continue
+        roll_prod = (1.0 + returns).rolling(window).apply(lambda arr: float(np.prod(arr)), raw=True)
+        roll_prod = roll_prod.where(roll_prod > 0.0)
+        ann_return = roll_prod.pow(252 / window) - 1.0
+        metrics[f"{window}-day"] = ann_return * 100.0
+
+    heatmap_df = pd.DataFrame(metrics).dropna(how="all")
+    if heatmap_df.empty:
+        container.info("Not enough overlapping holdout data to compute rolling performance windows yet.")
+        return
+
+    heatmap_df = heatmap_df.fillna(np.nan)
+    z = heatmap_df.T.values
+    x = list(heatmap_df.index)
+    y = list(heatmap_df.columns)
+    fig = go.Figure(
+        data=
+        [
+            go.Heatmap(
+                x=x,
+                y=y,
+                z=z,
+                colorscale="RdYlGn",
+                colorbar=dict(title="Ann. return (%)"),
+                zmid=0,
+                hovertemplate="Window=%{y}<br>Date=%{x|%Y-%m-%d}<br>Ann. return=%{z:.2f}%<extra></extra>",
+            )
+        ]
+    )
+    fig.update_layout(
+        title="Rolling performance heatmap",
+        margin=HOLDOUT_CHART_MARGIN,
+        xaxis_title="Date",
+        yaxis_title="Rolling window",
+        yaxis_title_standoff=10,
+    )
+    if x_range is not None:
+        fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
+    container.plotly_chart(fig, use_container_width=True)
+    container.markdown(
+        """
+        **How to read this heatmap**
+
+        * Each row represents a rolling window (e.g., 5-day) of compounded strategy returns.
+        * Colors encode the annualized return for that window—greens indicate positive momentum, yellows are flat, and reds
+          highlight stretches of drawdown.
+        * Line up the vertical date bands with the equity curve above and trade timeline below to spot which clusters of
+          trades produced the strongest or weakest performance at different horizons.
+        """
+    )
+
+
+def _render_trade_timeline(
+    placeholder: st.delta_generator.DeltaGenerator,
+    trades_df: pd.DataFrame | None,
+    max_trades: int = 200,
+    x_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
+) -> None:
+    if trades_df is None or trades_df.empty:
+        placeholder.info("Trade timeline will display once closed holds appear in the holdout window.")
+        return
+
+    df = trades_df.copy()
+    df = df.dropna(subset=["entry_time", "exit_time"])
+    if df.empty:
+        placeholder.info("Trade timeline will display once closed holds appear in the holdout window.")
+        return
+    df = df.sort_values("entry_time")
+    if len(df) > max_trades:
+        df = df.iloc[-max_trades:]
+
+    df["return_pct_display"] = df["return_pct"] * 100.0
+    df["duration_days"] = (df["exit_time"] - df["entry_time"]).dt.days.clip(lower=0)
+
+    fig = px.timeline(
+        df,
+        x_start="entry_time",
+        x_end="exit_time",
+        y="symbol",
+        color="return_pct_display",
+        color_continuous_scale="RdYlGn",
+        hover_data={
+            "return_pct_display": ":.2f",
+            "duration_days": True,
+            "quantity": ":.2f",
+            "net_pnl": ":.2f",
+        },
+    )
+    fig.update_layout(
+        title="Trade lifecycle timeline",
+        margin=HOLDOUT_CHART_MARGIN,
+        coloraxis_colorbar=dict(title="Return (%)"),
+        xaxis_title="Date",
+        yaxis_title="Symbol",
+        yaxis_title_standoff=10,
+    )
+    if x_range is not None:
+        fig.update_layout(xaxis=dict(range=[x_range[0], x_range[1]]))
+    fig.update_yaxes(autorange="reversed")
+    fig.update_coloraxes(cmid=0)
+    placeholder.plotly_chart(fig, use_container_width=True)
+
+
+def _resolve_holdout_x_range(
+    equity: pd.Series | None,
+    returns: pd.Series | None,
+    trades_df: pd.DataFrame | None,
+) -> Tuple[pd.Timestamp, pd.Timestamp] | None:
+    spans: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+
+    if equity is not None and not equity.empty:
+        idx = _ensure_dt_index(equity.copy()).index
+        if len(idx):
+            spans.append((idx.min().to_pydatetime(), idx.max().to_pydatetime()))
+
+    if returns is not None and not returns.dropna().empty:
+        idx = _ensure_dt_index(returns.copy()).index
+        if len(idx):
+            spans.append((idx.min().to_pydatetime(), idx.max().to_pydatetime()))
+
+    if trades_df is not None and not trades_df.empty:
+        df = trades_df.dropna(subset=["entry_time", "exit_time"])
+        if not df.empty:
+            entry_min = pd.to_datetime(df["entry_time"], errors="coerce").dropna()
+            exit_max = pd.to_datetime(df["exit_time"], errors="coerce").dropna()
+            if not entry_min.empty and not exit_max.empty:
+                spans.append((entry_min.min().to_pydatetime(), exit_max.max().to_pydatetime()))
+
+    if not spans:
+        return None
+
+    start = min(span[0] for span in spans)
+    end = max(span[1] for span in spans)
+    if start == end:
+        end = end + timedelta(days=1)
+    return (start, end)
+
+
 def _portfolio_equity_curve(
         strategy_dotted: str,
         tickers: List[str],
@@ -599,22 +922,34 @@ def _portfolio_equity_curve(
         end,
         starting_equity: float,
         params: Dict[str, Any],
-) -> pd.Series:
+) -> PortfolioHoldoutResult:
     """Simulate aggregated portfolio equity for the given params on [start, end)."""
 
     try:
         mod = _safe_import(strategy_dotted)
         run = getattr(mod, "run_strategy")
     except Exception:
-        return pd.Series(dtype=float)
+        return PortfolioHoldoutResult()
 
-    curves: Dict[str, pd.Series] = {}
+    base_equity = float(starting_equity)
+    per_symbol_equity: Dict[str, pd.Series] = {}
+    per_symbol_ratio: Dict[str, pd.Series] = {}
+    trades_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+
     for sym in tickers:
         try:
             result = run(sym, start, end, starting_equity, params)
         except Exception:
             continue
-        eq = result.get("equity")
+
+        if isinstance(result, dict):
+            trades_payload = result.get("trades")
+            if isinstance(trades_payload, list):
+                trades_by_symbol[sym] = [dict(t) for t in trades_payload if isinstance(t, dict)]
+            eq = result.get("equity")
+        else:
+            eq = None
+
         if eq is None or len(eq) == 0:
             continue
         if isinstance(eq, pd.DataFrame):
@@ -627,6 +962,7 @@ def _portfolio_equity_curve(
                 eq = pd.Series(eq)
             except Exception:
                 continue
+
         eq = eq.dropna()
         if eq.empty:
             continue
@@ -643,33 +979,61 @@ def _portfolio_equity_curve(
             eq = eq.astype(float)
         except Exception:
             continue
-        first_valid = None
-        for val in eq.values:
-            if pd.isna(val):
-                continue
-            try:
-                fv = float(val)
-            except (TypeError, ValueError):
-                continue
-            if abs(fv) > 1e-9:
-                first_valid = fv
-                break
-        if first_valid is None:
+
+        eq = _ensure_dt_index(eq)
+        if eq.empty:
             continue
-        norm = (eq / first_valid).astype(float)
-        curves[sym] = norm
 
-    if not curves:
-        return pd.Series(dtype=float)
+        first_value = float(eq.iloc[0]) if len(eq) else 0.0
+        if abs(first_value) < 1e-9:
+            anchored = eq + base_equity
+        else:
+            anchored = eq
 
-    df = pd.DataFrame(curves).sort_index()
-    df = df.ffill().dropna(how="all")
-    if df.empty:
-        return pd.Series(dtype=float)
+        anchored = anchored.astype(float)
+        anchored = _ensure_dt_index(anchored)
+        if anchored.empty:
+            continue
 
-    portfolio = df.mean(axis=1, skipna=True) * float(starting_equity)
-    portfolio.name = "portfolio_equity"
-    return portfolio
+        start_val = float(anchored.iloc[0]) if len(anchored) else 0.0
+        if abs(start_val) < 1e-9:
+            continue
+
+        ratio = (anchored / start_val).astype(float)
+        per_symbol_equity[sym] = anchored
+        per_symbol_ratio[sym] = ratio
+
+    if not per_symbol_ratio:
+        return PortfolioHoldoutResult(trades=trades_by_symbol)
+
+    ratio_df = pd.DataFrame(per_symbol_ratio).sort_index()
+    ratio_df = ratio_df.ffill().dropna(how="all")
+    if ratio_df.empty:
+        return PortfolioHoldoutResult(trades=trades_by_symbol)
+
+    portfolio_ratio = ratio_df.mean(axis=1, skipna=True)
+    portfolio_ratio = portfolio_ratio.dropna()
+    if portfolio_ratio.empty:
+        return PortfolioHoldoutResult(trades=trades_by_symbol)
+    portfolio_ratio.name = "portfolio_ratio"
+
+    portfolio_equity = portfolio_ratio * base_equity
+    portfolio_equity.name = "portfolio_equity"
+
+    aligned_equity: Dict[str, pd.Series] = {}
+    aligned_ratio: Dict[str, pd.Series] = {}
+    for sym, series in per_symbol_equity.items():
+        aligned_equity[sym] = series.reindex(portfolio_equity.index).ffill()
+    for sym, series in per_symbol_ratio.items():
+        aligned_ratio[sym] = series.reindex(portfolio_ratio.index).ffill()
+
+    return PortfolioHoldoutResult(
+        equity=portfolio_equity,
+        ratio=portfolio_ratio,
+        per_symbol_equity=aligned_equity,
+        per_symbol_ratio=aligned_ratio,
+        trades=trades_by_symbol,
+    )
 
 
 def _normalize_symbols(seq) -> list[str]:
@@ -1725,9 +2089,13 @@ with best_score_col:
 with best_params_col:
     best_params_placeholder = st.empty()
 
-st.markdown("### Holdout equity (outside training window)")
-holdout_chart_placeholder = st.empty()
+st.markdown("### Holdout diagnostics")
+holdout_equity_placeholder = st.empty()
+holdout_heatmap_placeholder = st.empty()
 holdout_status_placeholder = st.empty()
+
+st.markdown("### Trade lifecycle timeline")
+holdout_timeline_placeholder = st.empty()
 
 st.markdown("### Generation summary")
 gen_summary_placeholder = st.empty()
@@ -1760,11 +2128,35 @@ if best_params_state:
 else:
     best_params_placeholder.info("Waiting for evaluations…")
 
-holdout_history_state = st.session_state.get("adapter_holdout_history") or []
-# (chart rendered by holdout_chart helper)
 # ---------- Results hydration & status ----------
-holdout_status_state = st.session_state.get("adapter_holdout_status") or ("info",
-                                                                          "Holdout equity will appear when a best candidate is found.")
+equity_series_state = st.session_state.get(HOLDOUT_EQUITY_KEY)
+benchmark_series_state = st.session_state.get(HOLDOUT_BENCHMARK_KEY)
+returns_series_state = st.session_state.get(HOLDOUT_RETURNS_KEY)
+trades_df_state = st.session_state.get(HOLDOUT_TRADES_KEY)
+
+x_axis_range = _resolve_holdout_x_range(equity_series_state, returns_series_state, trades_df_state)
+
+_render_holdout_equity_chart(
+    holdout_equity_placeholder,
+    equity_series_state,
+    benchmark_series_state,
+    x_axis_range,
+)
+_render_holdout_heatmap(
+    holdout_heatmap_placeholder,
+    returns_series_state,
+    x_axis_range,
+)
+_render_trade_timeline(
+    holdout_timeline_placeholder,
+    trades_df_state,
+    x_range=x_axis_range,
+)
+
+holdout_status_state = st.session_state.get("adapter_holdout_status") or (
+    "info",
+    "Holdout diagnostics will appear once a best candidate evaluates on the holdout window.",
+)
 status_kind, status_msg = holdout_status_state
 if status_kind == "success":
     holdout_status_placeholder.success(status_msg)
@@ -1807,6 +2199,11 @@ if run_btn:
     st.session_state["adapter_gen_history"] = []
     st.session_state["adapter_best_tracker"] = dict(best_tracker)
 
+    st.session_state[HOLDOUT_EQUITY_KEY] = None
+    st.session_state[HOLDOUT_RETURNS_KEY] = None
+    st.session_state[HOLDOUT_BENCHMARK_KEY] = None
+    st.session_state[HOLDOUT_TRADES_KEY] = None
+
     eval_table_placeholder.empty()
     best_score_placeholder.metric("Best score", "—")
     best_params_placeholder.info("Waiting for evaluations…")
@@ -1832,28 +2229,60 @@ if run_btn:
         f"Testing on holdout window {holdout_start.date().isoformat()} → {holdout_end.date().isoformat()}",
     )
 
-    def _hc_engine(params, data, starting_equity):
-        series = _portfolio_equity_curve(
-            strategy_dotted,
-            tickers,
-            holdout_start,
-            holdout_end,
-            float(starting_equity),
-            params,
-        )
-        return pd.DataFrame({"equity": series})
-
-    init_chart(
-        placeholder=holdout_chart_placeholder,
-        starting_equity=float(equity),
-        holdout_start=holdout_start,
-        holdout_end=holdout_end,
-        loader_fn=lambda **kwargs: {},  # unused by _hc_engine
-        engine_fn=_hc_engine,
-        symbols=tickers,
-        max_curves=8,
-    )
     st.session_state["_hc_last_score"] = None
+
+    def _load_benchmark_equity(target_index: pd.DatetimeIndex) -> pd.Series | None:
+        try:
+            bench = get_benchmark_total_return(start=holdout_start, end=holdout_end)
+        except Exception:
+            bench = None
+        if bench is None or bench.empty:
+            return None
+        bench = _ensure_dt_index(bench.astype(float))
+        bench = bench.reindex(target_index.union(bench.index)).ffill()
+        bench = bench.reindex(target_index).ffill().dropna()
+        if bench.empty:
+            return None
+        bench_equity = bench * float(equity)
+        bench_equity.name = "benchmark_equity"
+        return bench_equity
+
+    def _update_holdout_visuals(gen_idx: int, best_score_val: float, params: Dict[str, Any]) -> None:
+        try:
+            result = _portfolio_equity_curve(
+                strategy_dotted,
+                tickers,
+                holdout_start,
+                holdout_end,
+                float(equity),
+                params,
+            )
+        except Exception:
+            return
+
+        equity_series = getattr(result, "equity", pd.Series(dtype=float))
+        if equity_series is None or equity_series.empty:
+            return
+
+        equity_series = _ensure_dt_index(equity_series.astype(float))
+        returns_series = equity_series.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        benchmark_series = _load_benchmark_equity(equity_series.index)
+        trades_df = _flatten_trades(getattr(result, "trades", {}))
+
+        st.session_state[HOLDOUT_EQUITY_KEY] = equity_series
+        st.session_state[HOLDOUT_RETURNS_KEY] = returns_series
+        st.session_state[HOLDOUT_BENCHMARK_KEY] = benchmark_series
+        st.session_state[HOLDOUT_TRADES_KEY] = trades_df
+
+        status_suffix = f" (Gen {gen_idx}, score={best_score_val:.3f})" if isinstance(best_score_val, (int, float)) else ""
+        st.session_state["adapter_holdout_status"] = (
+            "success",
+            f"Holdout window {holdout_start.date().isoformat()} → {holdout_end.date().isoformat()}{status_suffix}",
+        )
+
+        _render_holdout_equity_chart(holdout_equity_placeholder, equity_series, benchmark_series)
+        _render_holdout_heatmap(holdout_heatmap_placeholder, returns_series)
+        _render_trade_timeline(holdout_timeline_placeholder, trades_df)
 
     # ---- Build EA param space from UI bounds ----
     cfg = ea_cfg
@@ -2026,7 +2455,11 @@ if run_btn:
             should_push = (last_plotted is None) or (isinstance(best_score_gen, (int, float)) and best_score_gen > last_plotted)
             if should_push and isinstance(best_score_gen, (int, float)) and best_params_gen:
                 try:
-                    on_generation_end(int(ctx.get("gen", 0)), float(best_score_gen), dict(best_params_gen))
+                    _update_holdout_visuals(
+                        int(ctx.get("gen", 0)),
+                        float(best_score_gen),
+                        dict(best_params_gen),
+                    )
                     st.session_state["_hc_last_score"] = float(best_score_gen)
                 except Exception:
                     pass
