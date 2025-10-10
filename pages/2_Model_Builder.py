@@ -693,6 +693,8 @@ class PortfolioHoldoutResult:
     capital_weights: pd.DataFrame = field(default_factory=pd.DataFrame)
     capital_allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
     cash_allocation: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    capital_weight_requests: pd.DataFrame = field(default_factory=pd.DataFrame)
+    capital_allocation_requests: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _ensure_dt_index(series: pd.Series) -> pd.Series:
@@ -735,6 +737,16 @@ def _flatten_trades(trades: Dict[str, List[Dict[str, Any]]]) -> pd.DataFrame:
                     "quantity": float(trade.get("quantity", trade.get("qty", 0.0)) or 0.0),
                     "net_pnl": float(trade.get("net_pnl", 0.0) or 0.0),
                     "notional_entry": float(trade.get("notional_entry", trade.get("notional", 0.0)) or 0.0),
+                    "portfolio_weight_fraction": (
+                        float(trade.get("portfolio_weight_fraction"))
+                        if trade.get("portfolio_weight_fraction") is not None
+                        else np.nan
+                    ),
+                    "portfolio_notional_entry": (
+                        float(trade.get("portfolio_notional_entry"))
+                        if trade.get("portfolio_notional_entry") is not None
+                        else np.nan
+                    ),
                     "risk_reward_ratio": (
                         float(trade.get("risk_reward_ratio"))
                         if trade.get("risk_reward_ratio") is not None
@@ -953,7 +965,10 @@ def _render_trade_timeline(
 
     df["return_pct_display"] = df["return_pct"] * 100.0
     df["duration_days"] = (df["exit_time"] - df["entry_time"]).dt.days.clip(lower=0)
-    df["abs_notional"] = df["notional_entry"].abs()
+    if "portfolio_notional_entry" in df.columns and df["portfolio_notional_entry"].notna().any():
+        df["abs_notional"] = df["portfolio_notional_entry"].abs().fillna(0.0)
+    else:
+        df["abs_notional"] = df["notional_entry"].abs()
     max_notional = df["abs_notional"].max()
     if max_notional and max_notional > 0:
         df["size_fraction"] = df["abs_notional"] / max_notional
@@ -975,6 +990,8 @@ def _render_trade_timeline(
             "quantity": ":.2f",
             "net_pnl": ":.2f",
             "notional_entry": ":.2f",
+            "portfolio_notional_entry": ":.2f",
+            "portfolio_weight_fraction": ":.2f",
             "risk_reward_ratio": ":.2f",
             "risk_reward_scale": ":.2f",
             "risk_reward_sizing": True,
@@ -1144,7 +1161,8 @@ def _portfolio_equity_curve(
         .fillna(0.0)
     )
 
-    notional_df = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns, dtype=float)
+    weight_request_df = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns, dtype=float)
+    notional_request_df = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns, dtype=float)
 
     def _normalize_ts(value: Any) -> pd.Timestamp | None:
         ts = pd.to_datetime(value, errors="coerce")
@@ -1157,8 +1175,32 @@ def _portfolio_equity_curve(
                 ts = ts.tz_localize(None)
         return ts
 
+    def _lookup_symbol_equity(symbol: str, ts: pd.Timestamp | None) -> float | None:
+        if ts is None:
+            return None
+        series = per_symbol_equity.get(symbol)
+        if series is None or len(series) == 0:
+            return None
+        try:
+            if ts in series.index:
+                value = float(series.loc[ts])
+                if math.isfinite(value):
+                    return value
+            mask = series.index <= ts
+            if not mask.any():
+                return None
+            value = float(series.loc[mask].iloc[-1])
+            if math.isfinite(value):
+                return value
+        except Exception:
+            return None
+        return None
+
     for sym, trade_list in trades_by_symbol.items():
-        if sym not in notional_df.columns:
+        if sym not in weight_request_df.columns:
+            continue
+        series = per_symbol_equity.get(sym)
+        if series is None or series.empty:
             continue
         for trade in trade_list or []:
             if not isinstance(trade, dict):
@@ -1177,23 +1219,37 @@ def _portfolio_equity_curve(
                 notional = abs(qty * price)
             if notional <= 0.0:
                 continue
-            mask = (notional_df.index >= entry_ts) & (notional_df.index <= exit_ts)
+            mask = (weight_request_df.index >= entry_ts) & (weight_request_df.index <= exit_ts)
             if not mask.any():
                 continue
-            notional_df.loc[mask, sym] += notional
+            notional_request_df.loc[mask, sym] += notional
+            entry_equity = _lookup_symbol_equity(sym, entry_ts)
+            if entry_equity is None or entry_equity <= 0.0:
+                continue
+            weight_fraction = notional / entry_equity
+            if not math.isfinite(weight_fraction) or weight_fraction <= 0.0:
+                continue
+            weight_request_df.loc[mask, sym] += float(weight_fraction)
+            if trade.get("portfolio_weight_fraction") is None:
+                trade["portfolio_weight_fraction"] = float(weight_fraction)
 
-    returns_df = returns_df.reindex(notional_df.index).fillna(0.0)
+    returns_df = returns_df.reindex(weight_request_df.index).fillna(0.0)
 
-    weights_fraction = pd.DataFrame(0.0, index=notional_df.index, columns=notional_df.columns, dtype=float)
-    cash_series = pd.Series(1.0, index=notional_df.index, dtype=float)
+    weights_fraction = (
+        weight_request_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    )
+    cash_series = pd.Series(1.0, index=weights_fraction.index, dtype=float)
+    gross_series = pd.Series(0.0, index=weights_fraction.index, dtype=float)
+    allocations_df = pd.DataFrame(0.0, index=weights_fraction.index, columns=weights_fraction.columns, dtype=float)
+    cash_notional_series = pd.Series(0.0, index=weights_fraction.index, dtype=float)
 
     equity_values: List[float] = []
     current_equity = float(base_equity if math.isfinite(base_equity) else 0.0)
     if current_equity <= 0.0:
         current_equity = 0.0
-    prev_weights = pd.Series(0.0, index=notional_df.columns, dtype=float)
+    prev_weights = pd.Series(0.0, index=weights_fraction.columns, dtype=float)
 
-    for idx, _ in enumerate(notional_df.index):
+    for idx, _ in enumerate(weights_fraction.index):
         if idx > 0:
             period_vector = returns_df.iloc[idx]
             try:
@@ -1205,14 +1261,13 @@ def _portfolio_equity_curve(
             current_equity *= 1.0 + period_return
         equity_values.append(current_equity)
 
-        notionals_row = notional_df.iloc[idx]
-        weights_row = pd.Series(0.0, index=notional_df.columns, dtype=float)
-        if current_equity > 0.0:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                weights_row = notionals_row / current_equity
-        weights_row = weights_row.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        weights_row = weights_fraction.iloc[idx].clip(lower=0.0).fillna(0.0)
         weights_fraction.iloc[idx] = weights_row
-        cash_series.iloc[idx] = float(1.0 - weights_row.sum())
+        gross = float(weights_row.sum())
+        gross_series.iloc[idx] = gross
+        cash_series.iloc[idx] = float(1.0 - gross)
+        allocations_df.iloc[idx] = weights_row * current_equity
+        cash_notional_series.iloc[idx] = float(current_equity * cash_series.iloc[idx])
         prev_weights = weights_row
 
     weights_effective = weights_fraction.shift(1)
@@ -1220,13 +1275,38 @@ def _portfolio_equity_curve(
         weights_effective.iloc[0, :] = weights_fraction.iloc[0, :]
     weights_effective = weights_effective.fillna(0.0)
 
+    allocations_effective = allocations_df.shift(1)
+    if not allocations_effective.empty:
+        allocations_effective.iloc[0, :] = allocations_df.iloc[0, :]
+    allocations_effective = allocations_effective.fillna(0.0)
+
     cash_effective = cash_series.shift(1)
     if len(cash_effective):
         cash_effective.iloc[0] = cash_series.iloc[0]
     cash_effective = cash_effective.fillna(0.0)
-    weights_effective["__cash__"] = cash_effective.astype(float)
 
-    portfolio_equity = pd.Series(equity_values, index=notional_df.index, dtype=float)
+    cash_notional_effective = cash_notional_series.shift(1)
+    if len(cash_notional_effective):
+        cash_notional_effective.iloc[0] = cash_notional_series.iloc[0]
+    cash_notional_effective = cash_notional_effective.fillna(0.0)
+
+    gross_effective = gross_series.shift(1)
+    if len(gross_effective):
+        gross_effective.iloc[0] = gross_series.iloc[0]
+    gross_effective = gross_effective.fillna(0.0)
+
+    weights_effective["__cash__"] = cash_effective.astype(float)
+    weights_effective["__gross_exposure__"] = gross_effective.astype(float)
+
+    allocations_effective["__cash__"] = cash_notional_effective.astype(float)
+
+    weight_requests = weights_fraction.copy()
+    weight_requests["__cash__"] = cash_series.astype(float)
+    weight_requests["__gross_exposure__"] = gross_series.astype(float)
+
+    notional_request_df = notional_request_df.fillna(0.0)
+
+    portfolio_equity = pd.Series(equity_values, index=weights_fraction.index, dtype=float)
     portfolio_equity.name = "portfolio_equity"
 
     ratio_divisor = base_equity if base_equity and math.isfinite(base_equity) else None
@@ -1240,6 +1320,45 @@ def _portfolio_equity_curve(
         if not math.isfinite(first_ratio) or first_ratio <= 0.0:
             portfolio_ratio.iloc[0] = 1.0
     portfolio_ratio.name = "portfolio_ratio"
+
+    def _lookup_portfolio_equity(ts: pd.Timestamp | None) -> float | None:
+        if ts is None or portfolio_equity.empty:
+            return None
+        try:
+            if ts in portfolio_equity.index:
+                value = float(portfolio_equity.loc[ts])
+                if math.isfinite(value):
+                    return value
+            mask = portfolio_equity.index <= ts
+            if not mask.any():
+                return None
+            value = float(portfolio_equity.loc[mask].iloc[-1])
+            if math.isfinite(value):
+                return value
+        except Exception:
+            return None
+        return None
+
+    base_equity_fallback = float(base_equity if math.isfinite(base_equity) else 0.0)
+    for sym, trade_list in trades_by_symbol.items():
+        if not isinstance(trade_list, list):
+            continue
+        for trade in trade_list:
+            if not isinstance(trade, dict):
+                continue
+            try:
+                weight_fraction = float(trade.get("portfolio_weight_fraction") or 0.0)
+            except Exception:
+                weight_fraction = 0.0
+            if weight_fraction <= 0.0:
+                continue
+            entry_ts = _normalize_ts(trade.get("entry_time") or trade.get("entry_dt"))
+            entry_equity_portfolio = _lookup_portfolio_equity(entry_ts)
+            if entry_equity_portfolio is None or entry_equity_portfolio <= 0.0:
+                entry_equity_portfolio = base_equity_fallback
+            if entry_equity_portfolio is None or entry_equity_portfolio <= 0.0:
+                continue
+            trade["portfolio_notional_entry"] = float(weight_fraction * entry_equity_portfolio)
 
     aligned_equity: Dict[str, pd.Series] = {}
     aligned_ratio: Dict[str, pd.Series] = {}
@@ -1255,8 +1374,10 @@ def _portfolio_equity_curve(
         per_symbol_ratio=aligned_ratio,
         trades=trades_by_symbol,
         capital_weights=weights_effective,
-        capital_allocations=notional_df,
-        cash_allocation=cash_series,
+        capital_allocations=allocations_effective,
+        cash_allocation=cash_effective,
+        capital_weight_requests=weight_requests,
+        capital_allocation_requests=notional_request_df,
     )
 
 
