@@ -691,6 +691,8 @@ class PortfolioHoldoutResult:
     per_symbol_ratio: Dict[str, pd.Series] = field(default_factory=dict)
     trades: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     capital_weights: pd.DataFrame = field(default_factory=pd.DataFrame)
+    capital_allocations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    cash_allocation: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
 
 
 def _ensure_dt_index(series: pd.Series) -> pd.Series:
@@ -1142,7 +1144,7 @@ def _portfolio_equity_curve(
         .fillna(0.0)
     )
 
-    weight_df = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns, dtype=float)
+    notional_df = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns, dtype=float)
 
     def _normalize_ts(value: Any) -> pd.Timestamp | None:
         ts = pd.to_datetime(value, errors="coerce")
@@ -1156,7 +1158,7 @@ def _portfolio_equity_curve(
         return ts
 
     for sym, trade_list in trades_by_symbol.items():
-        if sym not in weight_df.columns:
+        if sym not in notional_df.columns:
             continue
         for trade in trade_list or []:
             if not isinstance(trade, dict):
@@ -1175,43 +1177,69 @@ def _portfolio_equity_curve(
                 notional = abs(qty * price)
             if notional <= 0.0:
                 continue
-            mask = (weight_df.index >= entry_ts) & (weight_df.index <= exit_ts)
+            mask = (notional_df.index >= entry_ts) & (notional_df.index <= exit_ts)
             if not mask.any():
                 continue
-            weight_df.loc[mask, sym] += notional
+            notional_df.loc[mask, sym] += notional
 
-    weights_norm = weight_df.copy()
-    if len(weights_norm.columns):
-        active_totals = weights_norm.sum(axis=1)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            weights_norm = weights_norm.div(active_totals.replace(0.0, np.nan), axis=0)
-        weights_norm = weights_norm.fillna(0.0)
-        zero_mask = active_totals <= 0.0
-        if zero_mask.any():
-            equal_weight = 1.0 / float(len(weights_norm.columns))
-            weights_norm.loc[zero_mask, :] = equal_weight
-        row_sums = weights_norm.sum(axis=1).replace(0.0, 1.0)
-        weights_norm = weights_norm.div(row_sums, axis=0)
-    else:
-        weights_norm = pd.DataFrame(0.0, index=ratio_df.index, columns=ratio_df.columns)
+    returns_df = returns_df.reindex(notional_df.index).fillna(0.0)
 
-    portfolio_returns = (returns_df * weights_norm).sum(axis=1)
-    portfolio_returns = portfolio_returns.fillna(0.0)
+    weights_fraction = pd.DataFrame(0.0, index=notional_df.index, columns=notional_df.columns, dtype=float)
+    cash_series = pd.Series(1.0, index=notional_df.index, dtype=float)
 
-    initial_ratio = 1.0
-    if not ratio_df.empty and not weights_norm.empty:
-        try:
-            initial_ratio = float((ratio_df.iloc[0] * weights_norm.iloc[0]).sum())
-        except Exception:
-            initial_ratio = 1.0
-        if not math.isfinite(initial_ratio) or initial_ratio <= 0.0:
-            initial_ratio = 1.0
+    equity_values: List[float] = []
+    current_equity = float(base_equity if math.isfinite(base_equity) else 0.0)
+    if current_equity <= 0.0:
+        current_equity = 0.0
+    prev_weights = pd.Series(0.0, index=notional_df.columns, dtype=float)
 
-    portfolio_ratio = (1.0 + portfolio_returns).cumprod() * initial_ratio
-    portfolio_ratio.name = "portfolio_ratio"
+    for idx, _ in enumerate(notional_df.index):
+        if idx > 0:
+            period_vector = returns_df.iloc[idx]
+            try:
+                period_return = float((period_vector * prev_weights).sum())
+            except Exception:
+                period_return = 0.0
+            if not math.isfinite(period_return):
+                period_return = 0.0
+            current_equity *= 1.0 + period_return
+        equity_values.append(current_equity)
 
-    portfolio_equity = portfolio_ratio * base_equity
+        notionals_row = notional_df.iloc[idx]
+        weights_row = pd.Series(0.0, index=notional_df.columns, dtype=float)
+        if current_equity > 0.0:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                weights_row = notionals_row / current_equity
+        weights_row = weights_row.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        weights_fraction.iloc[idx] = weights_row
+        cash_series.iloc[idx] = float(1.0 - weights_row.sum())
+        prev_weights = weights_row
+
+    weights_effective = weights_fraction.shift(1)
+    if not weights_effective.empty:
+        weights_effective.iloc[0, :] = weights_fraction.iloc[0, :]
+    weights_effective = weights_effective.fillna(0.0)
+
+    cash_effective = cash_series.shift(1)
+    if len(cash_effective):
+        cash_effective.iloc[0] = cash_series.iloc[0]
+    cash_effective = cash_effective.fillna(0.0)
+    weights_effective["__cash__"] = cash_effective.astype(float)
+
+    portfolio_equity = pd.Series(equity_values, index=notional_df.index, dtype=float)
     portfolio_equity.name = "portfolio_equity"
+
+    ratio_divisor = base_equity if base_equity and math.isfinite(base_equity) else None
+    if not ratio_divisor or ratio_divisor == 0.0:
+        first_valid = next((float(v) for v in equity_values if math.isfinite(v) and v != 0.0), 1.0)
+        ratio_divisor = first_valid if first_valid else 1.0
+    portfolio_ratio = portfolio_equity / float(ratio_divisor)
+    portfolio_ratio = portfolio_ratio.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    if len(portfolio_ratio):
+        first_ratio = float(portfolio_ratio.iloc[0])
+        if not math.isfinite(first_ratio) or first_ratio <= 0.0:
+            portfolio_ratio.iloc[0] = 1.0
+    portfolio_ratio.name = "portfolio_ratio"
 
     aligned_equity: Dict[str, pd.Series] = {}
     aligned_ratio: Dict[str, pd.Series] = {}
@@ -1226,7 +1254,9 @@ def _portfolio_equity_curve(
         per_symbol_equity=aligned_equity,
         per_symbol_ratio=aligned_ratio,
         trades=trades_by_symbol,
-        capital_weights=weights_norm,
+        capital_weights=weights_effective,
+        capital_allocations=notional_df,
+        cash_allocation=cash_series,
     )
 
 
