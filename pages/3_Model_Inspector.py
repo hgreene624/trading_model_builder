@@ -232,6 +232,158 @@ def _rescale_test_curve(
 
 # ---------- helpers ----------
 
+
+def _quick_sanity_checks(
+    *,
+    selected_row: pd.Series,
+    combined_curve: pd.DataFrame,
+    train_curve: pd.DataFrame,
+    test_curve: pd.DataFrame,
+    starting_equity: float,
+    missing_sizing_keys: List[str],
+    eval_df: pd.DataFrame,
+    upto_gen: int,
+    strategy: str,
+) -> Dict[str, Any]:
+    checks: List[Dict[str, Any]] = []
+    mk = lambda label, passed, message: checks.append(
+        {"label": label, "passed": passed, "message": message}
+    )
+    nav_replayed_end: Optional[float] = None
+    nav_start: Optional[float] = None
+    if {"equity"}.issubset(combined_curve.columns) and not combined_curve.empty:
+        equity_vals = combined_curve["equity"].astype(float)
+        nav_start = float(equity_vals.iloc[0])
+        nav_end = float(equity_vals.iloc[-1])
+        if nav_start:
+            nav_replayed_end = nav_end / nav_start
+    reported_total_return = float(selected_row.get("total_return", 0.0) or 0.0)
+    expected_nav_end = 1.0 + reported_total_return
+    injected_size_fields = [k for k in missing_sizing_keys if str(k).startswith("size_")]
+    diag: Dict[str, Any] = {
+        "reported_total_return": reported_total_return,
+        "expected_nav_end": expected_nav_end,
+        "nav_replayed_end": nav_replayed_end,
+        "injected_size_fields": injected_size_fields,
+    }
+
+    if nav_replayed_end is None or not math.isfinite(expected_nav_end):
+        mk("Parity", False, "Missing replayed curve to compare.")
+    else:
+        diff = abs(nav_replayed_end - expected_nav_end)
+        if diff < 1e-3:
+            mk("Parity", True, f"OK ({nav_replayed_end:.3f} vs {expected_nav_end:.3f})")
+        else:
+            mk(
+                "Parity",
+                False,
+                f"Expected {expected_nav_end:.4f}, got {nav_replayed_end:.4f}. Injected: {json.dumps(injected_size_fields)}.",
+            )
+
+    train_end_equity: Optional[float] = None
+    if {"equity"}.issubset(train_curve.columns) and not train_curve.empty:
+        train_end_equity = float(train_curve["equity"].astype(float).iloc[-1])
+    test_start_equity: Optional[float] = None
+    if {"equity"}.issubset(test_curve.columns) and not test_curve.empty:
+        test_start_equity = float(test_curve["equity"].astype(float).iloc[0])
+    unit = "dollars"
+    if nav_start is not None and abs(nav_start - 1.0) <= 1e-3:
+        unit = "norm"
+    diag.update(
+        {
+            "train_end_equity": train_end_equity,
+            "test_start_equity": test_start_equity,
+            "unit": unit,
+        }
+    )
+    if train_end_equity is not None and test_start_equity is not None:
+        diff_val = test_start_equity - train_end_equity
+        tol = 1e-6 if unit == "norm" else 0.01
+        fmt = f"Δ {diff_val:.6f}" if unit == "norm" else f"Δ ${diff_val:.2f}"
+        if abs(diff_val) <= tol:
+            mk("Train→Test", True, f"OK ({fmt})")
+        else:
+            mk(
+                "Train→Test",
+                False,
+                f"{fmt}. Test segment likely re-normalized or scaled twice at the boundary.",
+            )
+    else:
+        mk("Train→Test", True, "No test segment to compare.")
+
+    start_capital_source = "meta"
+    start_capital = float(starting_equity) if math.isfinite(float(starting_equity)) else 10000.0
+    if not math.isfinite(float(starting_equity)):
+        start_capital_source = "default_10000"
+    expected_end_dollars = start_capital * expected_nav_end
+    equity_dollars_end: Optional[float] = None
+    if {"equity"}.issubset(combined_curve.columns) and not combined_curve.empty:
+        equity_dollars_end = float(combined_curve["equity"].astype(float).iloc[-1])
+    diag.update(
+        {
+            "start_capital_used": start_capital,
+            "start_capital_source": start_capital_source,
+            "expected_end_dollars": expected_end_dollars,
+            "equity_dollars_end": equity_dollars_end,
+        }
+    )
+    if equity_dollars_end is None:
+        mk("Amplitude", False, "Missing equity dollars series.")
+    else:
+        diff_amp = abs(equity_dollars_end - expected_end_dollars)
+        if diff_amp <= 25.0:
+            mk("Amplitude", True, f"OK (${equity_dollars_end:,.2f} vs ${expected_end_dollars:,.2f})")
+        else:
+            mk(
+                "Amplitude",
+                False,
+                (
+                    f"Expected ${expected_end_dollars:,.2f}, got ${equity_dollars_end:,.2f}. "
+                    "Plot is not using nav_norm * start_capital or uses per-trade P&L instead of NAV."
+                ),
+            )
+
+    payload_hashes_by_gen: Dict[str, str] = {}
+    if "gen" in eval_df:
+        try:
+            gens_iter = sorted({int(g) for g in pd.Series(eval_df["gen"]).dropna().astype(int)})
+        except Exception:
+            gens_iter = sorted(set(eval_df["gen"]))
+        for g in gens_iter:
+            try:
+                if int(g) > int(upto_gen):
+                    continue
+            except Exception:
+                pass
+            G = eval_df[eval_df["gen"] == g]
+            if G.empty:
+                continue
+            row = G.loc[G["total_return"].idxmax()]
+            params = _row_params(row)
+            payload, _, _ = _build_strategy_params_payload(strategy, params, disable_warmup=True)
+            hash_key = hashlib.md5(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+            payload_hashes_by_gen[str(int(g))] = hash_key
+    diag["payload_hashes_by_gen"] = payload_hashes_by_gen
+    distinct = len(set(payload_hashes_by_gen.values()))
+    total = len(payload_hashes_by_gen)
+    if total == 0:
+        mk("Per-gen uniqueness", True, "OK (no best-by-gen payloads)")
+    elif distinct == total:
+        mk("Per-gen uniqueness", True, f"OK ({distinct} distinct hashes)")
+    else:
+        mk(
+            "Per-gen uniqueness",
+            False,
+            (
+                f"Duplicate payload hashes ({distinct} distinct of {total}). "
+                "Selection/caching reusing the same row/payload across gens."
+            ),
+        )
+
+    diagnostics_json = json.dumps(diag, indent=2, sort_keys=True)
+    return {"checks": checks, "diagnostics": diag, "diagnostics_json": diagnostics_json}
+
+
 # --- display-only helper ---
 def _ymd(x) -> str:
     """Return YYYY-MM-DD for display only; do not mutate the original value."""
@@ -1328,7 +1480,15 @@ def main():
     st.set_page_config(page_title=DEFAULT_PAGE_TITLE, layout="wide")
     st.title(DEFAULT_PAGE_TITLE)
 
-    debug_sizing = st.checkbox("Debug sizing drift", value=False)
+    debug_col, quick_col = st.columns([1, 1])
+    with debug_col:
+        debug_sizing = st.checkbox("Debug sizing drift", value=False)
+    with quick_col:
+        quick_sanity_trigger = st.button(
+            "Quick Sanity Test", key="ea_quick_sanity_btn", use_container_width=True
+        )
+    quick_panel_placeholder = st.container()
+
     try:
         st.session_state["ea_inspector_debug_mode"] = bool(debug_sizing)
     except Exception:
@@ -1522,6 +1682,7 @@ def main():
 
         if selected_row is None:
             st.warning("Select an individual to review their trades.")
+            quick_panel_placeholder.empty()
         else:
             params = _row_params(selected_row)
             if not params:
@@ -1562,6 +1723,14 @@ def main():
                     )
 
                 params = params_for_calls
+
+                row_sig = (
+                    str(selected_row.get("gen", "")),
+                    str(selected_row.get("idx", selected_idx)),
+                )
+                if st.session_state.get("ea_quick_sanity_row_sig") != row_sig:
+                    st.session_state["ea_quick_sanity_row_sig"] = row_sig
+                    st.session_state.pop("ea_quick_sanity_result", None)
 
                 train_trades = load_trades(
                     strategy,
@@ -1657,6 +1826,35 @@ def main():
                         f"Replay/metrics mismatch: expected {expected_nav_end:.4f}, got {nav_replayed_end:.4f}. This EA row may still miss other fields.",
                         icon="⚠️",
                     )
+
+                quick_result = st.session_state.get("ea_quick_sanity_result")
+                if quick_sanity_trigger:
+                    quick_result = _quick_sanity_checks(
+                        selected_row=selected_row,
+                        combined_curve=combined_curve,
+                        train_curve=train_curve,
+                        test_curve=test_curve,
+                        starting_equity=starting_equity,
+                        missing_sizing_keys=missing_keys,
+                        eval_df=eval_df,
+                        upto_gen=int(st.session_state.ea_inspect_gen),
+                        strategy=strategy,
+                    )
+                    st.session_state["ea_quick_sanity_result"] = quick_result
+                if quick_result:
+                    with quick_panel_placeholder:
+                        st.markdown("**Quick Sanity Test**")
+                        for chk in quick_result["checks"]:
+                            icon = "✅" if chk["passed"] else "❌"
+                            st.markdown(f"{icon} {chk['label']} — {chk['message']}")
+                        copy_payload = json.dumps(quick_result["diagnostics_json"])
+                        st.markdown(
+                            f"<button type='button' class='quick-sanity-copy' onclick='navigator.clipboard.writeText({copy_payload});'>Copy diagnostics</button>",
+                            unsafe_allow_html=True,
+                        )
+                        st.code(quick_result["diagnostics_json"], language="json")
+                else:
+                    quick_panel_placeholder.empty()
 
                 if not window_frames:
                     st.info("No trades were generated for the selected individual and windows.")
