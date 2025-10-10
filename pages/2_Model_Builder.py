@@ -55,6 +55,13 @@ BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
         "risk_reward_target": 1.5,
         "risk_reward_sensitivity": 0.5,
         "risk_reward_fallback": 1.0,
+        "size_mode": "rr_portfolio",
+        "size_base_fraction": 0.005,
+        "size_rr_slope": 0.003,
+        "size_min_fraction": 0.001,
+        "size_rr_cap_fraction": 0.05,
+        "rr_floor": 0.5,
+        "leverage_cap": 1.0,
         "use_trend_filter": False,
         "sma_fast": 20,
         "sma_slow": 50,
@@ -87,6 +94,13 @@ BASE_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
         "risk_reward_target": 1.5,
         "risk_reward_sensitivity": 0.5,
         "risk_reward_fallback": 1.0,
+        "size_mode": "rr_portfolio",
+        "size_base_fraction": 0.005,
+        "size_rr_slope": 0.003,
+        "size_min_fraction": 0.001,
+        "size_rr_cap_fraction": 0.05,
+        "rr_floor": 0.5,
+        "leverage_cap": 1.0,
         "use_trend_filter": False,
         "sma_fast": 20,
         "sma_slow": 50,
@@ -126,6 +140,12 @@ BASE_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
     "risk_reward_target": (0.5, 5.0),
     "risk_reward_sensitivity": (0.0, 2.0),
     "risk_reward_fallback": (0.5, 5.0),
+    "size_base_fraction": (0.0, 0.1),
+    "size_rr_slope": (0.0, 0.05),
+    "size_min_fraction": (0.0, 0.05),
+    "size_rr_cap_fraction": (0.005, 0.5),
+    "rr_floor": (0.0, 5.0),
+    "leverage_cap": (1.0, 2.0),
     "sma_fast": (5, 100),
     "sma_slow": (10, 200),
     "sma_long": (100, 400),
@@ -196,6 +216,18 @@ EA_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
     "risk_reward_sensitivity_max": (0.0, 2.0),
     "risk_reward_fallback_min": (0.5, 3.0),
     "risk_reward_fallback_max": (0.5, 6.0),
+    "size_base_fraction_min": (0.0, 0.02),
+    "size_base_fraction_max": (0.0, 0.08),
+    "size_rr_slope_min": (0.0, 0.01),
+    "size_rr_slope_max": (0.0, 0.03),
+    "size_min_fraction_min": (0.0, 0.01),
+    "size_min_fraction_max": (0.0, 0.03),
+    "size_rr_cap_fraction_min": (0.005, 0.08),
+    "size_rr_cap_fraction_max": (0.01, 0.2),
+    "rr_floor_min": (0.0, 1.5),
+    "rr_floor_max": (0.0, 3.0),
+    "leverage_cap_min": (1.0, 1.5),
+    "leverage_cap_max": (1.0, 2.5),
 }
 
 EA_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
@@ -220,6 +252,12 @@ EA_PARAM_MIN_MAX_PAIRS: List[Tuple[str, str]] = [
     ("risk_reward_target_min", "risk_reward_target_max"),
     ("risk_reward_sensitivity_min", "risk_reward_sensitivity_max"),
     ("risk_reward_fallback_min", "risk_reward_fallback_max"),
+    ("size_base_fraction_min", "size_base_fraction_max"),
+    ("size_rr_slope_min", "size_rr_slope_max"),
+    ("size_min_fraction_min", "size_min_fraction_max"),
+    ("size_rr_cap_fraction_min", "size_rr_cap_fraction_max"),
+    ("rr_floor_min", "rr_floor_max"),
+    ("leverage_cap_min", "leverage_cap_max"),
 ]
 
 EA_DIP_PARAM_RANGES: Dict[str, Tuple[float, float]] = {
@@ -309,6 +347,18 @@ EA_DEFAULTS_BASE: Dict[str, Any] = {
     "risk_reward_sensitivity_max": 1.0,
     "risk_reward_fallback_min": 1.0,
     "risk_reward_fallback_max": 3.0,
+    "size_base_fraction_min": 0.002,
+    "size_base_fraction_max": 0.015,
+    "size_rr_slope_min": 0.0005,
+    "size_rr_slope_max": 0.006,
+    "size_min_fraction_min": 0.0005,
+    "size_min_fraction_max": 0.004,
+    "size_rr_cap_fraction_min": 0.02,
+    "size_rr_cap_fraction_max": 0.08,
+    "rr_floor_min": 0.5,
+    "rr_floor_max": 1.5,
+    "leverage_cap_min": 1.0,
+    "leverage_cap_max": 1.4,
 }
 
 EA_DEFAULTS_BY_STRATEGY: Dict[str, Dict[str, Any]] = {
@@ -477,6 +527,18 @@ def _apply_bounds_profile(profile: Dict[str, Any], target: Dict[str, Any]) -> No
         "risk_reward_sensitivity_max": ("risk_reward_sensitivity_max", float),
         "risk_reward_fallback_min": ("risk_reward_fallback_min", float),
         "risk_reward_fallback_max": ("risk_reward_fallback_max", float),
+        "size_base_fraction_min": ("size_base_fraction_min", float),
+        "size_base_fraction_max": ("size_base_fraction_max", float),
+        "size_rr_slope_min": ("size_rr_slope_min", float),
+        "size_rr_slope_max": ("size_rr_slope_max", float),
+        "size_min_fraction_min": ("size_min_fraction_min", float),
+        "size_min_fraction_max": ("size_min_fraction_max", float),
+        "size_rr_cap_fraction_min": ("size_rr_cap_fraction_min", float),
+        "size_rr_cap_fraction_max": ("size_rr_cap_fraction_max", float),
+        "rr_floor_min": ("rr_floor_min", float),
+        "rr_floor_max": ("rr_floor_max", float),
+        "leverage_cap_min": ("leverage_cap_min", float),
+        "leverage_cap_max": ("leverage_cap_max", float),
     }
     for src, (dest, caster) in mapping.items():
         if src in profile and profile[src] is not None:
@@ -695,6 +757,7 @@ class PortfolioHoldoutResult:
     cash_allocation: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     capital_weight_requests: pd.DataFrame = field(default_factory=pd.DataFrame)
     capital_allocation_requests: pd.DataFrame = field(default_factory=pd.DataFrame)
+    leverage_cap: float = 1.0
 
 
 def _ensure_dt_index(series: pd.Series) -> pd.Series:
@@ -745,6 +808,31 @@ def _flatten_trades(trades: Dict[str, List[Dict[str, Any]]]) -> pd.DataFrame:
                     "portfolio_notional_entry": (
                         float(trade.get("portfolio_notional_entry"))
                         if trade.get("portfolio_notional_entry") is not None
+                        else np.nan
+                    ),
+                    "portfolio_requested_notional": (
+                        float(trade.get("portfolio_requested_notional"))
+                        if trade.get("portfolio_requested_notional") is not None
+                        else np.nan
+                    ),
+                    "portfolio_requested_fraction": (
+                        float(trade.get("portfolio_requested_fraction"))
+                        if trade.get("portfolio_requested_fraction") is not None
+                        else np.nan
+                    ),
+                    "requested_notional_entry": (
+                        float(trade.get("requested_notional_entry"))
+                        if trade.get("requested_notional_entry") is not None
+                        else np.nan
+                    ),
+                    "requested_weight_fraction": (
+                        float(trade.get("requested_weight_fraction"))
+                        if trade.get("requested_weight_fraction") is not None
+                        else np.nan
+                    ),
+                    "entry_equity_snapshot": (
+                        float(trade.get("entry_equity_snapshot"))
+                        if trade.get("entry_equity_snapshot") is not None
                         else np.nan
                     ),
                     "risk_reward_ratio": (
@@ -969,6 +1057,10 @@ def _render_trade_timeline(
         df["abs_notional"] = df["portfolio_notional_entry"].abs().fillna(0.0)
     else:
         df["abs_notional"] = df["notional_entry"].abs()
+    if "portfolio_requested_notional" in df.columns:
+        zero_mask = df["abs_notional"] <= 0.0
+        if zero_mask.any():
+            df.loc[zero_mask, "abs_notional"] = df.loc[zero_mask, "portfolio_requested_notional"].abs().fillna(0.0)
     max_notional = df["abs_notional"].max()
     if max_notional and max_notional > 0:
         df["size_fraction"] = df["abs_notional"] / max_notional
@@ -992,6 +1084,11 @@ def _render_trade_timeline(
             "notional_entry": ":.2f",
             "portfolio_notional_entry": ":.2f",
             "portfolio_weight_fraction": ":.2f",
+            "portfolio_requested_notional": ":.2f",
+            "portfolio_requested_fraction": ":.2f",
+            "requested_notional_entry": ":.2f",
+            "requested_weight_fraction": ":.2f",
+            "entry_equity_snapshot": ":.2f",
             "risk_reward_ratio": ":.2f",
             "risk_reward_scale": ":.2f",
             "risk_reward_sizing": True,
@@ -1072,6 +1169,12 @@ def _portfolio_equity_curve(
     if isinstance(params, dict):
         params_template = dict(params)
     params_template.setdefault("model_key", strategy_dotted)
+    try:
+        leverage_cap = float(params_template.get("leverage_cap", 1.0))
+    except (TypeError, ValueError):
+        leverage_cap = 1.0
+    if not math.isfinite(leverage_cap) or leverage_cap < 1.0:
+        leverage_cap = 1.0
     per_symbol_equity: Dict[str, pd.Series] = {}
     per_symbol_ratio: Dict[str, pd.Series] = {}
     trades_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
@@ -1189,8 +1292,25 @@ def _portfolio_equity_curve(
                 continue
             if exit_ts < entry_ts:
                 entry_ts, exit_ts = exit_ts, entry_ts
-            notional = float(trade.get("notional_entry") or trade.get("notional") or 0.0)
-            notional = abs(notional)
+            notional_candidates = [
+                trade.get("requested_notional_entry"),
+                trade.get("portfolio_requested_notional"),
+                trade.get("portfolio_notional_entry"),
+                trade.get("notional_entry"),
+                trade.get("notional"),
+            ]
+            notional = 0.0
+            for candidate in notional_candidates:
+                try:
+                    value = float(candidate)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(value):
+                    continue
+                value = abs(value)
+                if value > 0.0:
+                    notional = value
+                    break
             if notional <= 0.0:
                 qty = float(trade.get("quantity") or trade.get("qty") or 0.0)
                 price = float(trade.get("entry_price") or trade.get("decision_price") or 0.0)
@@ -1215,6 +1335,11 @@ def _portfolio_equity_curve(
     gross_series = pd.Series(0.0, index=weights_fraction.index, dtype=float)
     allocations_df = pd.DataFrame(0.0, index=weights_fraction.index, columns=weights_fraction.columns, dtype=float)
     cash_notional_series = pd.Series(0.0, index=weights_fraction.index, dtype=float)
+    requested_weights_df = pd.DataFrame(
+        0.0, index=weights_fraction.index, columns=weights_fraction.columns, dtype=float
+    )
+    requested_cash_series = pd.Series(1.0, index=weights_fraction.index, dtype=float)
+    requested_gross_series = pd.Series(0.0, index=weights_fraction.index, dtype=float)
 
     equity_values: List[float] = []
     current_equity = float(base_equity if math.isfinite(base_equity) else 0.0)
@@ -1246,17 +1371,56 @@ def _portfolio_equity_curve(
 
         notional_row = notional_request_df.iloc[idx].clip(lower=0.0).fillna(0.0)
         equity_divisor = current_equity if current_equity > 0.0 else 0.0
-        if equity_divisor <= 0.0:
-            weights_row = pd.Series(0.0, index=weights_fraction.columns, dtype=float)
+        if equity_divisor > 0.0:
+            requested_weights_row = (
+                (notional_row / equity_divisor)
+                .replace([np.inf, -np.inf], np.nan)
+                .fillna(0.0)
+            )
         else:
-            weights_row = (notional_row / equity_divisor).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            requested_weights_row = pd.Series(0.0, index=weights_fraction.columns, dtype=float)
+        requested_weights_row = requested_weights_row.clip(lower=0.0)
+        requested_weights_df.iloc[idx] = requested_weights_row
+        requested_gross = float(requested_weights_row.sum())
+        requested_gross_series.iloc[idx] = requested_gross
+        requested_cash_series.iloc[idx] = float(1.0 - requested_gross)
+
+        requested_total = float(notional_row.sum())
+        available_capital = current_equity * leverage_cap if current_equity > 0.0 else 0.0
+        if requested_total > 0.0 and available_capital > 0.0:
+            if requested_total <= available_capital + 1e-12:
+                funded_row = notional_row.copy()
+            else:
+                scale = available_capital / requested_total if requested_total > 0.0 else 0.0
+                scale = max(0.0, min(1.0, scale))
+                funded_row = notional_row * scale
+        else:
+            funded_row = pd.Series(0.0, index=weights_fraction.columns, dtype=float)
+
+        if equity_divisor > 0.0:
+            weights_row = (
+                (funded_row / equity_divisor)
+                .replace([np.inf, -np.inf], np.nan)
+                .fillna(0.0)
+            )
+        else:
+            weights_row = pd.Series(0.0, index=weights_fraction.columns, dtype=float)
         weights_row = weights_row.clip(lower=0.0)
         weights_fraction.iloc[idx] = weights_row
-        gross = float(weights_row.sum())
-        gross_series.iloc[idx] = gross
-        cash_series.iloc[idx] = float(1.0 - gross)
-        allocations_df.iloc[idx] = notional_row
-        cash_notional_series.iloc[idx] = float(current_equity * cash_series.iloc[idx])
+
+        funded_total = float(funded_row.sum())
+        gross = (funded_total / equity_divisor) if equity_divisor > 0.0 else 0.0
+        gross_series.iloc[idx] = float(gross)
+        cash_value = current_equity - funded_total
+        min_cash_value = -current_equity * (leverage_cap - 1.0) if leverage_cap > 1.0 else 0.0
+        if cash_value < min_cash_value:
+            cash_value = float(min_cash_value)
+        if not math.isfinite(cash_value):
+            cash_value = 0.0
+        cash_ratio = (cash_value / current_equity) if equity_divisor > 0.0 else 0.0
+        cash_series.iloc[idx] = float(cash_ratio)
+        allocations_df.iloc[idx] = funded_row
+        cash_notional_series.iloc[idx] = float(cash_value)
         prev_weights = weights_row
 
     weights_effective = weights_fraction.shift(1)
@@ -1289,9 +1453,9 @@ def _portfolio_equity_curve(
 
     allocations_effective["__cash__"] = cash_notional_effective.astype(float)
 
-    weight_requests = weights_fraction.copy()
-    weight_requests["__cash__"] = cash_series.astype(float)
-    weight_requests["__gross_exposure__"] = gross_series.astype(float)
+    weight_requests = requested_weights_df.copy()
+    weight_requests["__cash__"] = requested_cash_series.astype(float)
+    weight_requests["__gross_exposure__"] = requested_gross_series.astype(float)
 
     notional_request_df = notional_request_df.fillna(0.0)
 
@@ -1328,6 +1492,20 @@ def _portfolio_equity_curve(
             return None
         return None
 
+    def _locate_allocation_index(ts: pd.Timestamp | None) -> pd.Timestamp | None:
+        if ts is None or allocations_df.empty:
+            return None
+        idx = allocations_df.index
+        try:
+            if ts in idx:
+                return ts
+            pos = idx.searchsorted(ts)
+            if 0 <= pos < len(idx):
+                return idx[pos]
+        except Exception:
+            return None
+        return None
+
     base_equity_fallback = float(base_equity if math.isfinite(base_equity) else 0.0)
     for sym, trade_list in trades_by_symbol.items():
         if not isinstance(trade_list, list):
@@ -1341,19 +1519,41 @@ def _portfolio_equity_curve(
                 entry_equity_portfolio = base_equity_fallback
             if entry_equity_portfolio is None or entry_equity_portfolio <= 0.0:
                 continue
-            notional = float(trade.get("portfolio_notional_entry") or trade.get("notional_entry") or trade.get("notional") or 0.0)
-            if notional <= 0.0:
-                qty = float(trade.get("quantity") or trade.get("qty") or 0.0)
-                price = float(trade.get("entry_price") or trade.get("decision_price") or 0.0)
-                notional = abs(qty * price)
-            notional = abs(notional)
-            if notional <= 0.0:
+            allocation_idx = _locate_allocation_index(entry_ts)
+            if allocation_idx is None:
                 continue
-            weight_fraction = notional / entry_equity_portfolio
-            if not math.isfinite(weight_fraction) or weight_fraction <= 0.0:
+            try:
+                funded_value = float(allocations_df.loc[allocation_idx, sym])
+            except Exception:
+                funded_value = 0.0
+            try:
+                requested_value = float(notional_request_df.loc[allocation_idx, sym])
+            except Exception:
+                requested_value = 0.0
+            funded_value = abs(funded_value)
+            requested_value = abs(requested_value)
+            if funded_value <= 0.0 and requested_value <= 0.0:
                 continue
-            trade["portfolio_weight_fraction"] = float(weight_fraction)
-            trade["portfolio_notional_entry"] = float(notional)
+            weight_fraction = (
+                funded_value / entry_equity_portfolio
+                if funded_value > 0.0 and entry_equity_portfolio > 0.0
+                else 0.0
+            )
+            requested_fraction = (
+                requested_value / entry_equity_portfolio
+                if requested_value > 0.0 and entry_equity_portfolio > 0.0
+                else 0.0
+            )
+            if math.isfinite(weight_fraction) and weight_fraction > 0.0:
+                trade["portfolio_weight_fraction"] = float(weight_fraction)
+            if math.isfinite(requested_fraction) and requested_fraction > 0.0:
+                trade["portfolio_requested_fraction"] = float(requested_fraction)
+                trade["requested_weight_fraction"] = float(requested_fraction)
+            if funded_value > 0.0:
+                trade["portfolio_notional_entry"] = float(funded_value)
+            if requested_value > 0.0:
+                trade["portfolio_requested_notional"] = float(requested_value)
+                trade["requested_notional_entry"] = float(requested_value)
 
     aligned_equity: Dict[str, pd.Series] = {}
     aligned_ratio: Dict[str, pd.Series] = {}
@@ -1373,6 +1573,7 @@ def _portfolio_equity_curve(
         cash_allocation=cash_effective,
         capital_weight_requests=weight_requests,
         capital_allocation_requests=notional_request_df,
+        leverage_cap=float(leverage_cap),
     )
 
 
@@ -2206,6 +2407,120 @@ with st.expander("Optimization parameter bounds", expanded=True):
             unsafe_allow_html=True,
         )
 
+    size_bounds_primary = st.columns(3)
+    with size_bounds_primary[0]:
+        sbf_lo = st.number_input(
+            "size_base_fraction min",
+            float(EA_PARAM_RANGES["size_base_fraction_min"][0]),
+            float(EA_PARAM_RANGES["size_base_fraction_min"][1]),
+            float(ea_cfg.get("size_base_fraction_min", 0.002)),
+            0.0005,
+            format="%.4f",
+            help="Minimum base capital fraction the EA can request per trade.",
+        )
+        sbf_hi = st.number_input(
+            "size_base_fraction max",
+            float(sbf_lo),
+            float(EA_PARAM_RANGES["size_base_fraction_max"][1]),
+            float(ea_cfg.get("size_base_fraction_max", 0.015)),
+            0.0005,
+            format="%.4f",
+            help="Maximum base capital fraction the EA can request per trade.",
+        )
+    with size_bounds_primary[1]:
+        slope_lo = st.number_input(
+            "size_rr_slope min",
+            float(EA_PARAM_RANGES["size_rr_slope_min"][0]),
+            float(EA_PARAM_RANGES["size_rr_slope_min"][1]),
+            float(ea_cfg.get("size_rr_slope_min", 0.0005)),
+            0.0005,
+            format="%.4f",
+            help="Lower bound on incremental sizing per unit reward/risk.",
+        )
+        slope_hi = st.number_input(
+            "size_rr_slope max",
+            float(max(slope_lo, EA_PARAM_RANGES["size_rr_slope_max"][0])),
+            float(EA_PARAM_RANGES["size_rr_slope_max"][1]),
+            float(ea_cfg.get("size_rr_slope_max", 0.006)),
+            0.0005,
+            format="%.4f",
+            help="Upper bound on incremental sizing per unit reward/risk.",
+        )
+    with size_bounds_primary[2]:
+        minfrac_lo = st.number_input(
+            "size_min_fraction min",
+            float(EA_PARAM_RANGES["size_min_fraction_min"][0]),
+            float(EA_PARAM_RANGES["size_min_fraction_min"][1]),
+            float(ea_cfg.get("size_min_fraction_min", 0.0005)),
+            0.0005,
+            format="%.4f",
+            help="Smallest minimum capital fraction the EA can enforce.",
+        )
+        minfrac_hi = st.number_input(
+            "size_min_fraction max",
+            float(max(minfrac_lo, EA_PARAM_RANGES["size_min_fraction_max"][0])),
+            float(EA_PARAM_RANGES["size_min_fraction_max"][1]),
+            float(ea_cfg.get("size_min_fraction_max", 0.004)),
+            0.0005,
+            format="%.4f",
+            help="Largest minimum capital fraction the EA can enforce.",
+        )
+
+    size_bounds_secondary = st.columns(3)
+    with size_bounds_secondary[0]:
+        cap_lo = st.number_input(
+            "size_rr_cap_fraction min",
+            float(EA_PARAM_RANGES["size_rr_cap_fraction_min"][0]),
+            float(EA_PARAM_RANGES["size_rr_cap_fraction_min"][1]),
+            float(ea_cfg.get("size_rr_cap_fraction_min", 0.02)),
+            0.001,
+            format="%.4f",
+            help="Minimum per-trade cap fraction allowed in the EA search.",
+        )
+        cap_hi = st.number_input(
+            "size_rr_cap_fraction max",
+            float(max(cap_lo, EA_PARAM_RANGES["size_rr_cap_fraction_max"][0])),
+            float(EA_PARAM_RANGES["size_rr_cap_fraction_max"][1]),
+            float(ea_cfg.get("size_rr_cap_fraction_max", 0.08)),
+            0.001,
+            format="%.4f",
+            help="Maximum per-trade cap fraction allowed in the EA search.",
+        )
+    with size_bounds_secondary[1]:
+        floor_lo = st.number_input(
+            "rr_floor min",
+            float(EA_PARAM_RANGES["rr_floor_min"][0]),
+            float(EA_PARAM_RANGES["rr_floor_min"][1]),
+            float(ea_cfg.get("rr_floor_min", 0.5)),
+            0.1,
+            help="Smallest reward/risk floor considered by the EA.",
+        )
+        floor_hi = st.number_input(
+            "rr_floor max",
+            float(max(floor_lo, EA_PARAM_RANGES["rr_floor_max"][0])),
+            float(EA_PARAM_RANGES["rr_floor_max"][1]),
+            float(ea_cfg.get("rr_floor_max", 1.5)),
+            0.1,
+            help="Largest reward/risk floor considered by the EA.",
+        )
+    with size_bounds_secondary[2]:
+        lev_lo = st.number_input(
+            "leverage_cap min",
+            float(EA_PARAM_RANGES["leverage_cap_min"][0]),
+            float(EA_PARAM_RANGES["leverage_cap_min"][1]),
+            float(ea_cfg.get("leverage_cap_min", 1.0)),
+            0.05,
+            help="Minimum portfolio leverage the EA can explore.",
+        )
+        lev_hi = st.number_input(
+            "leverage_cap max",
+            float(max(lev_lo, EA_PARAM_RANGES["leverage_cap_max"][0])),
+            float(EA_PARAM_RANGES["leverage_cap_max"][1]),
+            float(ea_cfg.get("leverage_cap_max", 1.4)),
+            0.05,
+            help="Maximum portfolio leverage the EA can explore.",
+        )
+
     ea_cfg["risk_per_trade_min"], ea_cfg["risk_per_trade_max"] = float(rptr_lo), float(rptr_hi)
     ea_cfg["use_risk_reward_sizing_min"], ea_cfg["use_risk_reward_sizing_max"] = int(use_min), int(use_max)
     ea_cfg["risk_reward_min_scale_min"], ea_cfg["risk_reward_min_scale_max"] = float(rrmin_lo), float(rrmin_hi)
@@ -2213,6 +2528,12 @@ with st.expander("Optimization parameter bounds", expanded=True):
     ea_cfg["risk_reward_target_min"], ea_cfg["risk_reward_target_max"] = float(target_lo), float(target_hi)
     ea_cfg["risk_reward_sensitivity_min"], ea_cfg["risk_reward_sensitivity_max"] = float(sens_lo), float(sens_hi)
     ea_cfg["risk_reward_fallback_min"], ea_cfg["risk_reward_fallback_max"] = float(fallback_lo), float(fallback_hi)
+    ea_cfg["size_base_fraction_min"], ea_cfg["size_base_fraction_max"] = float(sbf_lo), float(sbf_hi)
+    ea_cfg["size_rr_slope_min"], ea_cfg["size_rr_slope_max"] = float(slope_lo), float(slope_hi)
+    ea_cfg["size_min_fraction_min"], ea_cfg["size_min_fraction_max"] = float(minfrac_lo), float(minfrac_hi)
+    ea_cfg["size_rr_cap_fraction_min"], ea_cfg["size_rr_cap_fraction_max"] = float(cap_lo), float(cap_hi)
+    ea_cfg["rr_floor_min"], ea_cfg["rr_floor_max"] = float(floor_lo), float(floor_hi)
+    ea_cfg["leverage_cap_min"], ea_cfg["leverage_cap_max"] = float(lev_lo), float(lev_hi)
 
 if dip_strategy:
     with st.expander("Buy-the-Dip Parameters", expanded=True):
@@ -2534,6 +2855,68 @@ with st.expander("Strategy parameter defaults (optional)", expanded=False):
             0.1,
             help="Assumed reward/risk ratio when no explicit take-profit is defined.",
             disabled=rr_disabled,
+        )
+        size_mode_options = ["rr_portfolio", "legacy"]
+        current_mode = str(base.get("size_mode", "rr_portfolio"))
+        if current_mode not in size_mode_options:
+            current_mode = "rr_portfolio"
+        base["size_mode"] = st.selectbox(
+            "size_mode",
+            options=size_mode_options,
+            index=size_mode_options.index(current_mode),
+            help="Choose between portfolio-aware sizing (rr_portfolio) and legacy per-symbol sizing.",
+        )
+        base["size_base_fraction"] = st.number_input(
+            "size_base_fraction",
+            float(BASE_PARAM_RANGES["size_base_fraction"][0]),
+            float(BASE_PARAM_RANGES["size_base_fraction"][1]),
+            float(base.get("size_base_fraction", 0.005)),
+            0.0005,
+            format="%.4f",
+            help="Baseline fraction of equity requested for each new trade.",
+        )
+        base["size_rr_slope"] = st.number_input(
+            "size_rr_slope",
+            float(BASE_PARAM_RANGES["size_rr_slope"][0]),
+            float(BASE_PARAM_RANGES["size_rr_slope"][1]),
+            float(base.get("size_rr_slope", 0.003)),
+            0.0005,
+            format="%.4f",
+            help="Incremental requested fraction per +1.0 of reward/risk.",
+        )
+        base["size_min_fraction"] = st.number_input(
+            "size_min_fraction",
+            float(BASE_PARAM_RANGES["size_min_fraction"][0]),
+            float(BASE_PARAM_RANGES["size_min_fraction"][1]),
+            float(base.get("size_min_fraction", 0.001)),
+            0.0005,
+            format="%.4f",
+            help="Minimum fraction of equity to request even for weak reward/risk setups.",
+        )
+        base["size_rr_cap_fraction"] = st.number_input(
+            "size_rr_cap_fraction",
+            float(BASE_PARAM_RANGES["size_rr_cap_fraction"][0]),
+            float(BASE_PARAM_RANGES["size_rr_cap_fraction"][1]),
+            float(base.get("size_rr_cap_fraction", 0.05)),
+            0.001,
+            format="%.4f",
+            help="Ceiling fraction of equity requested per trade.",
+        )
+        base["rr_floor"] = st.number_input(
+            "rr_floor",
+            float(BASE_PARAM_RANGES["rr_floor"][0]),
+            float(BASE_PARAM_RANGES["rr_floor"][1]),
+            float(base.get("rr_floor", 0.5)),
+            0.1,
+            help="Reward/risk threshold below which minimum sizing is used.",
+        )
+        base["leverage_cap"] = st.number_input(
+            "leverage_cap",
+            float(BASE_PARAM_RANGES["leverage_cap"][0]),
+            float(BASE_PARAM_RANGES["leverage_cap"][1]),
+            float(base.get("leverage_cap", 1.0)),
+            0.05,
+            help="Maximum leverage the holdout allocator will use when funding concurrent trades.",
         )
         base["use_trend_filter"] = st.checkbox(
             "use_trend_filter",

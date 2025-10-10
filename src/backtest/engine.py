@@ -465,6 +465,13 @@ class ATRParams:
     risk_reward_target: float = 1.5       # neutral reward/risk ratio mapping to multiplier=1
     risk_reward_sensitivity: float = 0.5  # slope for scaling adjustment per unit ratio delta
     risk_reward_fallback: float = 1.0     # assumed reward/risk ratio when no explicit target exists
+    size_mode: str = "rr_portfolio"      # sizing behaviour: legacy | rr_portfolio
+    size_base_fraction: float = 0.005     # base fraction of equity to deploy per trade
+    size_rr_slope: float = 0.003          # incremental fraction per 1.0 of reward/risk
+    size_min_fraction: float = 0.001      # minimum fraction of equity to allocate
+    size_rr_cap_fraction: float = 0.05    # maximum fraction of equity per position
+    rr_floor: float = 0.5                 # floor reward/risk to apply slope sizing
+    leverage_cap: float = 1.0             # portfolio leverage guard (used downstream)
     cost_bps: float = 0.0             # legacy single cost slider (mapped into slippage)
     commission_bps: float = 0.0       # explicit commission component
     slippage_bps: float = 0.0         # explicit slippage component
@@ -1019,6 +1026,31 @@ def backtest_atr_breakout(
     risk_reward_target = max(0.0, _coerce_float(getattr(params, "risk_reward_target", 1.5), 1.5))
     risk_reward_sensitivity = max(0.0, _coerce_float(getattr(params, "risk_reward_sensitivity", 0.5), 0.5))
     risk_reward_fallback = max(0.0, _coerce_float(getattr(params, "risk_reward_fallback", 1.0), 1.0))
+    size_mode_raw = getattr(params, "size_mode", getattr(params, "sizing_mode", "rr_portfolio"))
+    if isinstance(size_mode_raw, str):
+        size_mode = size_mode_raw.strip().lower()
+    else:
+        size_mode = "rr_portfolio"
+    if size_mode not in {"legacy", "rr_portfolio"}:
+        size_mode = "legacy"
+    size_base_fraction = max(
+        0.0,
+        _coerce_float(getattr(params, "size_base_fraction", 0.005), 0.005),
+    )
+    size_rr_slope = max(
+        0.0,
+        _coerce_float(getattr(params, "size_rr_slope", 0.003), 0.003),
+    )
+    size_min_fraction = max(
+        0.0,
+        _coerce_float(getattr(params, "size_min_fraction", 0.001), 0.001),
+    )
+    size_rr_cap_fraction = max(
+        size_min_fraction,
+        _coerce_float(getattr(params, "size_rr_cap_fraction", 0.05), 0.05),
+    )
+    rr_floor = max(0.0, _coerce_float(getattr(params, "rr_floor", 0.5), 0.5))
+    leverage_cap = max(1.0, _coerce_float(getattr(params, "leverage_cap", 1.0), 1.0))
 
     in_pos = False
     entry_idx: Optional[int] = None
@@ -1034,6 +1066,9 @@ def backtest_atr_breakout(
     entry_reward_per_share: Optional[float] = None
     entry_risk_reward_ratio: Optional[float] = None
     entry_risk_reward_scale: Optional[float] = None
+    entry_requested_notional: Optional[float] = None
+    entry_requested_fraction: Optional[float] = None
+    entry_equity_snapshot: Optional[float] = None
 
     cash_gross = float(starting_equity)
     cash_net = float(starting_equity)
@@ -1438,6 +1473,17 @@ def backtest_atr_breakout(
                 if entry_risk_reward_scale is not None
                 else None,
                 "risk_reward_sizing": bool(entry_risk_reward_scale is not None),
+                "entry_equity_snapshot": float(entry_equity_snapshot)
+                if entry_equity_snapshot is not None
+                else None,
+                "requested_notional_entry": float(entry_requested_notional)
+                if entry_requested_notional is not None
+                else None,
+                "requested_weight_fraction": float(entry_requested_fraction)
+                if entry_requested_fraction is not None
+                else None,
+                "portfolio_weight_fraction": None,
+                "portfolio_notional_entry": None,
             }
 
             trades.append(trade_record)
@@ -1489,6 +1535,9 @@ def backtest_atr_breakout(
             entry_reward_per_share = None
             entry_risk_reward_ratio = None
             entry_risk_reward_scale = None
+            entry_requested_notional = None
+            entry_requested_fraction = None
+            entry_equity_snapshot = None
 
         if entry_trigger is not None and not in_pos:
             base_price = entry_trigger.get("override_price")
@@ -1504,13 +1553,19 @@ def backtest_atr_breakout(
             entry_reward_candidate: Optional[float] = None
             entry_ratio_candidate: Optional[float] = None
             entry_scale_candidate: Optional[float] = None
-            if entry_price > 0 and cash_gross != 0:
-                target_notional = cash_gross
+            if entry_price > 0:
+                equity_snapshot_candidate = cash_net
+                if position_qty != 0.0:
+                    equity_snapshot_candidate += position_qty * entry_price
+                if not math.isfinite(equity_snapshot_candidate) or equity_snapshot_candidate <= 0.0:
+                    equity_snapshot_candidate = float(starting_equity if starting_equity > 0 else 1.0)
+                entry_equity_snapshot = float(equity_snapshot_candidate)
+                target_notional = cash_gross if cash_gross > 0.0 else entry_equity_snapshot
                 if vol_target_active and i < len(vol_target_scale_series):
                     entry_volatility_candidate = float(vol_target_scale_series.iloc[i])
                     if entry_volatility_candidate < 0.0:
                         entry_volatility_candidate = 0.0
-                    target_notional = cash_gross * entry_volatility_candidate
+                    target_notional = entry_equity_snapshot * entry_volatility_candidate
                 qty = 0.0
                 used_risk_reward = False
                 if (
@@ -1565,12 +1620,12 @@ def backtest_atr_breakout(
                                     max(risk_reward_min_scale, scale_candidate),
                                 )
                             )
-                            risk_budget = cash_gross * risk_per_trade * scale_candidate
+                            risk_budget = entry_equity_snapshot * risk_per_trade * scale_candidate
                             if vol_target_active and entry_volatility_candidate > 0.0:
                                 risk_budget *= entry_volatility_candidate
                             max_notional = target_notional if target_notional > 0.0 else 0.0
-                            if max_notional > 0.0:
-                                risk_budget = min(risk_budget, max_notional)
+                            if max_notional > 0.0 and risk_budget > max_notional:
+                                risk_budget = max_notional
                             if risk_budget > 0.0:
                                 qty_candidate = risk_budget / risk_per_share
                                 if qty_candidate > 0.0:
@@ -1588,7 +1643,31 @@ def backtest_atr_breakout(
                                         else None
                                     )
                                     entry_scale_candidate = float(scale_candidate)
-                if not used_risk_reward and target_notional > 0.0:
+                requested_notional_candidate = None
+                requested_fraction_candidate = None
+                if size_mode == "rr_portfolio":
+                    rr_basis = None
+                    if entry_ratio_candidate is not None and entry_ratio_candidate > 0.0:
+                        rr_basis = float(entry_ratio_candidate)
+                    elif risk_reward_fallback > 0.0:
+                        rr_basis = float(risk_reward_fallback)
+                    if rr_basis is None or rr_basis <= 0.0:
+                        rr_basis = float(rr_floor if rr_floor > 0.0 else 0.0)
+                    if rr_basis < rr_floor and rr_floor > 0.0:
+                        fraction_candidate = size_min_fraction
+                    else:
+                        fraction_candidate = size_base_fraction + size_rr_slope * rr_basis
+                        if fraction_candidate < size_min_fraction:
+                            fraction_candidate = size_min_fraction
+                    fraction_candidate = min(size_rr_cap_fraction, max(size_min_fraction, fraction_candidate))
+                    requested_notional_candidate = entry_equity_snapshot * fraction_candidate
+                    if vol_target_active and entry_volatility_candidate > 0.0:
+                        requested_notional_candidate *= entry_volatility_candidate
+                    requested_notional_candidate = max(0.0, requested_notional_candidate)
+                    requested_fraction_candidate = fraction_candidate if entry_equity_snapshot > 0.0 else None
+                    if requested_notional_candidate > 0.0:
+                        qty = requested_notional_candidate / entry_price
+                elif not used_risk_reward and target_notional > 0.0:
                     qty = target_notional / entry_price
                 if qty > 0:
                     position_qty = float(qty)
@@ -1605,6 +1684,19 @@ def backtest_atr_breakout(
                     entry_risk_reward_scale = (
                         entry_scale_candidate if used_risk_reward else None
                     )
+                    if requested_notional_candidate is not None:
+                        entry_requested_notional = float(requested_notional_candidate)
+                        entry_requested_fraction = (
+                            float(requested_fraction_candidate)
+                            if requested_fraction_candidate is not None
+                            else None
+                        )
+                    elif size_mode == "legacy":
+                        entry_requested_notional = float(entry_notional)
+                        if entry_equity_snapshot and entry_equity_snapshot > 0.0:
+                            entry_requested_fraction = float(entry_notional / entry_equity_snapshot)
+                        else:
+                            entry_requested_fraction = None
                     executed_entry = True
             if executed_entry:
                 entry_breakdown = cost_model.compute_fill("long", "entry", entry_decision_price, position_qty)
@@ -1635,6 +1727,10 @@ def backtest_atr_breakout(
                     )
                 cash_net -= entry_breakdown["total_cost"]
                 entry_notional = entry_breakdown.get("price_after", entry_decision_price) * position_qty
+                if size_mode == "legacy":
+                    entry_requested_notional = float(entry_notional)
+                    if entry_equity_snapshot and entry_equity_snapshot > 0.0:
+                        entry_requested_fraction = float(entry_notional / entry_equity_snapshot)
                 entry_signal_time = entry_trigger.get("signal_time")
                 entry_signal_price = entry_trigger.get("signal_price")
                 entry_gate_probability = entry_trigger.get("prob_gate_probability")
@@ -1704,6 +1800,11 @@ def backtest_atr_breakout(
         "reward_per_share",
         "risk_reward_ratio",
         "risk_reward_scale",
+        "entry_equity_snapshot",
+        "requested_notional_entry",
+        "requested_weight_fraction",
+        "portfolio_weight_fraction",
+        "portfolio_notional_entry",
     ]
     for col in required_float_cols:
         if col not in trades_df.columns:
