@@ -39,6 +39,23 @@ ROOT = str(Path(__file__).resolve().parents[2])  # project root
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+SIZING_PARAM_KEYS: Tuple[str, ...] = (
+    "size_mode",
+    "size_base_fraction",
+    "size_rr_slope",
+    "size_min_fraction",
+    "size_rr_cap_fraction",
+    "rr_floor",
+    "leverage_cap",
+    "use_risk_reward_sizing",
+    "risk_per_trade",
+    "risk_reward_min_scale",
+    "risk_reward_max_scale",
+    "risk_reward_target",
+    "risk_reward_sensitivity",
+    "risk_reward_fallback",
+)
+
 # ---- Fitness config (JSON) ----------------------------------------------
 
 
@@ -116,6 +133,19 @@ def _find_nested_value(data: Any, key: str, _sentinel: Any) -> Any:
             if result is not _sentinel:
                 return result
     return _sentinel
+
+
+def _extract_sizing_params(*sources: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in SIZING_PARAM_KEYS:
+            if key in payload:
+                continue
+            if key in source:
+                payload[key] = source[key]
+    return payload
 
 
 def _load_fitness_config_json(path: Optional[str] = None) -> Dict[str, Any]:
@@ -1332,6 +1362,14 @@ def evolutionary_search(
                 "fitness_debug": fitness_dbg,
             }
             payload["resolved_params"] = params_for_logging
+            sizing_params = _extract_sizing_params(
+                params_for_logging,
+                resolved_params_copy,
+                raw_params_copy,
+            )
+            if sizing_params:
+                payload["sizing_params"] = sizing_params
+            payload.setdefault("ea_log_schema", 2)
             if test_range is not None:
                 payload["test_metrics"] = metrics_test
             if blend_info is not None:

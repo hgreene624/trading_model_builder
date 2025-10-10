@@ -1,12 +1,14 @@
 # pages/5_EA_Train_Test_Inspector.py
 from __future__ import annotations
 
+import hashlib
 import json
 import html
 import math
+from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -14,6 +16,7 @@ import plotly.graph_objects as go
 import warnings
 import streamlit as st
 
+from src.backtest.engine import ATRParams
 from src.models._warmup import apply_disable_warmup_flag
 
 from src.utils.tri_panel import render_tri_panel
@@ -97,6 +100,135 @@ def _dbg(msg: str):
         st.session_state.setdefault("ea_inspector_debug", []).append(str(msg))
     except Exception:
         pass
+
+# ---------- sizing backfill helpers ----------
+
+ENABLE_RR_AWARE_BACKFILL = True
+ENABLE_LEGACY_SIZING_BACKFILL = True
+
+RR_SIZING_KEYS = {
+    "size_mode",
+    "size_base_fraction",
+    "size_rr_slope",
+    "size_min_fraction",
+    "size_rr_cap_fraction",
+    "rr_floor",
+    "leverage_cap",
+}
+
+RR_HINT_KEYS = {
+    "use_risk_reward_sizing",
+    "risk_reward_min_scale",
+    "risk_reward_max_scale",
+    "risk_reward_sensitivity",
+    "risk_reward_target",
+    "risk_reward_fallback",
+    "vol_target_enabled",
+    "vol_target_target_pct",
+    "vol_target_atr_window",
+    "vol_target_min_leverage",
+    "vol_target_max_leverage",
+}
+
+LEGACY_SIZING_PROFILE: Dict[str, Any] = {
+    "size_mode": "legacy",
+    "size_base_fraction": 1.0,
+    "size_rr_slope": 0.0,
+    "size_min_fraction": 1.0,
+    "size_rr_cap_fraction": 1.0,
+    "rr_floor": 0.0,
+    "leverage_cap": 1.0,
+    "use_risk_reward_sizing": False,
+}
+
+LEGACY_SIZING_KEYS = set(LEGACY_SIZING_PROFILE.keys())
+
+
+@lru_cache(maxsize=1)
+def _atr_rr_default_profile() -> Dict[str, Any]:
+    params = ATRParams()
+    return {key: getattr(params, key) for key in RR_SIZING_KEYS}
+
+
+def _backfill_rr_sizing_if_missing(
+    params: Dict[str, Any]
+) -> Tuple[Dict[str, Any], bool, List[str]]:
+    """Fill missing risk/reward sizing fields with ATR defaults when hinted."""
+
+    if not ENABLE_RR_AWARE_BACKFILL:
+        return params, False, []
+
+    keys = set(params.keys())
+    missing = [key for key in RR_SIZING_KEYS if key not in keys]
+    if not missing:
+        return params, False, []
+
+    has_rr_signals = any(key in keys for key in RR_HINT_KEYS)
+    if not has_rr_signals:
+        return params, False, []
+
+    merged = dict(params)
+    defaults = _atr_rr_default_profile()
+    for key in missing:
+        merged[key] = defaults[key]
+    return merged, True, missing
+
+
+def _backfill_legacy_sizing_if_missing(
+    params: Dict[str, Any]
+) -> Tuple[Dict[str, Any], bool, List[str]]:
+    """Return payload with legacy sizing defaults when keys are absent."""
+
+    if not ENABLE_LEGACY_SIZING_BACKFILL:
+        return params, False, []
+
+    missing = [key for key in LEGACY_SIZING_KEYS if key not in params]
+    if not missing:
+        return params, False, []
+
+    merged = dict(params)
+    for key in missing:
+        merged[key] = LEGACY_SIZING_PROFILE[key]
+    return merged, True, missing
+
+# ---------- misc helpers ----------
+
+
+def _is_debug_mode() -> bool:
+    try:
+        return bool(st.session_state.get("ea_inspector_debug_mode", False))
+    except Exception:
+        return False
+
+
+def _rescale_test_curve(
+    ec_test: pd.DataFrame, expected_start: float, *, context: str
+) -> pd.DataFrame:
+    """Ensure the test equity curve starts from the provided equity level."""
+
+    if ec_test.empty:
+        return ec_test
+    if not math.isfinite(expected_start):
+        return ec_test
+    try:
+        first_val = float(ec_test["equity"].iloc[0])
+    except Exception:
+        return ec_test
+    if not math.isfinite(first_val) or first_val == 0.0:
+        return ec_test
+
+    tol = 1e-6 * max(1.0, abs(expected_start))
+    if abs(first_val - expected_start) <= tol:
+        return ec_test
+
+    scale = expected_start / first_val
+    scaled = ec_test.copy()
+    scaled["equity"] = scaled["equity"].astype(float) * scale
+    if _is_debug_mode():
+        _dbg(
+            f"rescale_test_curve[{context}]: first={first_val:.6f}, expected={expected_start:.6f}, scale={scale:.6f}"
+        )
+    return scaled
 
 # ---------- helpers ----------
 
@@ -231,11 +363,26 @@ def _coerce_timestamp(value: Any) -> Optional[pd.Timestamp]:
     return pd.Timestamp(ts)
 
 
+def _build_strategy_params_payload(
+    strategy_dotted: str, params: Dict[str, Any] | None, *, disable_warmup: bool
+) -> Tuple[Dict[str, Any], str, List[str]]:
+    payload = apply_disable_warmup_flag(params, disable_warmup=disable_warmup)
+    payload.setdefault("model_key", strategy_dotted)
+    payload_rr, rr_injected, rr_missing = _backfill_rr_sizing_if_missing(payload)
+    if rr_injected:
+        return payload_rr, "rr_defaults", rr_missing
+    payload_legacy, legacy_injected, legacy_missing = _backfill_legacy_sizing_if_missing(payload_rr)
+    if legacy_injected:
+        return payload_legacy, "legacy", legacy_missing
+    return payload_rr, "", []
+
+
 def _strategy_params_payload(
     strategy_dotted: str, params: Dict[str, Any] | None, *, disable_warmup: bool
 ) -> Dict[str, Any]:
-    payload = apply_disable_warmup_flag(params, disable_warmup=disable_warmup)
-    payload.setdefault("model_key", strategy_dotted)
+    payload, _, _ = _build_strategy_params_payload(
+        strategy_dotted, params, disable_warmup=disable_warmup
+    )
     return payload
 
 
@@ -986,6 +1133,26 @@ def _plot_gen_topK(
     flat_warn = False
     for _, row in G.iterrows():
         params = _row_params(row)
+        payload_preview, payload_label, payload_missing = _build_strategy_params_payload(
+            strategy, params, disable_warmup=True
+        )
+        if _is_debug_mode():
+            try:
+                payload_hash = hashlib.sha1(
+                    json.dumps(payload_preview, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()
+            except Exception:
+                payload_hash = "<hash-error>"
+            _dbg(
+                {
+                    "chart": "topK",
+                    "gen": gen_idx,
+                    "idx": row.get("idx"),
+                    "payload_hash": payload_hash,
+                    "backfill": payload_label,
+                    "missing": payload_missing,
+                }
+            )
         ec_train = run_equity_curve(
             strategy,
             tickers,
@@ -1005,6 +1172,9 @@ def _plot_gen_topK(
             params,
             disable_warmup=False,
         )
+        if not ec_test.empty:
+            context = f"gen{gen_idx}_idx{int(row.get('idx', -1))}" if "idx" in row else f"gen{gen_idx}"
+            ec_test = _rescale_test_curve(ec_test, float(end_equity), context=context)
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
         if len(ec) <= 2 or ec["equity"].nunique() <= 1:
             flat_warn = True
@@ -1057,6 +1227,26 @@ def _plot_leaders_through_gen(
             continue
         row = G.loc[G["total_return"].idxmax()]  # best by return in that gen
         params = _row_params(row)
+        payload_preview, payload_label, payload_missing = _build_strategy_params_payload(
+            strategy, params, disable_warmup=True
+        )
+        if _is_debug_mode():
+            try:
+                payload_hash = hashlib.sha1(
+                    json.dumps(payload_preview, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()
+            except Exception:
+                payload_hash = "<hash-error>"
+            _dbg(
+                {
+                    "chart": "leaders",
+                    "gen": g,
+                    "idx": row.get("idx"),
+                    "payload_hash": payload_hash,
+                    "backfill": payload_label,
+                    "missing": payload_missing,
+                }
+            )
         ec_train = run_equity_curve(
             strategy,
             tickers,
@@ -1076,6 +1266,9 @@ def _plot_leaders_through_gen(
             params,
             disable_warmup=False,
         )
+        if not ec_test.empty:
+            context = f"leaders_gen{g}_idx{int(row.get('idx', -1))}" if "idx" in row else f"leaders_gen{g}"
+            ec_test = _rescale_test_curve(ec_test, float(end_equity), context=context)
         ec = pd.concat([ec_train, ec_test], ignore_index=True)
         legend_label = _best_individual_label(row)
         if not legend_label:
@@ -1134,6 +1327,12 @@ def _file_picker():
 def main():
     st.set_page_config(page_title=DEFAULT_PAGE_TITLE, layout="wide")
     st.title(DEFAULT_PAGE_TITLE)
+
+    debug_sizing = st.checkbox("Debug sizing drift", value=False)
+    try:
+        st.session_state["ea_inspector_debug_mode"] = bool(debug_sizing)
+    except Exception:
+        pass
 
     # pick a log (default to latest)
     log_file = _file_picker() or _latest_log_file(LOG_DIR)
@@ -1328,6 +1527,42 @@ def main():
             if not params:
                 st.warning("Parameters missing for this individual; cannot regenerate trades.")
             else:
+                params_raw = dict(params)
+                params_preview, backfill_label, missing_keys = _build_strategy_params_payload(
+                    strategy,
+                    params_raw,
+                    disable_warmup=True,
+                )
+                params_for_calls = dict(params_raw)
+                if backfill_label:
+                    for key in missing_keys:
+                        params_for_calls[key] = params_preview.get(key)
+                    if backfill_label == "legacy":
+                        st.info(
+                            "Replaying with legacy sizing semantics because the EA row predates risk/reward-aware sizing fields.",
+                            icon="⚠️",
+                        )
+                    elif backfill_label == "rr_defaults":
+                        st.info(
+                            "Filled missing risk/reward sizing fields with ATR defaults recorded in the engine so replay stays consistent with the EA run.",
+                            icon="⚠️",
+                        )
+                if debug_sizing:
+                    st.write(
+                        {
+                            "logged_param_keys": sorted(params_raw.keys()),
+                            "payload_keys": sorted(params_preview.keys()),
+                            "missing_sizing_keys": missing_keys,
+                            "backfill_label": backfill_label,
+                        }
+                    )
+                    st.write(
+                        "ATR payload preview",
+                        {k: params_preview[k] for k in sorted(params_preview.keys())},
+                    )
+
+                params = params_for_calls
+
                 train_trades = load_trades(
                     strategy,
                     tickers,
@@ -1353,6 +1588,7 @@ def main():
                     end_equity = float(starting_equity)
 
                 test_trades = pd.DataFrame()
+                test_curve = pd.DataFrame()
                 if test_start and test_end:
                     test_trades = load_trades(
                         strategy,
@@ -1363,6 +1599,19 @@ def main():
                         params,
                         disable_warmup=False,
                     )
+                    test_curve = run_equity_curve(
+                        strategy,
+                        tickers,
+                        test_start,
+                        test_end,
+                        end_equity,
+                        params,
+                        disable_warmup=False,
+                    )
+                    if not test_curve.empty:
+                        test_curve = _rescale_test_curve(
+                            test_curve, float(end_equity), context="selected_individual_test"
+                        )
 
                 window_frames: Dict[str, pd.DataFrame] = {}
                 if not train_trades.empty:
@@ -1375,6 +1624,39 @@ def main():
                     if sort_cols:
                         combined = combined.sort_values(by=sort_cols)
                     window_frames["Combined"] = combined
+
+                combined_curve = pd.concat([train_curve, test_curve], ignore_index=True)
+                if {"date", "equity"}.issubset(combined_curve.columns):
+                    combined_curve = (
+                        combined_curve.dropna(subset=["equity"])
+                        .sort_values("date")
+                        .drop_duplicates(subset=["date"], keep="last")
+                    )
+                reported_total_return = float(selected_row.get("total_return", 0.0) or 0.0)
+                expected_nav_end = 1.0 + reported_total_return
+                nav_replayed_end: Optional[float] = None
+                if {"date", "equity"}.issubset(combined_curve.columns) and not combined_curve.empty:
+                    start_equity_val = float(combined_curve["equity"].iloc[0])
+                    end_equity_val = float(combined_curve["equity"].iloc[-1])
+                    if start_equity_val != 0:
+                        nav_replayed_end = end_equity_val / start_equity_val
+                if debug_sizing:
+                    st.write(
+                        {
+                            "expected_nav_end": expected_nav_end,
+                            "nav_replayed_end": nav_replayed_end,
+                        }
+                    )
+                parity_eps = 1e-3
+                if (
+                    nav_replayed_end is not None
+                    and math.isfinite(expected_nav_end)
+                    and abs(nav_replayed_end - expected_nav_end) > parity_eps
+                ):
+                    st.warning(
+                        f"Replay/metrics mismatch: expected {expected_nav_end:.4f}, got {nav_replayed_end:.4f}. This EA row may still miss other fields.",
+                        icon="⚠️",
+                    )
 
                 if not window_frames:
                     st.info("No trades were generated for the selected individual and windows.")
@@ -1461,6 +1743,8 @@ def main():
                 params,
                 disable_warmup=False,
             )
+            if not ec_test.empty:
+                ec_test = _rescale_test_curve(ec_test, float(end_equity), context="tri_panel_best")
             ec = pd.concat([ec_train, ec_test], ignore_index=True)
             if {"date", "equity"}.issubset(ec.columns):
                 ec = ec.dropna(subset=["date", "equity"])
