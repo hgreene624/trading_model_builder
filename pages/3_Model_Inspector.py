@@ -6,7 +6,7 @@ import html
 import math
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -97,6 +97,41 @@ def _dbg(msg: str):
         st.session_state.setdefault("ea_inspector_debug", []).append(str(msg))
     except Exception:
         pass
+
+# ---------- sizing backfill helpers ----------
+
+ENABLE_LEGACY_SIZING_BACKFILL = True
+
+LEGACY_SIZING_PROFILE: Dict[str, Any] = {
+    "size_mode": "legacy",
+    "size_base_fraction": 1.0,
+    "size_rr_slope": 0.0,
+    "size_min_fraction": 1.0,
+    "size_rr_cap_fraction": 1.0,
+    "rr_floor": 0.0,
+    "leverage_cap": 1.0,
+    "use_risk_reward_sizing": False,
+}
+
+LEGACY_SIZING_KEYS = set(LEGACY_SIZING_PROFILE.keys())
+
+
+def _backfill_legacy_sizing_if_missing(
+    params: Dict[str, Any]
+) -> Tuple[Dict[str, Any], bool, List[str]]:
+    """Return payload with legacy sizing defaults when keys are absent."""
+
+    if not ENABLE_LEGACY_SIZING_BACKFILL:
+        return params, False, []
+
+    missing = [key for key in LEGACY_SIZING_KEYS if key not in params]
+    if not missing:
+        return params, False, []
+
+    merged = dict(params)
+    for key in missing:
+        merged[key] = LEGACY_SIZING_PROFILE[key]
+    return merged, True, missing
 
 # ---------- helpers ----------
 
@@ -231,11 +266,21 @@ def _coerce_timestamp(value: Any) -> Optional[pd.Timestamp]:
     return pd.Timestamp(ts)
 
 
+def _build_strategy_params_payload(
+    strategy_dotted: str, params: Dict[str, Any] | None, *, disable_warmup: bool
+) -> Tuple[Dict[str, Any], bool, List[str]]:
+    payload = apply_disable_warmup_flag(params, disable_warmup=disable_warmup)
+    payload.setdefault("model_key", strategy_dotted)
+    payload_with_backfill, injected, missing = _backfill_legacy_sizing_if_missing(payload)
+    return payload_with_backfill, injected, missing
+
+
 def _strategy_params_payload(
     strategy_dotted: str, params: Dict[str, Any] | None, *, disable_warmup: bool
 ) -> Dict[str, Any]:
-    payload = apply_disable_warmup_flag(params, disable_warmup=disable_warmup)
-    payload.setdefault("model_key", strategy_dotted)
+    payload, _, _ = _build_strategy_params_payload(
+        strategy_dotted, params, disable_warmup=disable_warmup
+    )
     return payload
 
 
@@ -1135,6 +1180,8 @@ def main():
     st.set_page_config(page_title=DEFAULT_PAGE_TITLE, layout="wide")
     st.title(DEFAULT_PAGE_TITLE)
 
+    debug_sizing = st.checkbox("Debug sizing drift", value=False)
+
     # pick a log (default to latest)
     log_file = _file_picker() or _latest_log_file(LOG_DIR)
     if not log_file:
@@ -1328,6 +1375,36 @@ def main():
             if not params:
                 st.warning("Parameters missing for this individual; cannot regenerate trades.")
             else:
+                params_raw = dict(params)
+                params_preview, legacy_injected, missing_keys = _build_strategy_params_payload(
+                    strategy,
+                    params_raw,
+                    disable_warmup=True,
+                )
+                params_for_calls = dict(params_raw)
+                if legacy_injected:
+                    for key in missing_keys:
+                        params_for_calls[key] = params_preview.get(key)
+                    st.info(
+                        "Replaying with legacy sizing backfill for a pre-sizing EA log. Future runs will log sizing to avoid this fallback.",
+                        icon="⚠️",
+                    )
+                if debug_sizing:
+                    st.write(
+                        {
+                            "logged_param_keys": sorted(params_raw.keys()),
+                            "payload_keys": sorted(params_preview.keys()),
+                            "missing_sizing_keys": missing_keys,
+                            "legacy_backfill_applied": legacy_injected,
+                        }
+                    )
+                    st.write(
+                        "ATR payload preview",
+                        {k: params_preview[k] for k in sorted(params_preview.keys())},
+                    )
+
+                params = params_for_calls
+
                 train_trades = load_trades(
                     strategy,
                     tickers,
@@ -1353,8 +1430,18 @@ def main():
                     end_equity = float(starting_equity)
 
                 test_trades = pd.DataFrame()
+                test_curve = pd.DataFrame()
                 if test_start and test_end:
                     test_trades = load_trades(
+                        strategy,
+                        tickers,
+                        test_start,
+                        test_end,
+                        end_equity,
+                        params,
+                        disable_warmup=False,
+                    )
+                    test_curve = run_equity_curve(
                         strategy,
                         tickers,
                         test_start,
@@ -1375,6 +1462,39 @@ def main():
                     if sort_cols:
                         combined = combined.sort_values(by=sort_cols)
                     window_frames["Combined"] = combined
+
+                combined_curve = pd.concat([train_curve, test_curve], ignore_index=True)
+                if {"date", "equity"}.issubset(combined_curve.columns):
+                    combined_curve = (
+                        combined_curve.dropna(subset=["equity"])
+                        .sort_values("date")
+                        .drop_duplicates(subset=["date"], keep="last")
+                    )
+                reported_total_return = float(selected_row.get("total_return", 0.0) or 0.0)
+                expected_nav_end = 1.0 + reported_total_return
+                nav_replayed_end: Optional[float] = None
+                if {"date", "equity"}.issubset(combined_curve.columns) and not combined_curve.empty:
+                    start_equity_val = float(combined_curve["equity"].iloc[0])
+                    end_equity_val = float(combined_curve["equity"].iloc[-1])
+                    if start_equity_val != 0:
+                        nav_replayed_end = end_equity_val / start_equity_val
+                if debug_sizing:
+                    st.write(
+                        {
+                            "expected_nav_end": expected_nav_end,
+                            "nav_replayed_end": nav_replayed_end,
+                        }
+                    )
+                parity_eps = 1e-3
+                if (
+                    nav_replayed_end is not None
+                    and math.isfinite(expected_nav_end)
+                    and abs(nav_replayed_end - expected_nav_end) > parity_eps
+                ):
+                    st.warning(
+                        f"Replay/metrics mismatch: expected {expected_nav_end:.4f}, got {nav_replayed_end:.4f}. This EA row may still miss other fields.",
+                        icon="⚠️",
+                    )
 
                 if not window_frames:
                     st.info("No trades were generated for the selected individual and windows.")
